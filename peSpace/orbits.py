@@ -5,8 +5,8 @@ from .constants import *
 
 
 Omega0 = 2 * PI / YEAR_SI                    # Omega0: orbital angular velocity of the constellation
-e = arm_length_LISA_SI/(2*AU_SI*sqrt(3))     # e: orbital eccentricity
-a_sec = AU_sec  
+e = ARM_LENGTH_LISA_SI/(2*AU_SI*sqrt(3))     # e: orbital eccentricity
+a_sec = AU_SEC
 
 
 def _LISA_analytic(t):
