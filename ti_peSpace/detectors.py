@@ -16,14 +16,11 @@ from .noise import noise_models
 
 
 @ti.kernal
-def _generate_TDI_responses(TDIs: ti.template(), 
-                            frequencies: ti.template(), # ti.field  # ti.Struct.field, keep ti.template() point to the same memory address to avoid kernal repeated instantiation
+def _generate_TDI_responses(TDIs_data: ti.template(),   # ti.field  # ti.Struct.field, keep ti.template() point to the same memory address to avoid kernal repeated instantiation
                             waveform: ti.template(),    # ti.Struct.field
                                                         # the computaion is evaluated in the order of frequency point
                                                         # using AoS structure to store data for efficiency
-                            orbit_model: ti.template(),
-                            TDI_prefactor: ti.template(),
-                           
+                            orbit_model: ti.template(),                           
                             armL_sec: ti.f64,
                             lam: ti.f64,
                             beta: ti.f64,
@@ -34,7 +31,9 @@ def _generate_TDI_responses(TDIs: ti.template(),
         k = GW_propagation_unit_vector_k(lam, beta)             # tm.vec3
 
 
-        for i in TDIs:
+        for i in TDIs_data:
+            item = TDIs_data[i]
+
             constellation_vectors = orbit_model(time=waveform[i].tf)
 
             n1Hn1 = (constellation_vectors.n1 @ (pol_tensor.plus) @ constellation_vectors.n1) * waveform[i].hplus + (constellation_vectors.n1 @ (pol_tensor.cross) @ constellation_vectors.n1) * waveform[i].hcross    # complex number, tm.vec2   
@@ -51,7 +50,7 @@ def _generate_TDI_responses(TDIs: ti.template(),
 
             kp0 = k@constellation_vectors.p0    # scalar
 
-            common_sinc = PI * frequencies[i] * armL_sec    # scalar
+            common_sinc = PI * TDIs_data.frequencies[i] * armL_sec    # scalar
             sinc12 = sinc(common_sinc * (1.-kn3))    # scalar
             sinc21 = sinc(common_sinc * (1.+kn3))    # scalar
             sinc23 = sinc(common_sinc * (1.-kn1))    # scalar
@@ -59,26 +58,24 @@ def _generate_TDI_responses(TDIs: ti.template(),
             sinc31 = sinc(common_sinc * (1.-kn2))    # scalar
             sinc13 = sinc(common_sinc * (1.+kn2))    # scalar
 
-            common_exp = -PI * frequencies[i] * tm.vec2([0.0, 1.0])    # complex number, tm.vec2
+            common_exp = -PI * TDIs_data.frequencies[i] * tm.vec2([0.0, 1.0])    # complex number, tm.vec2
             exp12 = tm.cexp(common_exp*(armL_sec+kp1Lp2L))    # complex number, tm.vec2
             exp23 = tm.cexp(common_exp*(armL_sec+kp2Lp3L))    # complex number, tm.vec2
             exp31 = tm.cexp(common_exp*(armL_sec+kp3Lp1L))    # complex number, tm.vec2
 
-            prefactor = -PI * frequencies[i] * armL_sec * tm.vec2([0.0, 1.0])    # complex number, tm.vec2
-            expp0 = tm.cexp(-2 * PI * frequencies[i] * kp0 * tm.vec2([0.0, 1.0]))    # complex number, tm.vec2
+            prefactor = -PI * TDIs_data.frequencies[i] * armL_sec * tm.vec2([0.0, 1.0])    # complex number, tm.vec2
+            expp0 = tm.cexp(-2 * PI * TDIs_data.frequencies[i] * kp0 * tm.vec2([0.0, 1.0]))    # complex number, tm.vec2
             commonfac = tm.cmul(prefactor, expp0)    # complex number, tm.vec2
 
-            link12 = sinc12 * tm.cmul(tm.cmul(commonfac, n3Hn3), exp12)    # complex, tm.vec2
-            link21 = sinc21 * tm.cmul(tm.cmul(commonfac, n3Hn3), exp12)    # complex, tm.vec2
-            link23 = sinc23 * tm.cmul(tm.cmul(commonfac, n1Hn1), exp23)    # complex, tm.vec2
-            link32 = sinc32 * tm.cmul(tm.cmul(commonfac, n1Hn1), exp23)    # complex, tm.vec2
-            link31 = sinc31 * tm.cmul(tm.cmul(commonfac, n2Hn2), exp31)    # complex, tm.vec2
-            link13 = sinc13 * tm.cmul(tm.cmul(commonfac, n2Hn2), exp31)    # complex, tm.vec2
+            item['single_links']['link12'] = sinc12 * tm.cmul(tm.cmul(commonfac, n3Hn3), exp12)    # complex, tm.vec2
+            item['single_links']['link21'] = sinc21 * tm.cmul(tm.cmul(commonfac, n3Hn3), exp12)    # complex, tm.vec2
+            item['single_links']['link23'] = sinc23 * tm.cmul(tm.cmul(commonfac, n1Hn1), exp23)    # complex, tm.vec2
+            item['single_links']['link32'] = sinc32 * tm.cmul(tm.cmul(commonfac, n1Hn1), exp23)    # complex, tm.vec2
+            item['single_links']['link31'] = sinc31 * tm.cmul(tm.cmul(commonfac, n2Hn2), exp31)    # complex, tm.vec2
+            item['single_links']['link13'] = sinc13 * tm.cmul(tm.cmul(commonfac, n2Hn2), exp31)    # complex, tm.vec2
 
-            for chan in ti.static(TDIs.keys):
-                TDIs[i][chan] = tm.cmul(TDI_prefactor[i], TDI_combination_funcs[chan](link12, link21, link23, link32, link31, link13))
-
-            
+            for chan in ti.static(TDIs_data.TDIs_chan.keys):
+                item['TDIs_chan'][chan] = tm.cmul(item['TDI_gen_prefactor'], TDI_combination_funcs[chan](item['delay_factor'], item['signle_links']))
 
 
 @ti.kernel
@@ -392,8 +389,8 @@ class LISALike(object):
         ========
         dict, strains of TDI channels of current instance
         '''
-        _generate_TDI_responses(self.TDIs, self.frequencies, self.waveform_container, self._orbit_vectors_func, self.TDI_prefactor,
-                                self.armlength_sec, parameters['ecliptic_longitude'],  parameters['ecliptic_latitude'],  parameters['polarization'])
+        _generate_TDI_responses(self.TDIs_data, self.waveform_container, self._orbit_vectors_func, self.armlength_sec, 
+                                parameters['ecliptic_longitude'],  parameters['ecliptic_latitude'],  parameters['polarization'])
 
     
     # def inject_signal_FD(self, parameters, waveform_func):
