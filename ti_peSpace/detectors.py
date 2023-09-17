@@ -15,8 +15,12 @@ from .constants import *
 from .noise import noise_models
 
 
+SingleLinksStruct = ti.types.struct(link12=tm.vec2, link21=tm.vec2, 
+                                    link23=tm.vec2, link32=tm.vec2, 
+                                    link31=tm.vec2, link13=tm.vec2)
+
 @ti.kernal
-def _generate_TDI_responses(TDIs_data: ti.template(),   # ti.field  # ti.Struct.field, keep ti.template() point to the same memory address to avoid kernal repeated instantiation
+def _generate_TDI_responses(TDI_data: ti.template(),   # ti.field  # ti.Struct.field, keep ti.template() point to the same memory address to avoid kernal repeated instantiation
                             waveform: ti.template(),    # ti.Struct.field
                                                         # the computaion is evaluated in the order of frequency point
                                                         # using AoS structure to store data for efficiency
@@ -31,8 +35,8 @@ def _generate_TDI_responses(TDIs_data: ti.template(),   # ti.field  # ti.Struct.
         k = GW_propagation_unit_vector_k(lam, beta)             # tm.vec3
 
 
-        for i in TDIs_data:
-            item = TDIs_data[i]
+        for i in TDI_data:
+            item = TDI_data[i]
 
             constellation_vectors = orbit_model(time=waveform[i].tf)
 
@@ -50,7 +54,7 @@ def _generate_TDI_responses(TDIs_data: ti.template(),   # ti.field  # ti.Struct.
 
             kp0 = k@constellation_vectors.p0    # scalar
 
-            common_sinc = PI * TDIs_data.frequencies[i] * armL_sec    # scalar
+            common_sinc = PI * item.frequencies * armL_sec    # scalar
             sinc12 = sinc(common_sinc * (1.-kn3))    # scalar
             sinc21 = sinc(common_sinc * (1.+kn3))    # scalar
             sinc23 = sinc(common_sinc * (1.-kn1))    # scalar
@@ -58,13 +62,13 @@ def _generate_TDI_responses(TDIs_data: ti.template(),   # ti.field  # ti.Struct.
             sinc31 = sinc(common_sinc * (1.-kn2))    # scalar
             sinc13 = sinc(common_sinc * (1.+kn2))    # scalar
 
-            common_exp = -PI * TDIs_data.frequencies[i] * tm.vec2([0.0, 1.0])    # complex number, tm.vec2
+            common_exp = -PI * item.frequencies * tm.vec2([0.0, 1.0])    # complex number, tm.vec2
             exp12 = tm.cexp(common_exp*(armL_sec+kp1Lp2L))    # complex number, tm.vec2
             exp23 = tm.cexp(common_exp*(armL_sec+kp2Lp3L))    # complex number, tm.vec2
             exp31 = tm.cexp(common_exp*(armL_sec+kp3Lp1L))    # complex number, tm.vec2
 
-            prefactor = -PI * TDIs_data.frequencies[i] * armL_sec * tm.vec2([0.0, 1.0])    # complex number, tm.vec2
-            expp0 = tm.cexp(-2 * PI * TDIs_data.frequencies[i] * kp0 * tm.vec2([0.0, 1.0]))    # complex number, tm.vec2
+            prefactor = -PI * item.frequencies * armL_sec * tm.vec2([0.0, 1.0])    # complex number, tm.vec2
+            expp0 = tm.cexp(-2 * PI * item.frequencies * kp0 * tm.vec2([0.0, 1.0]))    # complex number, tm.vec2
             commonfac = tm.cmul(prefactor, expp0)    # complex number, tm.vec2
 
             item['single_links']['link12'] = sinc12 * tm.cmul(tm.cmul(commonfac, n3Hn3), exp12)    # complex, tm.vec2
@@ -74,12 +78,12 @@ def _generate_TDI_responses(TDIs_data: ti.template(),   # ti.field  # ti.Struct.
             item['single_links']['link31'] = sinc31 * tm.cmul(tm.cmul(commonfac, n2Hn2), exp31)    # complex, tm.vec2
             item['single_links']['link13'] = sinc13 * tm.cmul(tm.cmul(commonfac, n2Hn2), exp31)    # complex, tm.vec2
 
-            for chan in ti.static(TDIs_data.TDIs_chan.keys):
-                item['TDIs_chan'][chan] = tm.cmul(item['TDI_gen_prefactor'], TDI_combination_funcs[chan](item['delay_factor'], item['signle_links']))
+            for chan in ti.static(TDI_data.TDI_chan_data.keys):
+                item['TDI_chan_data'][chan] = tm.cmul(item['TDI_gen_prefactor'], TDI_combination_funcs[chan](item['delay_factor'], item['signle_links']))
 
 
 @ti.kernel
-def _compute_TDI_prefactor(frequencies: ti.template(),         # output
+def _compute_TDI_prefactor(frequencies: ti.template(),         
                            z_field: ti.template(), 
                            prefactor_field: ti.template(),
                            armlength_sec: ti.f64,
@@ -92,14 +96,14 @@ def _compute_TDI_prefactor(frequencies: ti.template(),         # output
         if TDI_gen == 1:
             prefactor = tm.vec2(1, 0) - tm.cpow(z, 2)
         elif TDI_gen == 2:
-            prefactor = tm.vec2(1, 0) - tm.cpow(z, 2) - tm.cpow(z, 4) - tm.cpow(z, 6)
+            prefactor = tm.vec2(1, 0) - tm.cpow(z, 2) - tm.cpow(z, 4) + tm.cpow(z, 6)
         
         prefactor_field[i] = prefactor
         z_field[i] = z
 
 
 @ti.func
-def TDI_X(z, singlelink_responses):
+def TDI_X(z: tm.vec2, singlelink_responses: SingleLinksStruct) -> tm.vec2:
     '''
     function for computing X channel of TDI combination
 
@@ -114,10 +118,12 @@ def TDI_X(z, singlelink_responses):
     ========
     array, the X channel without the prefactor which is determined by the TDI generation.
     '''
-    X = singlelink_responses['link31'] + z*singlelink_responses['link13'] - singlelink_responses['link21'] - z*singlelink_responses['link12']
+    X = singlelink_responses['link31'] + tm.cmul(z, singlelink_responses['link13']) - singlelink_responses['link21'] - tm.cmul(z, singlelink_responses['link12'])
     return X
 
-def TDI_Y(z, singlelink_responses):
+
+@ti.func
+def TDI_Y(z: tm.vec2, singlelink_responses: SingleLinksStruct) -> tm.vec2:
     '''
     function for computing Y channel of TDI combination
 
@@ -132,10 +138,12 @@ def TDI_Y(z, singlelink_responses):
     ========
     array, the Y channel without the prefactor which is determined by the TDI generation.
     '''
-    Y = singlelink_responses['link12'] + z*singlelink_responses['link21'] - singlelink_responses['link32'] - z*singlelink_responses['link23']
+    Y = singlelink_responses['link12'] + tm.cmul(z, singlelink_responses['link21']) - singlelink_responses['link32'] - tm.cmul(z, singlelink_responses['link23'])
     return Y
 
-def TDI_Z(z, singlelink_responses):
+
+@ti.func
+def TDI_Z(z: tm.vec2, singlelink_responses: SingleLinksStruct) -> tm.vec2:
     '''
     function for computing Z channel of TDI combination
 
@@ -150,10 +158,12 @@ def TDI_Z(z, singlelink_responses):
     ========
     array, the Z channel without the prefactor which is determined by the TDI generation.
     '''
-    Z = singlelink_responses['link23'] + z*singlelink_responses['link32'] - singlelink_responses['link13'] - z*singlelink_responses['link31']
+    Z = singlelink_responses['link23'] + tm.cmul(z, singlelink_responses['link32']) - singlelink_responses['link13'] - tm.cmul(z, singlelink_responses['link31'])
     return Z
 
-def TDI_A(z, singlelink_responses):
+
+@ti.func
+def TDI_A(z: tm.vec2, singlelink_responses: SingleLinksStruct) -> tm.vec2:
     '''
     function for computing A channel of TDI noise-indenpendent combination
 
@@ -168,13 +178,15 @@ def TDI_A(z, singlelink_responses):
     ========
     array, the A channel without the prefactor which is determined by the TDI generation.
     '''
-    A = (singlelink_responses['link23'] + singlelink_responses['link32']*z 
-         + singlelink_responses['link21'] + singlelink_responses['link12']*z 
-         - (1+z)*(singlelink_responses['link13'] + singlelink_responses['link31'])
-         )/np.sqrt(2)
+    A = (singlelink_responses['link23'] + tm.cmul(z, singlelink_responses['link32']) 
+         + singlelink_responses['link21'] + tm.cmul(z, singlelink_responses['link12'])
+         - tm.cmul((tm.vec2(1, 0) + z), (singlelink_responses['link13']) + singlelink_responses['link31'])
+         )/tm.sqrt(2)
     return A
 
-def TDI_E(z, singlelink_responses):
+
+@ti.func
+def TDI_E(z: tm.vec2, singlelink_responses: SingleLinksStruct) -> tm.vec2:
     '''
     function for computing E channel of TDI noise-indenpendent combination
 
@@ -189,13 +201,15 @@ def TDI_E(z, singlelink_responses):
     ========
     array, the E channel without the prefactor which is determined by the TDI generation.
     '''
-    E = ((1-z)*(singlelink_responses['link31'] - singlelink_responses['link13'])
-         + (z+2)*(singlelink_responses['link32'] - singlelink_responses['link12'])
-         + (1+2*z)*(singlelink_responses['link23'] - singlelink_responses['link21'])
-         )/np.sqrt(6)
+    E = (tm.cmul((tm.vec2(1, 0) - z), (singlelink_responses['link31'] - singlelink_responses['link13'])) + 
+         tm.cmul((z + tm.vec2(2, 0)), (singlelink_responses['link32'] - singlelink_responses['link12'])) + 
+         tm.cmul((tm.vec2(1, 0) + 2*z), (singlelink_responses['link23'] - singlelink_responses['link21']))
+        )/tm.sqrt(6)
     return E
 
-def TDI_T(z, singlelink_responses):
+
+@ti.func
+def TDI_T(z: tm.vec2, singlelink_responses: SingleLinksStruct) -> tm.vec2:
     '''
     function for computing T channel of TDI noise-indenpendent combination
 
@@ -210,11 +224,14 @@ def TDI_T(z, singlelink_responses):
     ========
     array, the T channel without the prefactor which is determined by the TDI generation.
     '''
-    T = ((singlelink_responses['link12'] - singlelink_responses['link21'] + 
-          singlelink_responses['link23'] - singlelink_responses['link32'] +
-          singlelink_responses['link31'] - singlelink_responses['link13'])*(1-z)
-         )/np.sqrt(3)
+    T = (tm.cmul((singlelink_responses['link12'] - singlelink_responses['link21'] + 
+                  singlelink_responses['link23'] - singlelink_responses['link32'] +
+                  singlelink_responses['link31'] - singlelink_responses['link13']), 
+                  (tm.vec2(1, 0) - z)
+                )
+         )/tm.sqrt(3)
     return T
+
 
 TDI_combination_funcs = {'X': TDI_X,
                          'Y': TDI_Y,
@@ -224,7 +241,7 @@ TDI_combination_funcs = {'X': TDI_X,
                          'T': TDI_T
                          }
 
-
+################################################################################
 class LISALike(object):
 
 
@@ -277,12 +294,13 @@ class LISALike(object):
         self.armlength_sec = armlength/C_SI
         self.TDI_channels = tuple(TDI_channels)
         self.TDI_generation = TDI_generation
+        # TODO different response model: full, frozen, low-f, frozen and low-f
         self.response_model = response_model
         self.strains_TD = strains_TD
         self.strains_FD = strains_FD
         # var in global scope, can be modified
         self.set_frequencies()
-        self.initialize_TDIs_data()
+        self.initialize_TDI_data()
         self.initialize_waveform_container()
 
         # self.psd_array = self.get_psd_array()
@@ -313,53 +331,44 @@ class LISALike(object):
 
         ti_frequencies = ti.field(ti.f64, (self.length,))
         ti_frequencies.from_numpy(frequencies)
-        self._ti_frequencies = ti_frequencies
+        self._ti_frequencies = ti_frequencies    # for convenient and efficient when frequenies are used in ti scope
 
         return None
 
 
-    # def set_TDI_prefactor(self):
-    #     if self.TDI_generation == '1.5':
-    #         TDI_gen = 1
-    #     elif self.TDI_generation == '2.0':
-    #         TDI_gen = 2
-
-    #     self.TDI_prefactor = ti.field(dtype=tm.vec2, shape=(self.length,))
-    #     _compute_TDI_prefactor(self.TDI_prefactor, self.frequencies, self.armlength_sec, TDI_gen)
-
-    #     return None
-
-
-    def initialize_TDIs_data(self):
+    def initialize_TDI_data(self):
         '''
-        set links strcut, using AoS structure to store data for efficiency, 
+        set TDI_data field, using AoS structure to store data for efficiency, 
         keep the memory address fixed to avoid repeated repeated instantiation of the computational kernel
-        {f: ti.f64, z: tm.vec2, TDI_gen_prefactor: tm.vec2, single_links: Struct({}), TDIs_chan: Struct({})}
+        {frequencies: ti.f64, 
+         delay_factor: tm.vec2, 
+         TDI_gen_prefactor: tm.vec2, 
+         single_links: SingleLinksStruct, 
+         TDI_chan_data: ti.types.struct(TDI_chan_dict)
+         }
         '''
-        TDIs_chan_dict = dict.fromkeys(self.TDI_channels, tm.vec2)
-        TDIs_chan_struct = ti.types.struct(TDIs_chan_dict)
-        single_links_struct = ti.types.struct(link12=tm.vec2, link21=tm.vec2, 
-                                              link23=tm.vec2, link32=tm.vec2, 
-                                              link31=tm.vec2, link13=tm.vec2)
-        TDIs_data_struct = ti.types.struct(frequencies = ti.f64, 
+        TDI_chan_dict = dict.fromkeys(self.TDI_channels, tm.vec2)
+        TDI_chan_struct = ti.types.struct(TDI_chan_dict)
+        
+        TDI_data_struct = ti.types.struct(frequencies = ti.f64, 
                                            delay_factor = tm.vec2,
                                            TDI_gen_prefactor = tm.vec2,
-                                           single_links = single_links_struct,
-                                           TDIs_chan = TDIs_chan_struct)
-        TDIs_data_field = TDIs_data_struct.field()
-        ti.root.dense(ti.i, self.length).place(TDIs_data_field)
+                                           single_links = SingleLinksStruct,
+                                           TDI_chan_data = TDI_chan_struct)
+        TDI_data_field = TDI_data_struct.field()
+        ti.root.dense(ti.i, self.length).place(TDI_data_field)
 
         # set frequencies field
-        TDIs_data_field.frequencies.copy_from(self._ti_frequencies)
+        TDI_data_field.frequencies.copy_from(self._ti_frequencies)
         # set dalay_factor and TDI_gen_prefactor
         if self.TDI_generation == '1.5':
-            TDI_gen = 1
+            int_TDI_gen = 1
         elif self.TDI_generation == '2.0':
-            TDI_gen = 2
-        _compute_TDI_prefactor(TDIs_data_field.frequencies,TDIs_data_field.delay_factor,TDIs_data_field.TDI_gen_prefactor,
-                               self.armlength_sec, TDI_gen)
+            int_TDI_gen = 2
+        _compute_TDI_prefactor(TDI_data_field.frequencies, TDI_data_field.delay_factor, TDI_data_field.TDI_gen_prefactor,
+                               self.armlength_sec, int_TDI_gen)
 
-        self.TDIs_data = TDIs_data_field
+        self.TDI_data = TDI_data_field
 
         return None
     
@@ -389,7 +398,7 @@ class LISALike(object):
         ========
         dict, strains of TDI channels of current instance
         '''
-        _generate_TDI_responses(self.TDIs_data, self.waveform_container, self._orbit_vectors_func, self.armlength_sec, 
+        _generate_TDI_responses(self.TDI_data, self.waveform_container, self._orbit_vectors_func, self.armlength_sec, 
                                 parameters['ecliptic_longitude'],  parameters['ecliptic_latitude'],  parameters['polarization'])
 
     
