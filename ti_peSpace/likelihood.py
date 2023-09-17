@@ -79,7 +79,7 @@ class BaseLikelihood(Likelihood):
         float: The real part of the log likelihood
 
         '''
-        waveform = self.waveform_func(self.likelihood_frequency_array, self.parameters.copy(), self.neglect_waveform_errors)
+        self.waveform_func(self.detector.frequencies, self.detector.waveform_container, self.parameters.copy(), self.neglect_waveform_errors)
         if waveform is None:
             return np.nan_to_num(-np.inf)
         GW_signals = self.detector.TDI_responses(waveform, self.parameters)
