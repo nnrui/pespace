@@ -30,56 +30,54 @@ def _generate_TDI_responses(TDI_data: ti.template(),   # ti.field  # ti.Struct.f
                             psi: ti.f64,
                             ):
 
-        pol_tensor = polarization_tensor_SSB(lam, beta, psi)    # tm.mat3
-        k = GW_propagation_unit_vector_k(lam, beta)             # tm.vec3
+    pol_tensor = polarization_tensor_SSB(lam, beta, psi)    # tm.mat3
+    k = GW_propagation_unit_vector_k(lam, beta)             # tm.vec3
 
-        for i in TDI_data:
+    for i in TDI_data:
 
-            constellation_vectors = orbit_model(waveform[i].tf)
+        constellation_vectors = orbit_model(waveform[i].tf)
 
-            n1Hn1 = (constellation_vectors.n1 @ (pol_tensor.plus) @ constellation_vectors.n1) * waveform[i].hplus + (constellation_vectors.n1 @ (pol_tensor.cross) @ constellation_vectors.n1) * waveform[i].hcross    # complex number, tm.vec2   
-            n2Hn2 = (constellation_vectors.n2 @ (pol_tensor.plus) @ constellation_vectors.n2) * waveform[i].hplus + (constellation_vectors.n2 @ (pol_tensor.cross) @ constellation_vectors.n2) * waveform[i].hcross    # complex number, tm.vec2   
-            n3Hn3 = (constellation_vectors.n3 @ (pol_tensor.plus) @ constellation_vectors.n3) * waveform[i].hplus + (constellation_vectors.n3 @ (pol_tensor.cross) @ constellation_vectors.n3) * waveform[i].hcross    # complex number, tm.vec2   
+        n1Hn1 = (constellation_vectors.n1 @ (pol_tensor.plus) @ constellation_vectors.n1) * waveform[i].hplus + (constellation_vectors.n1 @ (pol_tensor.cross) @ constellation_vectors.n1) * waveform[i].hcross    # complex number, tm.vec2   
+        n2Hn2 = (constellation_vectors.n2 @ (pol_tensor.plus) @ constellation_vectors.n2) * waveform[i].hplus + (constellation_vectors.n2 @ (pol_tensor.cross) @ constellation_vectors.n2) * waveform[i].hcross    # complex number, tm.vec2   
+        n3Hn3 = (constellation_vectors.n3 @ (pol_tensor.plus) @ constellation_vectors.n3) * waveform[i].hplus + (constellation_vectors.n3 @ (pol_tensor.cross) @ constellation_vectors.n3) * waveform[i].hcross    # complex number, tm.vec2   
 
-            kn1 = k@constellation_vectors.n1    # scalar
-            kn2 = k@constellation_vectors.n2    # scalar
-            kn3 = k@constellation_vectors.n3    # scalar
+        kn1 = k@constellation_vectors.n1    # scalar
+        kn2 = k@constellation_vectors.n2    # scalar
+        kn3 = k@constellation_vectors.n3    # scalar
 
-            kp1Lp2L = k@(constellation_vectors.p1D + constellation_vectors.p2D)    # scalar
-            kp2Lp3L = k@(constellation_vectors.p2D + constellation_vectors.p3D)    # scalar
-            kp3Lp1L = k@(constellation_vectors.p3D + constellation_vectors.p1D)    # scalar
+        kp1Lp2L = k@(constellation_vectors.p1D + constellation_vectors.p2D)    # scalar
+        kp2Lp3L = k@(constellation_vectors.p2D + constellation_vectors.p3D)    # scalar
+        kp3Lp1L = k@(constellation_vectors.p3D + constellation_vectors.p1D)    # scalar
 
-            kp0 = k@constellation_vectors.p0    # scalar
+        kp0 = k@constellation_vectors.p0    # scalar
 
-            common_sinc = PI * TDI_data[i].frequencies * armL_sec    # scalar
-            sinc12 = sinc(common_sinc * (1.-kn3))    # scalar
-            sinc21 = sinc(common_sinc * (1.+kn3))    # scalar
-            sinc23 = sinc(common_sinc * (1.-kn1))    # scalar
-            sinc32 = sinc(common_sinc * (1.+kn1))    # scalar
-            sinc31 = sinc(common_sinc * (1.-kn2))    # scalar
-            sinc13 = sinc(common_sinc * (1.+kn2))    # scalar
+        common_sinc = PI * TDI_data[i].frequencies * armL_sec    # scalar
+        sinc12 = sinc(common_sinc * (1.-kn3))    # scalar
+        sinc21 = sinc(common_sinc * (1.+kn3))    # scalar
+        sinc23 = sinc(common_sinc * (1.-kn1))    # scalar
+        sinc32 = sinc(common_sinc * (1.+kn1))    # scalar
+        sinc31 = sinc(common_sinc * (1.-kn2))    # scalar
+        sinc13 = sinc(common_sinc * (1.+kn2))    # scalar
 
-            common_exp = -PI * TDI_data[i].frequencies * tm.vec2([0.0, 1.0])    # complex number, tm.vec2
-            exp12 = tm.cexp(common_exp*(armL_sec+kp1Lp2L))    # complex number, tm.vec2
-            exp23 = tm.cexp(common_exp*(armL_sec+kp2Lp3L))    # complex number, tm.vec2
-            exp31 = tm.cexp(common_exp*(armL_sec+kp3Lp1L))    # complex number, tm.vec2
+        common_exp = -PI * TDI_data[i].frequencies * tm.vec2([0.0, 1.0])    # complex number, tm.vec2
+        exp12 = tm.cexp(common_exp*(armL_sec+kp1Lp2L))    # complex number, tm.vec2
+        exp23 = tm.cexp(common_exp*(armL_sec+kp2Lp3L))    # complex number, tm.vec2
+        exp31 = tm.cexp(common_exp*(armL_sec+kp3Lp1L))    # complex number, tm.vec2
 
-            prefactor = -PI * TDI_data[i].frequencies * armL_sec * tm.vec2([0.0, 1.0])    # complex number, tm.vec2
-            expp0 = tm.cexp(-2 * PI * TDI_data[i].frequencies * kp0 * tm.vec2([0.0, 1.0]))    # complex number, tm.vec2
-            commonfac = tm.cmul(prefactor, expp0)    # complex number, tm.vec2
+        prefactor = -PI * TDI_data[i].frequencies * armL_sec * tm.vec2([0.0, 1.0])    # complex number, tm.vec2
+        expp0 = tm.cexp(-2 * PI * TDI_data[i].frequencies * kp0 * tm.vec2([0.0, 1.0]))    # complex number, tm.vec2
+        commonfac = tm.cmul(prefactor, expp0)    # complex number, tm.vec2
 
-            TDI_data[i]['single_links']['link12'] = sinc12 * tm.cmul(tm.cmul(commonfac, n3Hn3), exp12)    # complex, tm.vec2
-            TDI_data[i]['single_links']['link21'] = sinc21 * tm.cmul(tm.cmul(commonfac, n3Hn3), exp12)    # complex, tm.vec2
-            TDI_data[i]['single_links']['link23'] = sinc23 * tm.cmul(tm.cmul(commonfac, n1Hn1), exp23)    # complex, tm.vec2
-            TDI_data[i]['single_links']['link32'] = sinc32 * tm.cmul(tm.cmul(commonfac, n1Hn1), exp23)    # complex, tm.vec2
-            TDI_data[i]['single_links']['link31'] = sinc31 * tm.cmul(tm.cmul(commonfac, n2Hn2), exp31)    # complex, tm.vec2
-            TDI_data[i]['single_links']['link13'] = sinc13 * tm.cmul(tm.cmul(commonfac, n2Hn2), exp31)    # complex, tm.vec2
+        TDI_data[i]['single_links']['link12'] = sinc12 * tm.cmul(tm.cmul(commonfac, n3Hn3), exp12)    # complex, tm.vec2
+        TDI_data[i]['single_links']['link21'] = sinc21 * tm.cmul(tm.cmul(commonfac, n3Hn3), exp12)    # complex, tm.vec2
+        TDI_data[i]['single_links']['link23'] = sinc23 * tm.cmul(tm.cmul(commonfac, n1Hn1), exp23)    # complex, tm.vec2
+        TDI_data[i]['single_links']['link32'] = sinc32 * tm.cmul(tm.cmul(commonfac, n1Hn1), exp23)    # complex, tm.vec2
+        TDI_data[i]['single_links']['link31'] = sinc31 * tm.cmul(tm.cmul(commonfac, n2Hn2), exp31)    # complex, tm.vec2
+        TDI_data[i]['single_links']['link13'] = sinc13 * tm.cmul(tm.cmul(commonfac, n2Hn2), exp31)    # complex, tm.vec2
 
-            for chan in ti.static(TDI_data.TDI_chan_data.keys):
-                TDI_data[i]['TDI_chan_data'][chan] = tm.cmul(TDI_data[i]['TDI_gen_prefactor'], TDI_combination_funcs[chan](TDI_data[i]['delay_factor'], TDI_data[i]['single_links']))
-            
-            # print(tm.log(TDI_data[i]['TDI_chan_data']['A'].norm())/tm.log(10))
-
+        for chan in ti.static(TDI_data.TDI_chan_data.keys):
+            TDI_data[i]['TDI_chan_data'][chan] = tm.cmul(TDI_data[i]['TDI_gen_prefactor'], TDI_combination_funcs[chan](TDI_data[i]['delay_factor'], TDI_data[i]['single_links']))
+        
 
 @ti.kernel
 def _compute_TDI_prefactor(frequencies: ti.template(),         
