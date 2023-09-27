@@ -103,7 +103,7 @@ def _compute_TDI_prefactor(frequencies: ti.template(),
 
 
 @ti.func
-def TDI_X(z: tm.vec2, singlelink_responses: SingleLinksStruct) -> tm.vec2:
+def _TDI_X(z: tm.vec2, singlelink_responses: SingleLinksStruct) -> tm.vec2:
     '''
     function for computing X channel of TDI combination
 
@@ -118,12 +118,12 @@ def TDI_X(z: tm.vec2, singlelink_responses: SingleLinksStruct) -> tm.vec2:
     ========
     array, the X channel without the prefactor which is determined by the TDI generation.
     '''
-    X = singlelink_responses['link31'] + tm.cmul(z, singlelink_responses['link13']) - singlelink_responses['link21'] - tm.cmul(z, singlelink_responses['link12'])
-    return X
+    return singlelink_responses['link31'] + tm.cmul(z, singlelink_responses['link13']) - singlelink_responses['link21'] - tm.cmul(z, singlelink_responses['link12'])
+    
 
 
 @ti.func
-def TDI_Y(z: tm.vec2, singlelink_responses: SingleLinksStruct) -> tm.vec2:
+def _TDI_Y(z: tm.vec2, singlelink_responses: SingleLinksStruct) -> tm.vec2:
     '''
     function for computing Y channel of TDI combination
 
@@ -138,12 +138,11 @@ def TDI_Y(z: tm.vec2, singlelink_responses: SingleLinksStruct) -> tm.vec2:
     ========
     array, the Y channel without the prefactor which is determined by the TDI generation.
     '''
-    Y = singlelink_responses['link12'] + tm.cmul(z, singlelink_responses['link21']) - singlelink_responses['link32'] - tm.cmul(z, singlelink_responses['link23'])
-    return Y
+    return singlelink_responses['link12'] + tm.cmul(z, singlelink_responses['link21']) - singlelink_responses['link32'] - tm.cmul(z, singlelink_responses['link23'])
 
 
 @ti.func
-def TDI_Z(z: tm.vec2, singlelink_responses: SingleLinksStruct) -> tm.vec2:
+def _TDI_Z(z: tm.vec2, singlelink_responses: SingleLinksStruct) -> tm.vec2:
     '''
     function for computing Z channel of TDI combination
 
@@ -158,12 +157,11 @@ def TDI_Z(z: tm.vec2, singlelink_responses: SingleLinksStruct) -> tm.vec2:
     ========
     array, the Z channel without the prefactor which is determined by the TDI generation.
     '''
-    Z = singlelink_responses['link23'] + tm.cmul(z, singlelink_responses['link32']) - singlelink_responses['link13'] - tm.cmul(z, singlelink_responses['link31'])
-    return Z
+    return singlelink_responses['link23'] + tm.cmul(z, singlelink_responses['link32']) - singlelink_responses['link13'] - tm.cmul(z, singlelink_responses['link31'])
 
 
 @ti.func
-def TDI_A(z: tm.vec2, singlelink_responses: SingleLinksStruct) -> tm.vec2:
+def _TDI_A(z: tm.vec2, singlelink_responses: SingleLinksStruct) -> tm.vec2:
     '''
     function for computing A channel of TDI noise-indenpendent combination
 
@@ -178,15 +176,14 @@ def TDI_A(z: tm.vec2, singlelink_responses: SingleLinksStruct) -> tm.vec2:
     ========
     array, the A channel without the prefactor which is determined by the TDI generation.
     '''
-    A = (singlelink_responses['link23'] + tm.cmul(z, singlelink_responses['link32']) 
+    return (singlelink_responses['link23'] + tm.cmul(z, singlelink_responses['link32']) 
          + singlelink_responses['link21'] + tm.cmul(z, singlelink_responses['link12'])
          - tm.cmul((tm.vec2(1, 0) + z), (singlelink_responses['link13']) + singlelink_responses['link31'])
          )/tm.sqrt(2)
-    return A
 
 
 @ti.func
-def TDI_E(z: tm.vec2, singlelink_responses: SingleLinksStruct) -> tm.vec2:
+def _TDI_E(z: tm.vec2, singlelink_responses: SingleLinksStruct) -> tm.vec2:
     '''
     function for computing E channel of TDI noise-indenpendent combination
 
@@ -201,15 +198,14 @@ def TDI_E(z: tm.vec2, singlelink_responses: SingleLinksStruct) -> tm.vec2:
     ========
     array, the E channel without the prefactor which is determined by the TDI generation.
     '''
-    E = (tm.cmul((tm.vec2(1, 0) - z), (singlelink_responses['link31'] - singlelink_responses['link13'])) + 
+    return (tm.cmul((tm.vec2(1, 0) - z), (singlelink_responses['link31'] - singlelink_responses['link13'])) + 
          tm.cmul((z + tm.vec2(2, 0)), (singlelink_responses['link32'] - singlelink_responses['link12'])) + 
          tm.cmul((tm.vec2(1, 0) + 2*z), (singlelink_responses['link23'] - singlelink_responses['link21']))
         )/tm.sqrt(6)
-    return E
 
 
 @ti.func
-def TDI_T(z: tm.vec2, singlelink_responses: SingleLinksStruct) -> tm.vec2:
+def _TDI_T(z: tm.vec2, singlelink_responses: SingleLinksStruct) -> tm.vec2:
     '''
     function for computing T channel of TDI noise-indenpendent combination
 
@@ -224,21 +220,20 @@ def TDI_T(z: tm.vec2, singlelink_responses: SingleLinksStruct) -> tm.vec2:
     ========
     array, the T channel without the prefactor which is determined by the TDI generation.
     '''
-    T = (tm.cmul((singlelink_responses['link12'] - singlelink_responses['link21'] + 
+    return (tm.cmul((singlelink_responses['link12'] - singlelink_responses['link21'] + 
                   singlelink_responses['link23'] - singlelink_responses['link32'] +
                   singlelink_responses['link31'] - singlelink_responses['link13']), 
                   (tm.vec2(1, 0) - z)
                 )
          )/tm.sqrt(3)
-    return T
 
 
-TDI_combination_funcs = {'X': TDI_X,
-                         'Y': TDI_Y,
-                         'Z': TDI_Z,
-                         'A': TDI_A,
-                         'E': TDI_E,
-                         'T': TDI_T
+TDI_combination_funcs = {'X': _TDI_X,
+                         'Y': _TDI_Y,
+                         'Z': _TDI_Z,
+                         'A': _TDI_A,
+                         'E': _TDI_E,
+                         'T': _TDI_T
                          }
 
 ################################################################################

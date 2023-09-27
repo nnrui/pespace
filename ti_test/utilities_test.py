@@ -4,7 +4,7 @@ sys.path.append('/home/hydrogen/workspace/Space_GW/peSpace')
 import taichi as ti
 from ti_peSpace.utilities import *
 
-ti.init(arch=ti.cpu)
+ti.init(arch=ti.cpu, default_fp=ti.f64)
 
 @ti.kernel
 def test():
