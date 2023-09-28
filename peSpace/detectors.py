@@ -20,7 +20,7 @@ def TDI_X(z, singlelink_responses):
     Parameters
     ==========
     z: array
-        delay factor, exp(-1j*2*PI*frequencies*arm_length_LISA_sec)
+        delay factor, exp(-1j*2*PI*frequencies*ARM_LENGTH_LISA_SEC)
     singlelink_responses: dict
         contains the 6 array which are GW responses of each link
 
@@ -38,7 +38,7 @@ def TDI_Y(z, singlelink_responses):
     Parameters
     ==========
     z: array
-        delay factor, exp(-1j*2*PI*frequencies*arm_length_LISA_sec)
+        delay factor, exp(-1j*2*PI*frequencies*ARM_LENGTH_LISA_SEC)
     singlelink_responses: dict
         contains the 6 array which are GW responses of each link
 
@@ -56,7 +56,7 @@ def TDI_Z(z, singlelink_responses):
     Parameters
     ==========
     z: array
-        delay factor, exp(-1j*2*PI*frequencies*arm_length_LISA_sec)
+        delay factor, exp(-1j*2*PI*frequencies*ARM_LENGTH_LISA_SEC)
     singlelink_responses: dict
         contains the 6 array which are GW responses of each link
 
@@ -74,7 +74,7 @@ def TDI_A(z, singlelink_responses):
     Parameters
     ==========
     z: array
-        delay factor, exp(-1j*2*PI*frequencies*arm_length_LISA_sec)
+        delay factor, exp(-1j*2*PI*frequencies*ARM_LENGTH_LISA_SEC)
     singlelink_responses: dict
         contains the 6 array which are GW responses of each link
 
@@ -95,7 +95,7 @@ def TDI_E(z, singlelink_responses):
     Parameters
     ==========
     z: array
-        delay factor, exp(-1j*2*PI*frequencies*arm_length_LISA_sec)
+        delay factor, exp(-1j*2*PI*frequencies*ARM_LENGTH_LISA_SEC)
     singlelink_responses: dict
         contains the 6 array which are GW responses of each link
 
@@ -116,7 +116,7 @@ def TDI_T(z, singlelink_responses):
     Parameters
     ==========
     z: array
-        delay factor, exp(-1j*2*PI*frequencies*arm_length_LISA_sec)
+        delay factor, exp(-1j*2*PI*frequencies*ARM_LENGTH_LISA_SEC)
     singlelink_responses: dict
         contains the 6 array which are GW responses of each link
 
@@ -279,7 +279,7 @@ class LISALike(object):
 
             kp0 = k@(constellation_vectors['p0'].T)
 
-            common_sinc = PI * frequencies[i] * arm_length_LISA_sec
+            common_sinc = PI * frequencies[i] * ARM_LENGTH_LISA_SEC
             sinc12 = sinc(common_sinc * (1.-kn3))
             sinc21 = sinc(common_sinc * (1.+kn3))
             sinc23 = sinc(common_sinc * (1.-kn1))
@@ -288,11 +288,11 @@ class LISALike(object):
             sinc13 = sinc(common_sinc * (1.+kn2))
 
             common_exp = -1j*PI*frequencies[i]
-            exp12 = np.exp(common_exp*(arm_length_LISA_sec+kp1Lp2L))
-            exp23 = np.exp(common_exp*(arm_length_LISA_sec+kp2Lp3L))
-            exp31 = np.exp(common_exp*(arm_length_LISA_sec+kp3Lp1L))
+            exp12 = np.exp(common_exp*(ARM_LENGTH_LISA_SEC+kp1Lp2L))
+            exp23 = np.exp(common_exp*(ARM_LENGTH_LISA_SEC+kp2Lp3L))
+            exp31 = np.exp(common_exp*(ARM_LENGTH_LISA_SEC+kp3Lp1L))
 
-            prefactor = -1j * PI * frequencies[i] * arm_length_LISA_sec
+            prefactor = -1j * PI * frequencies[i] * ARM_LENGTH_LISA_SEC
             expp0 = np.exp(-1j * 2 * PI * frequencies[i] * kp0)
             commonfac = prefactor * expp0
 
@@ -327,7 +327,7 @@ class LISALike(object):
         '''
         frequencies = waveform['frequencies']
         singlelink_responses = self.generate_singlelink_responses(waveform, parameters)
-        z = np.exp(-1j*2*PI*frequencies*arm_length_LISA_sec)    # delay factor
+        z = np.exp(-1j*2*PI*frequencies*ARM_LENGTH_LISA_SEC)    # delay factor
 
         if self.TDI_generation == '1.5':
             prefactor = (1 - z**2)

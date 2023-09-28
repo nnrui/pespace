@@ -107,7 +107,7 @@ def _TDI_X(z: tm.vec2, singlelink_responses: SingleLinksStruct) -> tm.vec2:
     Parameters
     ==========
     z: array
-        delay factor, exp(-1j*2*PI*frequencies*arm_length_LISA_sec)
+        delay factor, exp(-1j*2*PI*frequencies*ARM_LENGTH_LISA_SEC)
     singlelink_responses: dict
         contains the 6 array which are GW responses of each link
 
@@ -127,7 +127,7 @@ def _TDI_Y(z: tm.vec2, singlelink_responses: SingleLinksStruct) -> tm.vec2:
     Parameters
     ==========
     z: array
-        delay factor, exp(-1j*2*PI*frequencies*arm_length_LISA_sec)
+        delay factor, exp(-1j*2*PI*frequencies*ARM_LENGTH_LISA_SEC)
     singlelink_responses: dict
         contains the 6 array which are GW responses of each link
 
@@ -146,7 +146,7 @@ def _TDI_Z(z: tm.vec2, singlelink_responses: SingleLinksStruct) -> tm.vec2:
     Parameters
     ==========
     z: array
-        delay factor, exp(-1j*2*PI*frequencies*arm_length_LISA_sec)
+        delay factor, exp(-1j*2*PI*frequencies*ARM_LENGTH_LISA_SEC)
     singlelink_responses: dict
         contains the 6 array which are GW responses of each link
 
@@ -165,7 +165,7 @@ def _TDI_A(z: tm.vec2, singlelink_responses: SingleLinksStruct) -> tm.vec2:
     Parameters
     ==========
     z: array
-        delay factor, exp(-1j*2*PI*frequencies*arm_length_LISA_sec)
+        delay factor, exp(-1j*2*PI*frequencies*ARM_LENGTH_LISA_SEC)
     singlelink_responses: dict
         contains the 6 array which are GW responses of each link
 
@@ -187,7 +187,7 @@ def _TDI_E(z: tm.vec2, singlelink_responses: SingleLinksStruct) -> tm.vec2:
     Parameters
     ==========
     z: array
-        delay factor, exp(-1j*2*PI*frequencies*arm_length_LISA_sec)
+        delay factor, exp(-1j*2*PI*frequencies*ARM_LENGTH_LISA_SEC)
     singlelink_responses: dict
         contains the 6 array which are GW responses of each link
 
@@ -209,7 +209,7 @@ def _TDI_T(z: tm.vec2, singlelink_responses: SingleLinksStruct) -> tm.vec2:
     Parameters
     ==========
     z: array
-        delay factor, exp(-1j*2*PI*frequencies*arm_length_LISA_sec)
+        delay factor, exp(-1j*2*PI*frequencies*ARM_LENGTH_LISA_SEC)
     singlelink_responses: dict
         contains the 6 array which are GW responses of each link
 
@@ -343,10 +343,10 @@ class LISALike(object):
         TDI_chan_struct = ti.types.struct(**TDI_chan_dict)
         
         TDI_data_struct = ti.types.struct(frequencies = ti.f64, 
-                                           delay_factor = tm.vec2,
-                                           TDI_gen_prefactor = tm.vec2,
-                                           single_links = SingleLinksStruct,
-                                           TDI_chan_data = TDI_chan_struct)
+                                          delay_factor = tm.vec2,
+                                          TDI_gen_prefactor = tm.vec2,
+                                          single_links = SingleLinksStruct,
+                                          TDI_chan_data = TDI_chan_struct)
         TDI_data_field = TDI_data_struct.field()
         ti.root.dense(ti.i, self.data_length).place(TDI_data_field)
 

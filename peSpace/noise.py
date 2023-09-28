@@ -14,17 +14,17 @@ def psd_LISA_SciRDv1(frequencies, TDI_channel='X', TDI_generation='1.5'):
     if TDI_generation == '1.5':
         prefactor = 1.0
     elif TDI_generation == '2.0':
-        prefactor = 4.0 * sin(4*PI*frequencies*arm_length_LISA_sec)**2
+        prefactor = 4.0 * sin(4*PI*frequencies*ARM_LENGTH_LISA_SEC)**2
     else:
         raise Exception('The TDI generation {} is unknown'.format(TDI_generation))
 
     if TDI_channel in ['X', 'Y', 'Z']:
-        psd_array = 16 * sin(2*PI*frequencies*arm_length_LISA_sec)**2 * (S_oms + (3 + cos(4*PI*frequencies*arm_length_LISA_sec))*S_acc)
+        psd_array = 16 * sin(2*PI*frequencies*ARM_LENGTH_LISA_SEC)**2 * (S_oms + (3 + cos(4*PI*frequencies*ARM_LENGTH_LISA_SEC))*S_acc)
     elif TDI_channel in ['A', 'E']:
-        psd_array = 8 * sin(2*PI*frequencies*arm_length_LISA_sec)**2 * ((2 + cos(2*PI*frequencies*arm_length_LISA_sec))*S_oms 
-                                                                        + (6 + 4*cos(2*PI*frequencies*arm_length_LISA_sec) + 2*cos(4*PI*frequencies*arm_length_LISA_sec))*S_acc)
+        psd_array = 8 * sin(2*PI*frequencies*ARM_LENGTH_LISA_SEC)**2 * ((2 + cos(2*PI*frequencies*ARM_LENGTH_LISA_SEC))*S_oms 
+                                                                        + (6 + 4*cos(2*PI*frequencies*ARM_LENGTH_LISA_SEC) + 2*cos(4*PI*frequencies*ARM_LENGTH_LISA_SEC))*S_acc)
     elif TDI_channel == 'T':
-        psd_array = 32 * sin(2*PI*frequencies*arm_length_LISA_sec)**2 * sin(PI*frequencies*arm_length_LISA_sec)**2 * (S_oms + 4*sin(PI*frequencies*arm_length_LISA_sec)**2*S_acc)
+        psd_array = 32 * sin(2*PI*frequencies*ARM_LENGTH_LISA_SEC)**2 * sin(PI*frequencies*ARM_LENGTH_LISA_SEC)**2 * (S_oms + 4*sin(PI*frequencies*ARM_LENGTH_LISA_SEC)**2*S_acc)
 
     psd_array *= prefactor
 
