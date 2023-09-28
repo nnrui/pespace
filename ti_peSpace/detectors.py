@@ -394,29 +394,36 @@ class LISALike(object):
                                 parameters['ecliptic_longitude'],  parameters['ecliptic_latitude'],  parameters['polarization'])
 
     
-    # def inject_signal_FD(self, parameters, waveform_func):
-    #     '''
-    #     TODO wavefrom_dictionary
-    #     inject the GW signal into the detector strains
+    def initialize_strains_FD(self):
+        chan_dict = dict.fromkeys(self.TDI_channels, tm.vec2)
+        chan_struct = ti.types.struct(**chan_dict)
+        strains_FD_field = chan_struct.field()
+        ti.root.dense(ti.i, self.data_length).place(strains_FD_field)
+        self.strains_FD = strains_FD_field
 
-    #     Parameters
-    #     ==========
-    #     parameters: dict
-    #         parameters describes the GW source
-    #     waveform_func: function
-    #         see wavefrom.__dir__() for all support wavefrom
-    #     '''
-    #     if self.strains_FD is None:
-    #         self.strains_FD = dict.fromkeys(self.TDI_channels, np.zeros(len(self.frequency_array), dtype=np.complex128))
-    #     strains_FD = copy.deepcopy(self.strains_FD)     # remember using deepcopy to avoid error when plus the signals
+        return None
 
-    #     waveform = waveform_func(self.frequency_array, parameters.copy(), neglect_waveform_errors=False)
-    #     signals = self.TDI_responses(waveform, parameters)
-    #     self.signals = signals
-    #     for chan in self.TDI_channels:
-    #         self.strains_FD[chan] = strains_FD[chan] + signals[chan]  # remember the deepcopy of self.strains_FD rather than ifself
-        
-    #     return None
+
+    def inject_signal_FD(self, parameters, waveform_func):
+        '''
+        TODO wavefrom_dictionary
+        inject the GW signal into the detector strains
+
+        Parameters
+        ==========
+        parameters: dict
+            parameters describes the GW source
+        waveform_func: function
+            see wavefrom.__dir__() for all support wavefrom
+        '''
+        waveform_func(self.frequencies, self.waveform_container, parameters.copy(), self.data_length)
+        self.updata_TDI_responses(parameters)
+
+        for i in range(self.data_length):
+            for chan in self.TDI_channels:
+                self.strains_FD[i][chan] += self.TDI_data[i]['TDI_chan_data'][chan]
+
+        return None
     
     # def get_psd_array(self, frequencies=None):
     #     '''
