@@ -162,73 +162,81 @@ def GW_propagation_unit_vector_k(lam: ti.f64, beta: ti.f64) -> tm.vec3:         
 #     return
 
 
-# def inner_product(aa, bb, psd_array, delta_freq):
-#     '''
-#     compute the noise weighted inner product between two arrays on the uniform frequency grid, <aa|bb>
+def noise_weighted_inner_product(aa, bb, psd_array, delta_freq):
+    '''
+    compute the noise weighted inner product between two arrays on the uniform frequency grid, <aa|bb>
 
-#     Parameters
-#     ==========
-#     aa: array
-#         first array to compute inner product
-#     bb: array
-#         second array to compute inner product
-#     psd_array: array
-#         psd of the noise which is the array have the same shape of aa and bb
-#     delta_freq: float
-#         the spacing of two adjacent frequency points
+    Parameters
+    ==========
+    aa: array
+        first array to compute inner product
+    bb: array
+        second array to compute inner product
+    psd_array: array
+        psd of the noise which is the array have the same shape of aa and bb
+    delta_freq: float
+        the spacing of two adjacent frequency points
 
-#     Returns
-#     =======
-#     float
-#     '''
-#     integrand = aa * np.conj(bb) / psd_array
-#     return (4 * delta_freq * np.sum(integrand)).real
-
-
-# def recursively_save_dict_contents_to_group(h5file, path, dic):
-#     '''
-#     Recursively save a dictionary to a HDF5 group
-#     copied from bilby.core.utils.io.recursively_save_dict_contents_to_group
-
-#     Parameters
-#     ==========
-#     h5file: h5py.File
-#         Open HDF5 file
-#     path: str
-#         Path inside the HDF5 file
-#     dic: dict
-#         The dictionary containing the data
-#     '''
-#     for key, value in dic.items():
-#         if isinstance(value, dict):
-#             recursively_save_dict_contents_to_group(h5file, path + key + "/", value)
-#         elif isinstance(value, np.ndarray):
-#             h5file[path + key] = value
-#         elif value is None:
-#             h5file[path + key] = h5py.Empty('f')
+    Returns
+    =======
+    float
+    '''
+    integrand = aa * np.conj(bb) / psd_array
+    return (4 * delta_freq * np.sum(integrand)).real
 
 
-# def recursively_load_dict_contents_from_group(h5file, path):
-#     '''
-#     Recursively load a HDF5 file into a dictionary
-#     copied from bilby.core.utils.io.recursively_load_dict_contents_from_group
+def recursively_save_dict_contents_to_group(h5file, path, dic):
+    '''
+    Recursively save a dictionary to a HDF5 group
+    copied from bilby.core.utils.io.recursively_save_dict_contents_to_group
 
-#     Parameters
-#     ==========
-#     h5file: h5py.File
-#         Open h5py file object
-#     path: str
-#         Path within the HDF5 file
+    Parameters
+    ==========
+    h5file: h5py.File
+        Open HDF5 file
+    path: str
+        Path inside the HDF5 file
+    dic: dict
+        The dictionary containing the data
+    '''
+    for key, value in dic.items():
+        if isinstance(value, dict):
+            recursively_save_dict_contents_to_group(h5file, path + key + "/", value)
+        elif isinstance(value, list):
+            if len(value) == 0:
+                h5file[path + key] = h5py.Empty('f')
+            else:
+                for idx, item in enumerate(value):
+                    recursively_save_dict_contents_to_group(h5file, path + key + '/' + f'item_{idx}' + '/', item)
+        elif isinstance(value, np.ndarray):
+            h5file[path + key] = value
+        elif value is None:
+            h5file[path + key] = h5py.Empty('f')
+        else:
+            raise ValueError(f'Cannot save {key}: {type(value)} type')
 
-#     Returns
-#     =======
-#     output: dict
-#         The contents of the HDF5 file unpacked into the dictionary.
-#     '''
-#     output = {}
-#     for key, item in h5file[path].items():
-#         if isinstance(item, h5py.Dataset):
-#             output[key] = item[()]
-#         elif isinstance(item, h5py.Group):
-#             output[key] = recursively_load_dict_contents_from_group(h5file, path + key + "/")
-#     return output
+
+def recursively_load_dict_contents_from_group(h5file, path):
+    '''
+    Recursively load a HDF5 file into a dictionary
+    copied from bilby.core.utils.io.recursively_load_dict_contents_from_group
+
+    Parameters
+    ==========
+    h5file: h5py.File
+        Open h5py file object
+    path: str
+        Path within the HDF5 file
+
+    Returns
+    =======
+    output: dict
+        The contents of the HDF5 file unpacked into the dictionary.
+    '''
+    output = {}
+    for key, item in h5file[path].items():
+        if isinstance(item, h5py.Dataset):
+            output[key] = item[()]
+        elif isinstance(item, h5py.Group):
+            output[key] = recursively_load_dict_contents_from_group(h5file, path + key + "/")
+    return output
