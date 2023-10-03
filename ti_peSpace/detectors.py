@@ -405,7 +405,7 @@ class LISALike(object):
         return None
 
 
-    def inject_signal_FD(self, parameters, waveform_func):
+    def inject_signal_FD(self, parameters, waveform_func, waveform_arguments):
         '''
         TODO wavefrom_dictionary
         inject the GW signal into the detector strains
@@ -417,7 +417,7 @@ class LISALike(object):
         waveform_func: function
             see wavefrom.__dir__() for all support wavefrom
         '''
-        waveform_func(self.frequencies, self.waveform_container, parameters.copy(), self.data_length)
+        waveform_func(self.frequencies, self.waveform_container, parameters.copy(), self.data_length, waveform_arguments)
         self.updata_TDI_responses(parameters)
         signal_from_ti = self.TDI_data.TDI_chan_data.to_numpy()
         inj = {}

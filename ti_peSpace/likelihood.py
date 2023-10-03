@@ -9,10 +9,10 @@ from .utilities import inner_product
 from .constants import *
 
 
-@ti.data_oriented
-class BaseLikelihood(Likelihood):
+class FullLikelihood(Likelihood):
 
-    def __init__(self, waveform_func, detector, neglect_waveform_errors=False):
+
+    def __init__(self, waveform_func, detector, waveform_arguments=dict()):
         '''
         create a BaseLikelihood instance
 
@@ -26,49 +26,16 @@ class BaseLikelihood(Likelihood):
         neglect_waveform_errors: bool
             whether raise when failed to call wavefrom_func, raise if False
         '''
-        super(BaseLikelihood, self).__init__(dict())
+        super(FullLikelihood, self).__init__(parameters=dict())
         self.waveform_func = waveform_func
-        if detector.TDI_channels != ('A','E') and detector.TDI_channels != ('A','E','T'):
-            raise Exception('Your set detector channels of {}, while the likelihood compution expect '
-                            'the channels of ("A","E","T") or ("A","E")'.format(detector.TDI_channels))
+        if sorted(detector.TDI_channels) != ['A','E'] and sorted(detector.TDI_channels)!= ['A','E','T']:
+            raise Exception(f'Your set detector channels of {sorted(detector.TDI_channels)}, '
+                             'while the likelihood compution expect the channels of ("A","E","T") or ("A","E")')
         self.detector = detector
-        self.likelihood_frequency_array = self.create_likelihood_frequency_array()
-        self.likelihood_psd_array = self.create_likelihood_psd_array()
-        self.likehihodd_strains_FD = self.create_likelihood_strains_FD()
         # TODO: it maybe better to move the neglect_waveform_errors into a dict
         # TODO logically neglect_waveform_errors sould be attribure in wavefrom geration func
-        self.neglect_waveform_errors = neglect_waveform_errors
+        self.wavefrom_arguments = waveform_arguments
 
-    def create_likelihood_frequency_array(self):
-        '''
-        the likelihood will be compute on the orginal frequency grid in BaseLikelihood
-        return the same frequency_array of the detector
-
-        Returns
-        =======
-        array: frequency_arry on which the likelihood will be computed
-        '''
-        return copy.deepcopy(self.detector.frequency_array)
-    
-    def create_likelihood_psd_array(self):
-        '''
-        create psd array for likelihood computation, return the same psd_array of the detector
-
-        Returns
-        =======
-        array: same psd_array of the detector
-        '''
-        return copy.deepcopy(self.detector.psd_array)
-
-    def create_likelihood_strains_FD(self):
-        '''
-        return the strains_FD for likelihood computation, has the same shape with the likelihood_frequency_array
-
-        Returns
-        =======
-        array: has the same shape with the likelihood_frequency_array
-        '''
-        return copy.deepcopy(self.detector.strains_FD)
 
     def log_likelihood(self):
         '''
@@ -79,16 +46,16 @@ class BaseLikelihood(Likelihood):
         float: The real part of the log likelihood
 
         '''
-        self.waveform_func(self.detector.frequencies, self.detector.waveform_container, self.parameters.copy(), self.neglect_waveform_errors)
-        if waveform is None:
+        ret = self.waveform_func(self.detector.frequencies, self.detector.waveform_container, self.parameters.copy(), self.detector.data_length, self.wavefrom_arguments)
+        if ret == FAILURE:
             return np.nan_to_num(-np.inf)
-        GW_signals = self.detector.TDI_responses(waveform, self.parameters)
+        self.detector.updata_TDI_responses(self.parameters)
+        signal_from_ti = self.TDI_data.TDI_chan_data.to_numpy()
 
-        log_l = 0
-        delta_freq = self.likelihood_frequency_array[1] - self.likelihood_frequency_array[0]
+        log_l = 0.0
         for chan in self.detector.TDI_channels:
-            residual = self.likehihodd_strains_FD[chan] - GW_signals[chan]
-            log_l += - 2. * delta_freq * np.vdot(residual, residual/self.likelihood_psd_array[chan]).real
+            residual = self.detector.strains_FD[chan] - signal_from_ti[chan].view(dtype=np.complex128)    # NOTE!!! must use ti.f64 in vec2
+            log_l += - 2. * self.detector.delta_f * np.vdot(residual, residual/self.detector.psd_array[chan]).real
 
         return log_l
 

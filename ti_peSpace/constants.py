@@ -17,5 +17,8 @@ ARM_LENGTH_LISA_SI = 2.5e9  # meters
 ARM_LENGTH_LISA_SEC = ARM_LENGTH_LISA_SI/C_SI # seconds
 
 
+SUCCESS = 1
+FAILURE = 0
+
 DEBUG = False
 
