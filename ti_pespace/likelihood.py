@@ -55,7 +55,7 @@ class FullLikelihood(Likelihood):
         log_l = 0.0
         for chan in self.detector.TDI_channels:
             residual = self.detector.strains_FD[chan] - signal_from_ti[chan].view(dtype=np.complex128)    # NOTE!!! must use ti.f64 in vec2
-            log_l += - 2. * self.detector.delta_f * np.vdot(residual, residual/self.detector.psd_array[chan]).real
+            log_l += - 2. * self.detector.delta_f * np.vdot(residual, residual / self.detector.psd_array[chan]).real
 
         return log_l
 

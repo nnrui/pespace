@@ -11,6 +11,7 @@ from .constants import *
 
 
 PolarizationStruct = ti.types.struct(plus=tm.mat3, cross=tm.mat3)
+vec2_complex = ti.types.vector(2, ti.f64)
 
 
 def func():
