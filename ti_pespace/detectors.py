@@ -75,8 +75,8 @@ def _generate_TDI_responses(TDI_data: ti.template(),   # ti.field  # ti.Struct.f
         TDI_data[i]['single_links']['link31'] = sinc31 * tm.cmul(tm.cmul(commonfac, n2Hn2), exp31)    # complex, tm.vec2
         TDI_data[i]['single_links']['link13'] = sinc13 * tm.cmul(tm.cmul(commonfac, n2Hn2), exp31)    # complex, tm.vec2
 
-        for chan in ti.static(TDI_data.TDI_chan_data.keys):
-            TDI_data[i]['TDI_chan_data'][chan] = tm.cmul(TDI_data[i]['TDI_gen_prefactor'], TDI_combination_funcs[chan](TDI_data[i]['delay_factor'], TDI_data[i]['single_links']))
+        for chan in ti.static(TDI_data.channels_data.keys):
+            TDI_data[i]['channels_data'][chan] = tm.cmul(TDI_data[i]['TDI_gen_prefactor'], TDI_combination_funcs[chan](TDI_data[i]['delay_factor'], TDI_data[i]['single_links']))
         
 
 @ti.kernel
@@ -337,7 +337,7 @@ class LISALike(object):
          delay_factor: tm.vec2, 
          TDI_gen_prefactor: tm.vec2, 
          single_links: SingleLinksStruct, 
-         TDI_chan_data: ti.types.struct(TDI_chan_dict)
+         channels_data: ti.types.struct(TDI_chan_dict)
          }
         '''
         TDI_chan_dict = dict.fromkeys(self.TDI_channels, tm.vec2)
@@ -347,7 +347,7 @@ class LISALike(object):
                                           delay_factor = tm.vec2,
                                           TDI_gen_prefactor = tm.vec2,
                                           single_links = SingleLinksStruct,
-                                          TDI_chan_data = TDI_chan_struct)
+                                          channels_data = TDI_chan_struct)
         TDI_data_field = TDI_data_struct.field()
         ti.root.dense(ti.i, self.data_length).place(TDI_data_field)
 
@@ -419,7 +419,7 @@ class LISALike(object):
         '''
         waveform_func(self.frequencies, self.waveform_container, parameters.copy(), self.data_length, waveform_arguments)
         self.updata_TDI_responses(parameters)
-        signal_from_ti = self.TDI_data.TDI_chan_data.to_numpy()
+        signal_from_ti = self.TDI_data.channels_data.to_numpy()
         inj = {}
         for chan in self.TDI_channels:
             inj[chan] = signal_from_ti[chan].view(dtype=np.complex128)    # NOTE!!! must use ti.f64 in vec2

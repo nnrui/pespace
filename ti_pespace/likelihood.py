@@ -1,5 +1,6 @@
 import copy
 import taichi as ti
+import taichi.math as tm
 
 import numpy as np
 from bilby.core.likelihood import Likelihood
@@ -9,33 +10,45 @@ from .utilities import inner_product
 from .constants import *
 
 
+@ti.kernel
+def _stationary_gaussian_full_likelihood(channels: ti.template(),
+                                         channels_data: ti.template(),
+                                         strains_FD: ti.template(),
+                                         psd: ti.template(),
+                                         df: ti.f64) -> ti.f64:
+    log_l = 0.0
+    for chan in ti.static(channels):
+        
+        integral = 0.0
+        for i in strains_FD[chan]:
+            inner_product = (strains_FD[chan][i] - channels_data[chan][i]).norm_sqr() / psd[chan][i]
+            ti.atomic_add(integral, inner_product)
+        
+        log_l += -2 * df * integral
+
+    return log_l
+
 class FullLikelihood(Likelihood):
 
 
-    def __init__(self, waveform_func, detector, waveform_arguments=dict()):
+    def __init__(self, waveform, detector):
         '''
-        create a BaseLikelihood instance
+        create a FullLikelihood instance
 
         Parameters
         ==========
-        wavefrom_func: function
-            function to return waveform from parameters, see wavefrom.__dir__() for all support funcs
+        wavefrom: object
+            the instance where `waveform_container` is detectors
         detector: object
             see peSpace.detectors for all supported detector class. for likelihood evaluation, the TDI channels
             must be set as ("A","E","T") or ("A","E").
-        neglect_waveform_errors: bool
-            whether raise when failed to call wavefrom_func, raise if False
         '''
         super(FullLikelihood, self).__init__(parameters=dict())
-        self.waveform_func = waveform_func
+        self.waveform = waveform
         if sorted(detector.TDI_channels) != ['A','E'] and sorted(detector.TDI_channels)!= ['A','E','T']:
             raise Exception(f'Your set detector channels of {sorted(detector.TDI_channels)}, '
                              'while the likelihood compution expect the channels of ("A","E","T") or ("A","E")')
         self.detector = detector
-        # TODO: it maybe better to move the neglect_waveform_errors into a dict
-        # TODO logically neglect_waveform_errors sould be attribure in wavefrom geration func
-        self.wavefrom_arguments = waveform_arguments
-
 
     def log_likelihood(self):
         '''
@@ -46,16 +59,7 @@ class FullLikelihood(Likelihood):
         float: The real part of the log likelihood
 
         '''
-        ret = self.waveform_func(self.detector.frequencies, self.detector.waveform_container, self.parameters.copy(), self.detector.data_length, self.wavefrom_arguments)
-        if ret == FAILURE:
-            return np.nan_to_num(-np.inf)
+        self.waveform.update_waveform(self.parameters)
         self.detector.updata_TDI_responses(self.parameters)
-        signal_from_ti = self.TDI_data.TDI_chan_data.to_numpy()
-
-        log_l = 0.0
-        for chan in self.detector.TDI_channels:
-            residual = self.detector.strains_FD[chan] - signal_from_ti[chan].view(dtype=np.complex128)    # NOTE!!! must use ti.f64 in vec2
-            log_l += - 2. * self.detector.delta_f * np.vdot(residual, residual / self.detector.psd_array[chan]).real
-
-        return log_l
+        return _stationary_gaussian_full_likelihood(self.detector.TDI_channels, self.detector.TDI_data.channels_data, self.detector.strains_FD, self.detector.delta_f)
 
