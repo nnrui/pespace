@@ -17,6 +17,14 @@ SingleLinksStruct = ti.types.struct(link12=vec2_complex, link21=vec2_complex,
                                     link23=vec2_complex, link32=vec2_complex, 
                                     link31=vec2_complex, link13=vec2_complex)
 
+
+@ti.kernel
+def _inject_into_strains_FD(strains_FD: ti.template(), injected: ti.template()):
+    for chan in ti.static(strains_FD.keys):
+        for i in strains_FD:
+            strains_FD[chan][i] += injected[chan][i]
+
+
 @ti.kernel
 def _generate_TDI_responses(TDI_data: ti.template(),   # ti.field  # ti.Struct.field, keep ti.template() point to the same memory address to avoid kernal repeated instantiation
                             waveform: ti.template(),    # ti.Struct.field
@@ -288,15 +296,23 @@ class LISALike(object):
         # TODO different response model: full, frozen, low-f, frozen and low-f
         self.response_model = response_model
         # var in global scope, can be modified
+
+        self._np_array_frequenices = None
+        self._np_array_TDI_data = None
+        self._np_array_strains_FD = None
+        self._np_array_strains_TD = None
+        self._np_array_PSDs = None
+
         self.set_frequencies()
         self.initialize_TDI_data()
         self.initialize_waveform_container()
         self.initialize_strains_FD()
         self.initialize_strains_TD()
+        self.initialize_PSDs()
+
         # self.psd_array = self.get_psd_array()
         # TODO check the strains_TD and strains_FD before set
         # TODO use the specific method to set
-        self.psd_array = None
         self.noise = None
         self.signals = []
 
@@ -317,7 +333,7 @@ class LISALike(object):
         bound = ((f_array >= self.minimum_frequency) * (f_array <= self.maximum_frequency))
         f_array = f_array[bound]
         
-        self.numpy_array_frequenices = f_array
+        self._np_array_frequenices = f_array
         self.delta_f = 1.0/self.duration
         self.data_length = len(f_array)
 
@@ -327,9 +343,9 @@ class LISALike(object):
 
         return None
     
-    # def numpy_array_frequenices(self):
-    #     pass
-
+    @property
+    def np_array_frequenices(self):
+        return self._np_array_frequenices
 
     def initialize_TDI_data(self):
         '''
@@ -398,7 +414,9 @@ class LISALike(object):
 
     
     def initialize_strains_FD(self):
-        self.strains_FD = dict.fromkeys(self.TDI_channels, np.zeros(self.data_length, dtype=np.complex128))
+        strains_FD_field = ti.Struct.field(dict.fromkeys(self.TDI_channels, vec2_complex))
+        ti.root.dense(ti.i, self.data_length).place(strains_FD_field)
+        self.strains_FD = strains_FD_field
         return None
     
 
@@ -407,7 +425,7 @@ class LISALike(object):
         return None
 
 
-    def inject_signal_FD(self, parameters, waveform_func, waveform_arguments):
+    def inject_signal_FD(self, parameters, waveform):
         '''
         TODO wavefrom_dictionary
         inject the GW signal into the detector strains
@@ -416,22 +434,25 @@ class LISALike(object):
         ==========
         parameters: dict
             parameters describes the GW source
-        waveform_func: function
+        waveform: waveform object which contains the detector.wavefrom_container
             see wavefrom.__dir__() for all support wavefrom
         '''
-        waveform_func(self.frequencies, self.waveform_container, parameters.copy(), self.data_length, waveform_arguments)
+        waveform.update_waveform(parameters)
         self.updata_TDI_responses(parameters)
-        signal_from_ti = self.TDI_data.channels_data.to_numpy()
-        inj = {}
-        for chan in self.TDI_channels:
-            inj[chan] = signal_from_ti[chan].view(dtype=np.complex128)    # NOTE!!! must use ti.f64 in vec2
-            self.strains_FD[chan] +=  inj[chan]
-        self.signals.append(inj)
+        _inject_into_strains_FD(self.strains_FD, self.TDI_data.channels_data)
+
+        injected_signals = ti.Struct.field(dict.fromkeys(self.TDI_channels, vec2_complex), shape=(self.data_length,))
+        injected_signals.copy_from(self.TDI_data.channels_data)
+        self.signals.append(injected_signals)
 
         return None
+    
+    def initialize_PSDs(self):
+        PSDs = ti.Struct.field(dict.fromkeys(self.TDI_channels, ti.f64), shape=(self.data_length,))
+        self.PSDs = PSDs
+        return None
 
-
-    def set_psd_array_from_noise_model(self):
+    def set_PSDs_from_noise_model(self):
         '''
         compute the psd array from the give noise model
         
@@ -444,11 +465,16 @@ class LISALike(object):
         ========
         dict, psd array of each TDI channels
         '''
-        noise_dict = {}
+        PSDs_array = {}
         for chan in self.TDI_channels:
-            noise_dict[chan] = noise_models[self.psd_model](self.frequencies, chan, self.TDI_generation)
-        self.psd_array = noise_dict
+            PSDs_array[chan] = noise_models[self.psd_model](self._np_array_frequenices, chan, self.TDI_generation)
+        self.PSDs.from_numpy(PSDs_array)
+        self._np_array_PSDs = PSDs_array
         return None
+    
+    @property
+    def np_array_PSDs(self):
+        return self._np_array_PSDs
 
 
     def inject_noise_FD_realization_from_psd(self, seed=None):
@@ -463,158 +489,158 @@ class LISALike(object):
         '''
         rng = np.random.default_rng(seed=seed)
         var = 0.5 * (1. / self.delta_f)**0.5
-        noise_strain = {}
+        noise_strains = {}
         for chan in self.TDI_channels:
             # noise_amp = rng.normal(0, var, num) * (self.psd_array[chan])**0.5
             # random_phase = rng.uniform(0, 2*PI, num)
             # noise_chan = noise_amp * np.exp(1j*random_phase)
-            re = rng.normal(0, var, self.data_length)
-            im = rng.normal(0, var, self.data_length)
-            noise_chan =(re + 1j*im) * (self.psd_array[chan])**0.5
+            re = rng.normal(0, var, self.data_length) * (self._np_array_PSDs[chan])**0.5
+            im = rng.normal(0, var, self.data_length) * (self._np_array_PSDs[chan])**0.5
+            noise_strains[chan] = np.hstack(re, im)
 
-            noise_strain[chan] = noise_chan
-            self.strains_FD += noise_chan
-        self.noise = noise_strain
+        noise_strains_field = ti.Struct.field(dict.fromkeys(self.TDI_channels, vec2_complex), shape=(self.data_length, ))
+        noise_strains_field.from_numpy(noise_strains)
+        _inject_into_strains_FD(self.strains_FD, noise_strains_field)
 
         return None
     
 
-    def optimal_snr(self):
-        '''
-        compute the optimal SNR of the GW signal of each channels
+    # def optimal_snr(self):
+    #     '''
+    #     compute the optimal SNR of the GW signal of each channels
 
-        Returns:
-        ========
-        dict, contain snr of each channels, if ("A", "E", "T") or ("A", "E") channels are contained, total SNR also will be returned
-        '''
-        if self.signals is None:
-            raise Exception('the signals in None, set the GW signal before computing SNR')
+    #     Returns:
+    #     ========
+    #     dict, contain snr of each channels, if ("A", "E", "T") or ("A", "E") channels are contained, total SNR also will be returned
+    #     '''
+    #     if self.signals is None:
+    #         raise Exception('the signals in None, set the GW signal before computing SNR')
         
-        indep_chan = sorted([chan for chan in self.TDI_channels if chan in ['A', 'E', 'T']])
-        compute_total = (indep_chan == ['A', 'E', 'T'] or indep_chan == ['A', 'E'])
-        if compute_total:
-            total_rho2 = 0.0
-        else:
-            print(f'TDI channels are set to {self.TDI_channels} which don\'t contain independent channels '
-                   '("A", "E", "T") or ("A", "E") total SNR will not be computed.')
+    #     indep_chan = sorted([chan for chan in self.TDI_channels if chan in ['A', 'E', 'T']])
+    #     compute_total = (indep_chan == ['A', 'E', 'T'] or indep_chan == ['A', 'E'])
+    #     if compute_total:
+    #         total_rho2 = 0.0
+    #     else:
+    #         print(f'TDI channels are set to {self.TDI_channels} which don\'t contain independent channels '
+    #                '("A", "E", "T") or ("A", "E") total SNR will not be computed.')
 
-        snr_dict = {}
-        for chan in self.TDI_channels:
-            rho2_chan = noise_weighted_inner_product(self.signals[chan], self.signals[chan], self.psd_array[chan], self.delta_f)
-            snr_dict[chan] = rho2_chan**0.5
-            if chan in indep_chan and compute_total:
-                total_rho2 += rho2_chan
+    #     snr_dict = {}
+    #     for chan in self.TDI_channels:
+    #         rho2_chan = noise_weighted_inner_product(self.signals[chan], self.signals[chan], self.psd_array[chan], self.delta_f)
+    #         snr_dict[chan] = rho2_chan**0.5
+    #         if chan in indep_chan and compute_total:
+    #             total_rho2 += rho2_chan
         
-        if compute_total:
-            snr_dict['total'] = total_rho2**0.5
+    #     if compute_total:
+    #         snr_dict['total'] = total_rho2**0.5
 
-        return snr_dict
+    #     return snr_dict
 
 
-    def plot_FD_data_amplitude(self, outdir='.', contents=['strains_FD', 'signals', 'noise', 'psd_array']):
-        '''
-        plot the FD data in the instance
+    # def plot_FD_data_amplitude(self, outdir='.', contents=['strains_FD', 'signals', 'noise', 'psd_array']):
+    #     '''
+    #     plot the FD data in the instance
 
-        Parameters
-        ==========
-        outdir: string
-            outdit for saving the figure
-        contents: list
-            contents in the figure, all available contents are ['strains_FD', 'signals', 'noise', 'psd_array']
-        '''
-        if ('signals' in contents) and (len(self.signals)==0):
-            print(f'Warning: You are requiring to plot `signals`, which do not contain any injections and will be neglicted, call `inject_signal_FD` first.')
-            contents.remove('signals')
-        for item in contents[:]:    # using the copy of the list to avoid the unexpected result
-            if getattr(self, item) is None:
-                print(f'Warning: You are requiring to plot {item}, which do not contained in your detector instance and will be neglicted.')
-                contents.remove(item)
+    #     Parameters
+    #     ==========
+    #     outdir: string
+    #         outdit for saving the figure
+    #     contents: list
+    #         contents in the figure, all available contents are ['strains_FD', 'signals', 'noise', 'psd_array']
+    #     '''
+    #     if ('signals' in contents) and (len(self.signals)==0):
+    #         print(f'Warning: You are requiring to plot `signals`, which do not contain any injections and will be neglicted, call `inject_signal_FD` first.')
+    #         contents.remove('signals')
+    #     for item in contents[:]:    # using the copy of the list to avoid the unexpected result
+    #         if getattr(self, item) is None:
+    #             print(f'Warning: You are requiring to plot {item}, which do not contained in your detector instance and will be neglicted.')
+    #             contents.remove(item)
 
-        for chan in self.TDI_channels:
-            fig, ax = plt.subplots()
-            ax.set_title(f'channel {chan}; generation {self.TDI_generation}')
-            if 'noise' in contents:
-                ax.loglog(self.frequencies, np.abs(self.noise[chan]), color='C2', label='noise realization')
-            if 'strains_FD' in contents:
-                ax.loglog(self.frequencies, np.abs(self.strains_FD[chan]), color='C0', label='total strain')
-            if 'signals' in contents:
-                for idx, injection in enumerate(self.signals):
-                    ax.loglog(self.frequencies, np.abs(injection[chan]), color='C1', label=f'injected GW signal {idx}')
-            if 'psd_array' in contents:
-                ax.loglog(self.frequencies, 0.5*np.sqrt(self.psd_array[chan])*(self.duration)**0.5, color='C3', label=r'$\frac{1}{2}\sqrt{S_n(f)T}$')
+    #     for chan in self.TDI_channels:
+    #         fig, ax = plt.subplots()
+    #         ax.set_title(f'channel {chan}; generation {self.TDI_generation}')
+    #         if 'noise' in contents:
+    #             ax.loglog(self.frequencies, np.abs(self.noise[chan]), color='C2', label='noise realization')
+    #         if 'strains_FD' in contents:
+    #             ax.loglog(self.frequencies, np.abs(self.strains_FD[chan]), color='C0', label='total strain')
+    #         if 'signals' in contents:
+    #             for idx, injection in enumerate(self.signals):
+    #                 ax.loglog(self.frequencies, np.abs(injection[chan]), color='C1', label=f'injected GW signal {idx}')
+    #         if 'psd_array' in contents:
+    #             ax.loglog(self.frequencies, 0.5*np.sqrt(self.psd_array[chan])*(self.duration)**0.5, color='C3', label=r'$\frac{1}{2}\sqrt{S_n(f)T}$')
       
-            ax.grid(True)
-            ax.set_ylabel(r'Strain $[1/{\rm Hz}]$')
-            ax.set_xlabel(r'Frequency [Hz]')
-            ax.legend(loc='best')
-            fig.tight_layout()
-            fig.savefig('{}/{}_{}{}_data_FD.png'.format(outdir, self.name, chan, self.TDI_generation))
-            plt.close(fig)
+    #         ax.grid(True)
+    #         ax.set_ylabel(r'Strain $[1/{\rm Hz}]$')
+    #         ax.set_xlabel(r'Frequency [Hz]')
+    #         ax.legend(loc='best')
+    #         fig.tight_layout()
+    #         fig.savefig('{}/{}_{}{}_data_FD.png'.format(outdir, self.name, chan, self.TDI_generation))
+    #         plt.close(fig)
 
-        return None
-
-
-    def plot_TD_data(self, contents=['signal', 'noise']):
-        pass
-        return None
+    #     return None
 
 
-    def save_detector_data(self, outdir='.', label=None):
-        '''
-        TODO save the parameters of injected signals
-        save the data in the instance to a hdf5 file, save contents: [signals, noise, strains_FD, strains_TD, 
-        frequencies, psd_array]
+    # def plot_TD_data(self, contents=['signal', 'noise']):
+    #     pass
+    #     return None
+
+
+    # def save_detector_data(self, outdir='.', label=None):
+    #     '''
+    #     TODO save the parameters of injected signals
+    #     save the data in the instance to a hdf5 file, save contents: [signals, noise, strains_FD, strains_TD, 
+    #     frequencies, psd_array]
         
-        Parameters
-        ==========
-        outdir: string
-        '''
-        contents = ['signals', 'noise', 'strains_FD', 'strains_TD', 'frequencies', 'psd_array']
-        save_dict = {}
-        for item in contents:
-            save_dict[item] = getattr(self, item)
+    #     Parameters
+    #     ==========
+    #     outdir: string
+    #     '''
+    #     contents = ['signals', 'noise', 'strains_FD', 'strains_TD', 'frequencies', 'psd_array']
+    #     save_dict = {}
+    #     for item in contents:
+    #         save_dict[item] = getattr(self, item)
 
-        filename = f'{outdir}/{self.name}_detector_data_{label}.hdf5'
-        with h5py.File(filename, 'w') as file:
-            recursively_save_dict_contents_to_group(file, '/', save_dict)
+    #     filename = f'{outdir}/{self.name}_detector_data_{label}.hdf5'
+    #     with h5py.File(filename, 'w') as file:
+    #         recursively_save_dict_contents_to_group(file, '/', save_dict)
 
-        return None
+    #     return None
     
-    def set_detector_data_from_file(self, filename):
-        '''
-        uncompleted !!!
-        set ['signals', 'noise', 'strains_FD', 'strains_TD', 'frequencies', 'psd_array']
-        TODO this function is incomplete !!! when use this func the frequencies, psd_array, ... may not have the same shape 
-        TODO consider the conflict with read-in data and already set data
-        TODO add supportation of other attribute, 
-        set the strains_FD from h5py file
+    # def set_detector_data_from_file(self, filename):
+    #     '''
+    #     uncompleted !!!
+    #     set ['signals', 'noise', 'strains_FD', 'strains_TD', 'frequencies', 'psd_array']
+    #     TODO this function is incomplete !!! when use this func the frequencies, psd_array, ... may not have the same shape 
+    #     TODO consider the conflict with read-in data and already set data
+    #     TODO add supportation of other attribute, 
+    #     set the strains_FD from h5py file
         
-        Parameters
-        ==========
-        filename: string
-            hdf5 file containing the 'strains_FD'
-        '''
-        with h5py.File(filename, 'r') as file:
-            data = recursively_load_dict_contents_from_group(file, '/')
-        # TODO corresponding frequencies, duration, cadance should be check
+    #     Parameters
+    #     ==========
+    #     filename: string
+    #         hdf5 file containing the 'strains_FD'
+    #     '''
+    #     with h5py.File(filename, 'r') as file:
+    #         data = recursively_load_dict_contents_from_group(file, '/')
+    #     # TODO corresponding frequencies, duration, cadance should be check
 
-        self.frequencies = data['frequencies']
-        self.psd_array =  data['psd_array']
-        self.strains_TD = data['strains_TD']
-        self.strains_FD = data['strains_FD']
-        self.noise = data['noise']
-        self.signals = list(data['signals'].values())
+    #     self.frequencies = data['frequencies']
+    #     self.psd_array =  data['psd_array']
+    #     self.strains_TD = data['strains_TD']
+    #     self.strains_FD = data['strains_FD']
+    #     self.noise = data['noise']
+    #     self.signals = list(data['signals'].values())
 
-        return None
-
-
-    def set_strains_TD_from_FD(self):
-        pass
-        return None
+    #     return None
 
 
-    def set_strains_FD_from_TD(self):
-        pass
-        return None
+    # def set_strains_TD_from_FD(self):
+    #     pass
+    #     return None
+
+
+    # def set_strains_FD_from_TD(self):
+    #     pass
+    #     return None
 
 

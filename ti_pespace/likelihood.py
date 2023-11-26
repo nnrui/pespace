@@ -61,5 +61,5 @@ class FullLikelihood(Likelihood):
         '''
         self.waveform.update_waveform(self.parameters)
         self.detector.updata_TDI_responses(self.parameters)
-        return _stationary_gaussian_full_likelihood(self.detector.TDI_channels, self.detector.TDI_data.channels_data, self.detector.strains_FD, self.detector.delta_f)
+        return _stationary_gaussian_full_likelihood(self.detector.TDI_channels, self.detector.TDI_data.channels_data, self.detector.strains_FD, self.detector.PSDs, self.detector.delta_f)
 
