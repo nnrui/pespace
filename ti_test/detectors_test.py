@@ -32,7 +32,7 @@ det20 = LISALike(name='LISA', duration=864000, cadance=10, minimum_frequency=1e-
                maximum_frequency=0.1, TDI_channels=('X', 'Y', 'Z', 'A', 'E', 'T'), 
                TDI_generation='2.0')
 
-# print(det._ti_frequencies)
+# print(det.frequencies)
 # print(det.TDI_data)
 # print(det.waveform_container)
 
@@ -43,7 +43,7 @@ det15.updata_TDI_responses(parameters)
 det20.updata_TDI_responses(parameters)
 ed = time.perf_counter()
 print('ti time consuming: ', ed-st)
-# print(det._ti_frequencies)
+# print(det.frequencies)
 # print(det.TDI_data)
 # print(det.waveform_container)
 # print('waveform time consuming: ', ed1-st)
