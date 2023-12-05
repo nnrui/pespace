@@ -1,3 +1,6 @@
+# TODO:
+# improve data latout of TDI_data, waveform_container
+
 import h5py
 import numpy as np
 from matplotlib import pyplot as plt
@@ -20,9 +23,9 @@ SingleLinksStruct = ti.types.struct(link12=vec2_complex, link21=vec2_complex,
 
 @ti.kernel
 def _inject_into_strains_FD(strains_FD: ti.template(), injected: ti.template()):
-    for chan in ti.static(strains_FD.keys):
-        for i in strains_FD:
-            strains_FD[chan][i] += injected[chan][i]
+    for i in strains_FD:
+        for chan in ti.static(strains_FD.keys):
+            strains_FD[i][chan] += injected[i][chan]
 
 
 @ti.kernel
@@ -244,7 +247,7 @@ TDI_combination_funcs = {'X': _TDI_X,
 class LISALike(object):
 
 
-    def __init__(self, name, duration, cadance, start_time=0.0, minimum_frequency=1.0e-4, maximum_frequency=0.1, 
+    def __init__(self, name, duration, cadance, start_time=0.0, minimum_frequency=1.0e-5, maximum_frequency=1.0e-1, 
                  psd_model='LISA_SciRDv1', orbit='LISA_analytic', armlength=ARM_LENGTH_LISA_SI, TDI_channels=('A', 'E'), 
                  TDI_generation='1.5', response_model='full'):
         '''
@@ -313,7 +316,6 @@ class LISALike(object):
         # self.psd_array = self.get_psd_array()
         # TODO check the strains_TD and strains_FD before set
         # TODO use the specific method to set
-        self.noise = None
         self.signals = []
 
 
@@ -435,7 +437,7 @@ class LISALike(object):
         parameters: dict
             parameters describes the GW source
         waveform: waveform object which contains the detector.wavefrom_container
-            see wavefrom.__dir__() for all support wavefrom
+            
         '''
         waveform.update_waveform(parameters)
         self.updata_TDI_responses(parameters)
@@ -448,8 +450,7 @@ class LISALike(object):
         return None
     
     def initialize_PSDs(self):
-        PSDs = ti.Struct.field(dict.fromkeys(self.TDI_channels, ti.f64), shape=(self.data_length,))
-        self.PSDs = PSDs
+        self.PSDs = ti.Struct.field(dict.fromkeys(self.TDI_channels, ti.f64), shape=(self.data_length,))
         return None
 
     def set_PSDs_from_noise_model(self):
@@ -496,7 +497,7 @@ class LISALike(object):
             # noise_chan = noise_amp * np.exp(1j*random_phase)
             re = rng.normal(0, var, self.data_length) * (self._np_array_PSDs[chan])**0.5
             im = rng.normal(0, var, self.data_length) * (self._np_array_PSDs[chan])**0.5
-            noise_strains[chan] = np.hstack(re, im)
+            noise_strains[chan] = np.vstack((re, im)).T
 
         noise_strains_field = ti.Struct.field(dict.fromkeys(self.TDI_channels, vec2_complex), shape=(self.data_length, ))
         noise_strains_field.from_numpy(noise_strains)

@@ -6,7 +6,6 @@ import numpy as np
 from bilby.core.likelihood import Likelihood
 from bilby.gw.conversion import component_masses_to_chirp_mass
 
-from .utilities import inner_product
 from .constants import *
 
 
@@ -14,18 +13,16 @@ from .constants import *
 def _stationary_gaussian_full_likelihood(channels: ti.template(),
                                          channels_data: ti.template(),
                                          strains_FD: ti.template(),
-                                         psd: ti.template(),
+                                         PSDs: ti.template(),
                                          df: ti.f64) -> ti.f64:
     log_l = 0.0
     for chan in ti.static(channels):
-        
         integral = 0.0
-        for i in strains_FD[chan]:
-            inner_product = (strains_FD[chan][i] - channels_data[chan][i]).norm_sqr() / psd[chan][i]
+        for i in strains_FD:
+            inner_product = (strains_FD[i][chan] - channels_data[i][chan]).norm_sqr() / PSDs[i][chan]
             ti.atomic_add(integral, inner_product)
-        
         log_l += -2 * df * integral
-
+    
     return log_l
 
 class FullLikelihood(Likelihood):

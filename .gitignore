@@ -4,6 +4,7 @@ outdir*/
 *.hdf5
 *.pdf
 *.out
+*.json
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
