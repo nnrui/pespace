@@ -680,7 +680,7 @@ class TDIChannelsData(object):
         self.__init__(self._fmin_in, self._fmax_in)
         return None
     
-    def _set_data_info(self, channels:tuple[str, ...], duration:float, cadance:float, start_time:float=0.0)->None:
+    def set_data_info(self, channels:tuple[str, ...], duration:float, cadance:float, start_time:float=0.0)->None:
         sampling_frequency = 1/cadance
         delta_frequency = 1/duration
         time_series_length = int(np.round(duration/cadance)) + 1
@@ -701,8 +701,7 @@ class TDIChannelsData(object):
         return None
     
     def set_time_domain_data_from_input_array(self, channels:tuple[str, ...], duration:float, cadance:float, TDI_data:NDArray[np.float64], start_time:float=0.0)->None:
-        """note the order in channels list neet to be aligned with the input array of TDI_data
-        """
+        """Note: the order in channels list must to be same with the TDI_data in input array """
 
         if self._reset_flag:
             warnings.warn("You are setting `time_domain_data` with input array, \
@@ -710,8 +709,9 @@ class TDIChannelsData(object):
                            Please check whether this is intential. \n \
                            In order to avoid potential errors, current instance is reset. \
                            Please regenerate TDI data of other domian or noise behavior data if needed. ")
+            self._reset()
         
-        self._set_data_info(channels, duration, cadance, start_time)
+        self.set_data_info(channels, duration, cadance, start_time)
         channels_num, samples_num = TDI_data.shape
         if not len(channels) == channels_num:
             raise ValueError(f"You set channenls with {channels}, while the length of first dimension of input array is {channels_num}.")
@@ -732,7 +732,37 @@ class TDIChannelsData(object):
         self._reset_flag = True
         return None
     
-    def set_frequency_domain_data_from_input_array(self, input_array)->None:
+    def set_frequency_domain_data_from_input_array(self, channels:tuple[str, ...], duration:float, cadance:float, TDI_data:NDArray[np.complex128])->None:
+        """Note: the order in channels list must to be same with the TDI_data in input array 
+           the  length of input TDI_data need to be cropped with fmax = Min(f_Nyquist, fmax_in) and fmin = Max(1/T, fmin_in)
+        """
+
+        if self._reset_flag:
+            warnings.warn("You are setting `frequency_domain_data` with input array, \
+                           whereas you have probably set TDI data of current instance previously. \
+                           Please check whether this is intential. \n \
+                           In order to avoid potential errors, current instance is reset. \
+                           Please regenerate TDI data of other domian or noise behavior data if needed. ")
+            self._reset()
+
+        self.set_data_info(channels, duration, cadance)
+        channels_num, samples_num = TDI_data.shape
+        if not len(channels) == channels_num:
+            raise ValueError(f"You set channenls with {channels}, while the length of first dimension of input array is {channels_num}.")
+        if not self.data_info['frequency_series_length'] == samples_num:
+            raise ValueError(f"The length of second dimension of input array is {samples_num} which is different with the `frequency_series_length` \
+                             {self.data_info['frequency_series_length']} set according to the duration, cadance and the input minimum and maximum frequency. \n \
+                             You may need to crop the TDI_data array with fmax = Min(f_Nyquist, fmax_in) and fmin = Max(1/T, fmin_in) before input. \
+                             Considering check the input array again or open a issue.")
+
+        f_array = self.data_info['delta_frequency'] * (np.arange(self.data_info['frequency_series_length']) + self.data_info['minimum_frequency']//self.data_info['delta_frequency'] + 1 )
+        frequency_samples = ti.field(ti.f64, (self.data_info['frequency_series_length'],))
+        frequency_samples.from_numpy(f_array)
+        self.frequency_samples = frequency_samples
+
+        TDI_data = ti.Struct.field(dict.fromkeys(channels, vec2_complex), shape=(self.data_info['frequency_series_length'],))
+        for idx, chan in enumerate(channels):
+            TDI_data[chan].from_numpy(np.stack((TDI_data[idx].real, TDI_data[idx].imag), axis=-1))
 
         self._reset_flag = True
         return None
@@ -751,7 +781,7 @@ class TDIChannelsData(object):
                            Please regenerate TDI data of other domian or noise behavior data if needed. ")
             self._reset()
 
-        self._set_data_info(self, duration, cadance, channels)
+        self.set_data_info(self, duration, cadance, channels)
 
         f_array = np.arange(0, 1.0/(2*cadance), 1.0/duration)
         bound = ((f_array >= self.data_info.minimum_frequency) * (f_array <= self.data_info.maximum_frequency))
