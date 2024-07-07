@@ -767,45 +767,52 @@ class TDIChannelsData(object):
         self._reset_flag = True
         return None
     
-    def initilize_time_domain_data_with_zero_value(self, duration, cadance, channels)->None:
+    def initilize_time_domain_data_with_zero_value(self, channels:tuple[str, ...], duration:float, cadance:float, start_time:float=0.0)->None:
+        if self._reset_flag:
+            warnings.warn("You are setting `time_domain_data` with zero value, \
+                           whereas you have probably set TDI data of current instance previously. \
+                           Please check whether this is intential. \n \
+                           In order to avoid potential errors, current instance is reset. \
+                           Please regenerate TDI data of other domian or noise behavior data if needed. ")
+            self._reset()
+        
+        self.set_data_info(channels, duration, cadance, start_time)
 
+        t_array = np.linspace(start_time, start_time+duration, self.data_info['time_series_length'])
+        time_samples = ti.field(ti.f64, (self.data_info['time_series_length'],))
+        time_samples.from_numpy(t_array)
+        self.time_samples = time_samples
+
+        TDI_data = ti.Struct.field(dict.fromkeys(channels, ti.float64), shape=(self.data_info['time_series_length'],))
+        TDI_data.fill(0.0)
         self._reset_flag = True
         return None
     
-    def initilize_frequency_domain_data_with_zero_value(self, duration, cadance, channels)->None:
+    def initilize_frequency_domain_data_with_zero_value(self, channels:tuple[str, ...], duration:float, cadance:float)->None:
         if self._reset_flag:
-            warnings.warn("You are initilizing `frequency_domain_data` with zero values, \
+            warnings.warn("You are setting `frequency_domain_data` with zero value, \
                            whereas you have probably set TDI data of current instance previously. \
                            Please check whether this is intential. \n \
                            In order to avoid potential errors, current instance is reset. \
                            Please regenerate TDI data of other domian or noise behavior data if needed. ")
             self._reset()
 
-        self.set_data_info(self, duration, cadance, channels)
+        self.set_data_info(channels, duration, cadance)
 
-        f_array = np.arange(0, 1.0/(2*cadance), 1.0/duration)
-        bound = ((f_array >= self.data_info.minimum_frequency) * (f_array <= self.data_info.maximum_frequency))
-        f_array = f_array[bound]
-        
-        self._np_array_frequenices = f_array
-        self.delta_f = 1.0/self.duration
-        self.data_length = len(f_array)
+        f_array = self.data_info['delta_frequency'] * (np.arange(self.data_info['frequency_series_length']) + self.data_info['minimum_frequency']//self.data_info['delta_frequency'] + 1 )
+        frequency_samples = ti.field(ti.f64, (self.data_info['frequency_series_length'],))
+        frequency_samples.from_numpy(f_array)
+        self.frequency_samples = frequency_samples
 
-        frequencies = ti.field(ti.f64, (self.data_length,))
-        frequencies.from_numpy(f_array)
-        self.frequencies = frequencies    # for convenient and efficient when frequenies are used in ti scope
-
+        TDI_data = ti.Struct.field(dict.fromkeys(channels, vec2_complex), shape=(self.data_info['frequency_series_length'],))
+        TDI_data.fill(0.0)
         self._reset_flag = True
         return None
     
     def initilize_wavelet_domain_data_with_zero_value(self)->None:
-
-        self._reset_flag = True
         return None
     
     def generate_frequency_domain_data_from_PSD(self)->None:
-
-        self._reset_flag = True
         return None
     
     def FT_time_domain_data_to_frequency_domain(self)->None:
