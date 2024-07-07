@@ -2,6 +2,7 @@ import h5py
 import taichi as ti
 import taichi.math as tm
 import numpy as np
+from numpy.typing import NDArray
 
 import lal
 import lalsimulation as lalsim
@@ -241,3 +242,11 @@ def recursively_load_dict_contents_from_group(h5file, path):
         elif isinstance(item, h5py.Group):
             output[key] = recursively_load_dict_contents_from_group(h5file, path + key + "/")
     return output
+
+
+def XYZ_to_AET(X:NDArray[np.float64|np.complex128], Y:NDArray[np.float64|np.complex128], Z:NDArray[np.float64|np.complex128])->dict[str, NDArray[np.float64|np.complex128]]:
+    A = (Z - X)/np.sqrt(2)
+    E = (X - 2*Y + Z)/np.sqrt(6)
+    T = (X + Y + Z)/np.sqrt(3)
+
+    return {"A": A, "E": E, "T": T}

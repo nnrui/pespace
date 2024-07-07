@@ -862,7 +862,5 @@ class TDIChannelsData(object):
     def set_PSD_from_numerical_model(self, input_array)->None:
         return None
     
-    def XYZ_to_AET(self)->None:
-        return None
 
      
