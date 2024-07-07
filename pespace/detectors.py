@@ -4,7 +4,7 @@
 # improve data latout of TDI_data, waveform_container
 import warnings
 
-import h5py
+from scipy import signal
 import numpy as np
 from numpy.typing import NDArray
 from matplotlib import pyplot as plt
@@ -728,6 +728,7 @@ class TDIChannelsData(object):
         TDI_data = ti.Struct.field(dict.fromkeys(channels, ti.float64), shape=(self.data_info['time_series_length'],))
         for idx, chan in enumerate(channels):
             TDI_data[chan].from_numpy(TDI_data[idx])
+        self.time_domain_TDI_data = TDI_data
 
         self._reset_flag = True
         return None
@@ -763,11 +764,12 @@ class TDIChannelsData(object):
         TDI_data = ti.Struct.field(dict.fromkeys(channels, vec2_complex), shape=(self.data_info['frequency_series_length'],))
         for idx, chan in enumerate(channels):
             TDI_data[chan].from_numpy(np.stack((TDI_data[idx].real, TDI_data[idx].imag), axis=-1))
+        self.frequency_domain_TDI_data = TDI_data
 
         self._reset_flag = True
         return None
     
-    def initilize_time_domain_data_with_zero_value(self, channels:tuple[str, ...], duration:float, cadance:float, start_time:float=0.0)->None:
+    def set_time_domain_data_with_zero_value(self, channels:tuple[str, ...], duration:float, cadance:float, start_time:float=0.0)->None:
         if self._reset_flag:
             warnings.warn("You are setting `time_domain_data` with zero value, \
                            whereas you have probably set TDI data of current instance previously. \
@@ -785,10 +787,12 @@ class TDIChannelsData(object):
 
         TDI_data = ti.Struct.field(dict.fromkeys(channels, ti.float64), shape=(self.data_info['time_series_length'],))
         TDI_data.fill(0.0)
+        self.time_domain_TDI_data = TDI_data
+
         self._reset_flag = True
         return None
     
-    def initilize_frequency_domain_data_with_zero_value(self, channels:tuple[str, ...], duration:float, cadance:float)->None:
+    def set_frequency_domain_data_with_zero_value(self, channels:tuple[str, ...], duration:float, cadance:float)->None:
         if self._reset_flag:
             warnings.warn("You are setting `frequency_domain_data` with zero value, \
                            whereas you have probably set TDI data of current instance previously. \
@@ -806,6 +810,8 @@ class TDIChannelsData(object):
 
         TDI_data = ti.Struct.field(dict.fromkeys(channels, vec2_complex), shape=(self.data_info['frequency_series_length'],))
         TDI_data.fill(0.0)
+        self.frequency_domain_TDI_data = TDI_data
+
         self._reset_flag = True
         return None
     
@@ -815,7 +821,27 @@ class TDIChannelsData(object):
     def generate_frequency_domain_data_from_PSD(self)->None:
         return None
     
-    def FT_time_domain_data_to_frequency_domain(self)->None:
+    def FT_time_domain_data_to_frequency_domain(self, window:float|str|tuple[str|float]=('tukey', 0.2))->None:
+        """see scipy.signal.get_window for more details about window parameter"""
+
+        if (self.time_domain_TDI_data is None) or (self.frequency_domain_TDI_data is not None):
+            raise ValueError("Fourier transform will not be excuted since the `time_domain_TDI_data` is not set or \
+                             `frequency_domain_TDI_data` has been set previously")
+        
+        weight = signal.get_window(window, self.data_info['time_series_length'])
+        TDI_data = ti.Struct.field(dict.fromkeys(self.data_info['channels'], vec2_complex), shape=(self.data_info['frequency_series_length'],))
+        self.frequency_domain_TDI_data = TDI_data
+
+        for chan in self.data_info['channels']:
+            td_strain = self.time_domain_TDI_data[chan].to_numpy()
+            windowed_strain = td_strain * weight
+            fd_strain = np.fft.rfft(windowed_strain)
+            fd_strain /= self.data_info['sampling_frequency']
+            f_array = np.linspace(0, self.data_info['sampling_frequency']/2, len(fd_strain))
+            bound = (f_array > self.data_info['minimum_frequency']) * (f_array < self.data_info['maximum_frequency'])
+            fd_strain = fd_strain[bound]
+            self.frequency_domain_TDI_data[chan].from_numpy(np.stack((fd_strain.real, fd_strain.imag), axis=-1))
+
         return None
     
     def IFT_frequency_domain_data_to_time_domain(self)->None:
@@ -834,6 +860,9 @@ class TDIChannelsData(object):
         return None
     
     def set_PSD_from_numerical_model(self, input_array)->None:
+        return None
+    
+    def XYZ_to_AET(self)->None:
         return None
 
      
