@@ -2,6 +2,7 @@
 
 # TODO:
 # improve data latout of TDI_data, waveform_container
+# protect SpaceborneInterferometer.TDI_data unchange
 import warnings
 from typing import Callable
 
@@ -12,7 +13,7 @@ from matplotlib import pyplot as plt
 import taichi as ti
 import taichi.math as tm
 
-from .utilities import polarization_tensor_SSB, GW_propagation_unit_vector_k, sinc, \
+from .utilities import polarization_tensor_SSB, GW_propagation_unit_vector, sinc, \
                        noise_weighted_inner_product, \
                        recursively_save_dict_contents_to_group, recursively_load_dict_contents_from_group, \
                        vec2_complex
@@ -95,14 +96,14 @@ def _generate_TDI_responses(TDI_data: ti.template(),   # ti.field  # ti.Struct.f
         
 
 @ti.kernel
-def _compute_TDI_prefactor(frequencies: ti.template(),         
-                           z_field: ti.template(), 
-                           prefactor_field: ti.template(),
-                           armlength_sec: ti.f64,
-                           TDI_gen: ti.u8
-                          ):
-    for i in frequencies:
-        z = tm.cexp(- 2.0 * PI * frequencies[i] * armlength_sec * vec2_complex([0, 1]))
+def _compute_TDI_prefactor_FD_response(frequency_field: ti.template(),         
+                                       delay_factor_field: ti.template(), 
+                                       prefactor_field: ti.template(),
+                                       armlength_sec: ti.f64,
+                                       TDI_gen: ti.u8
+                                      ):
+    for i in frequency_field:
+        z = tm.cexp(- 2.0 * PI * frequency_field[i] * armlength_sec * vec2_complex([0, 1]))
         
         prefactor = vec2_complex(0.0, 0.0)
         if TDI_gen == 1:
@@ -111,7 +112,7 @@ def _compute_TDI_prefactor(frequencies: ti.template(),
             prefactor = vec2_complex(1, 0) - tm.cpow(z, 2) - tm.cpow(z, 4) + tm.cpow(z, 6)
         
         prefactor_field[i] = prefactor
-        z_field[i] = z
+        delay_factor_field[i] = z
 
 
 @ti.func
@@ -253,12 +254,13 @@ class TDIChannelsData(object):
     """Storing TDI strain and noise feature, transfering data from different domain"""
 
     def __init__(self, minimum_frequency:float=1e-5, maximum_frequency:float=0.1) -> None:
-        self.data_info = dict(channels=(), duration=None, cadance=None, start_time=0.0,
-                               sampling_frequency=None, delta_frequency=None, 
-                               time_series_length=None,
-                               frequency_series_length=None,
-                               minimum_frequency=minimum_frequency, 
-                               maximum_frequency=maximum_frequency)
+        self.data_info = dict(channels=(), generation=None,
+                              duration=None, cadance=None, start_time=0.0,
+                              sampling_frequency=None, delta_frequency=None, 
+                              time_series_length=None,
+                              frequency_series_length=None,
+                              minimum_frequency=minimum_frequency, 
+                              maximum_frequency=maximum_frequency)
         self.time_samples = None
         self.frequency_samples = None
         self.wavelet_samples = None
@@ -280,7 +282,7 @@ class TDIChannelsData(object):
         self.__init__(self._fmin_in, self._fmax_in)
         return None
     
-    def set_data_info(self, channels:tuple[str, ...], duration:float, cadance:float, start_time:float=0.0)->None:
+    def set_data_info(self, channels:tuple[str, ...], generation:str, duration:float, cadance:float, start_time:float=0.0)->None:
         sampling_frequency = 1/cadance
         delta_frequency = 1/duration
         time_series_length = int(np.round(duration/cadance)) + 1
@@ -289,6 +291,7 @@ class TDIChannelsData(object):
         frequency_series_length = fmax//delta_frequency - fmin//delta_frequency
 
         self.data_info['channels'] = channels
+        self.data_info['generation'] = generation
         self.data_info['duration'] = duration
         self.data_info['cadance'] = cadance
         self.data_info['start_time'] = start_time
@@ -300,7 +303,7 @@ class TDIChannelsData(object):
         self.data_info['maximum_frequency'] = fmax
         return None
     
-    def set_time_domain_data_from_input_array(self, channels:tuple[str, ...], duration:float, cadance:float, TDI_data:NDArray[np.float64], start_time:float=0.0)->None:
+    def set_time_domain_data_from_input_array(self, channels:tuple[str, ...], generation:str, duration:float, cadance:float, TDI_data:NDArray[np.float64], start_time:float=0.0)->None:
         """Note: the order in channels list must to be same with the TDI_data in input array """
 
         if self._reset_flag:
@@ -311,7 +314,7 @@ class TDIChannelsData(object):
                            Please regenerate TDI data of other domian or noise behavior data if needed. ")
             self._reset()
         
-        self.set_data_info(channels, duration, cadance, start_time)
+        self.set_data_info(channels, generation, duration, cadance, start_time)
         channels_num, samples_num = TDI_data.shape
         if not len(channels) == channels_num:
             raise ValueError(f"You set channenls with {channels}, while the length of first dimension of input array is {channels_num}.")
@@ -333,7 +336,7 @@ class TDIChannelsData(object):
         self._reset_flag = True
         return None
     
-    def set_frequency_domain_data_from_input_array(self, channels:tuple[str, ...], duration:float, cadance:float, TDI_data:NDArray[np.complex128])->None:
+    def set_frequency_domain_data_from_input_array(self, channels:tuple[str, ...], generation:str, duration:float, cadance:float, TDI_data:NDArray[np.complex128])->None:
         """Note: the order in channels list must to be same with the TDI_data in input array 
            the  length of input TDI_data need to be cropped with fmax = Min(f_Nyquist, fmax_in) and fmin = Max(1/T, fmin_in)
         """
@@ -346,7 +349,7 @@ class TDIChannelsData(object):
                            Please regenerate TDI data of other domian or noise behavior data if needed. ")
             self._reset()
 
-        self.set_data_info(channels, duration, cadance)
+        self.set_data_info(channels, generation, duration, cadance)
         channels_num, samples_num = TDI_data.shape
         if not len(channels) == channels_num:
             raise ValueError(f"You set channenls with {channels}, while the length of first dimension of input array is {channels_num}.")
@@ -369,7 +372,7 @@ class TDIChannelsData(object):
         self._reset_flag = True
         return None
     
-    def set_time_domain_data_with_zero_value(self, channels:tuple[str, ...], duration:float, cadance:float, start_time:float=0.0)->None:
+    def set_time_domain_data_with_zero_value(self, channels:tuple[str, ...], generation:str, duration:float, cadance:float, start_time:float=0.0)->None:
         if self._reset_flag:
             warnings.warn("You are setting `time_domain_data` with zero value, \
                            whereas you have probably set TDI data of current instance previously. \
@@ -378,7 +381,7 @@ class TDIChannelsData(object):
                            Please regenerate TDI data of other domian or noise behavior data if needed. ")
             self._reset()
         
-        self.set_data_info(channels, duration, cadance, start_time)
+        self.set_data_info(channels, generation, duration, cadance, start_time)
 
         t_array = np.linspace(start_time, start_time+duration, self.data_info['time_series_length'])
         time_samples = ti.field(ti.f64, (self.data_info['time_series_length'],))
@@ -392,7 +395,7 @@ class TDIChannelsData(object):
         self._reset_flag = True
         return None
     
-    def set_frequency_domain_data_with_zero_value(self, channels:tuple[str, ...], duration:float, cadance:float)->None:
+    def set_frequency_domain_data_with_zero_value(self, channels:tuple[str, ...], generation, duration:float, cadance:float)->None:
         if self._reset_flag:
             warnings.warn("You are setting `frequency_domain_data` with zero value, \
                            whereas you have probably set TDI data of current instance previously. \
@@ -401,7 +404,7 @@ class TDIChannelsData(object):
                            Please regenerate TDI data of other domian or noise behavior data if needed. ")
             self._reset()
 
-        self.set_data_info(channels, duration, cadance)
+        self.set_data_info(channels, generation, duration, cadance)
 
         f_array = self.data_info['delta_frequency'] * (np.arange(self.data_info['frequency_series_length']) + self.data_info['minimum_frequency']//self.data_info['delta_frequency'] + 1 )
         frequency_samples = ti.field(ti.f64, (self.data_info['frequency_series_length'],))
@@ -463,7 +466,7 @@ class TDIChannelsData(object):
         return None
     
 
-     
+@ti.data_oriented
 class SpaceborneInterferometer(object):
 
     def __init__(self, name:str, TDI_data:TDIChannelsData, 
@@ -507,6 +510,7 @@ class SpaceborneInterferometer(object):
         self.TDI_data = TDI_data
         self.response_container = None
         self.waveform_container = None
+        self._FD_response_assistance = None
 
     def initialize_response_container_in_time_domain(self)->None:
         return None
@@ -516,8 +520,25 @@ class SpaceborneInterferometer(object):
             raise ValueError("The `frequency_domain_TDI_data` of the passed-in TDI_data is `None`. \
                              Please set it before calling `initilize_response_container_in_frequency_domain`.")
         else:
-
-
+            self.response_container = ti.Struct.field(dict.fromkeys(self.TDI_data.data_info['channels'], vec2_complex), 
+                                                      shape=(self.TDI_data.data_info['frequency_series_length'],),
+                                                      name='frequency domain response container')
+            self._FD_response_assistance = ti.Struct.field(dict(delay_factor = vec2_complex,
+                                                                TDI_generation_prefactor = vec2_complex,
+                                                                single_links = SingleLinksStruct), 
+                                                           shape=(self.TDI_data.data_info['frequency_series_length'],))
+            if self.TDI_data.data_info['generation'] == '1.5':
+                int_TDI_gen = 1
+            elif self.TDI_data.data_info['generation'] == '2.0':
+                int_TDI_gen = 2
+            else:
+                raise ValueError(f"TDI generation {self.TDI_data.data_info['generation']} is unknown. \n \
+                                 Please choose from '1.5' or '2.0'.")
+            _compute_TDI_prefactor_FD_response(self.TDI_data.frequency_samples, 
+                                               self._FD_response_assistance.delay_factor, 
+                                               self._FD_response_assistance.TDI_generation_prefactor,
+                                               self.armlength_sec, 
+                                               int_TDI_gen)
         return None
 
     def initialize_response_container_in_wavelet_domain(self)->None:
@@ -537,8 +558,55 @@ class SpaceborneInterferometer(object):
     def initialize_waveform_container_in_wavelet_domain(self)->None:
         return None
 
-    def update_frequency_domain_response(self)->None:
-        return None
+    @ti.kernel
+    def update_frequency_domain_response(self, waveform:ti.template(), lam:ti.f64, beta:ti.f64, psi:ti.f64):
+        pol_tensor = polarization_tensor_SSB(lam, beta, psi)    # tm.mat3
+        k = GW_propagation_unit_vector(lam, beta)             # tm.vec3
+        
+        for i in self.response_container:
+
+            constellation_vectors = self.orbit_vectors_function(waveform[i].tf)
+
+            n1Hn1 = (constellation_vectors.n1 @ (pol_tensor.plus) @ constellation_vectors.n1) * waveform[i].hplus + (constellation_vectors.n1 @ (pol_tensor.cross) @ constellation_vectors.n1) * waveform[i].hcross    # complex number, vec2_complex   
+            n2Hn2 = (constellation_vectors.n2 @ (pol_tensor.plus) @ constellation_vectors.n2) * waveform[i].hplus + (constellation_vectors.n2 @ (pol_tensor.cross) @ constellation_vectors.n2) * waveform[i].hcross    # complex number, vec2_complex   
+            n3Hn3 = (constellation_vectors.n3 @ (pol_tensor.plus) @ constellation_vectors.n3) * waveform[i].hplus + (constellation_vectors.n3 @ (pol_tensor.cross) @ constellation_vectors.n3) * waveform[i].hcross    # complex number, vec2_complex   
+
+            kn1 = k@constellation_vectors.n1    # scalar
+            kn2 = k@constellation_vectors.n2    # scalar
+            kn3 = k@constellation_vectors.n3    # scalar
+
+            kp1Lp2L = k@(constellation_vectors.p1D + constellation_vectors.p2D)    # scalar
+            kp2Lp3L = k@(constellation_vectors.p2D + constellation_vectors.p3D)    # scalar
+            kp3Lp1L = k@(constellation_vectors.p3D + constellation_vectors.p1D)    # scalar
+
+            kp0 = k@constellation_vectors.p0    # scalar
+
+            common_sinc = PI * self.TDI_data.frequency_samples[i] * self.armlength_sec  # scalar
+            sinc12 = sinc(common_sinc * (1.-kn3))    # scalar
+            sinc21 = sinc(common_sinc * (1.+kn3))    # scalar
+            sinc23 = sinc(common_sinc * (1.-kn1))    # scalar
+            sinc32 = sinc(common_sinc * (1.+kn1))    # scalar
+            sinc31 = sinc(common_sinc * (1.-kn2))    # scalar
+            sinc13 = sinc(common_sinc * (1.+kn2))    # scalar
+
+            common_exp = -PI * self.TDI_data.frequency_samples[i] * vec2_complex([0.0, 1.0])    # complex number, vec2_complex
+            exp12 = tm.cexp(common_exp*(self.armlength_sec+kp1Lp2L))    # complex number, vec2_complex
+            exp23 = tm.cexp(common_exp*(self.armlength_sec+kp2Lp3L))    # complex number, vec2_complex
+            exp31 = tm.cexp(common_exp*(self.armlength_sec+kp3Lp1L))    # complex number, vec2_complex
+
+            prefactor = -PI * self.TDI_data.frequency_samples[i] * self.armlength_sec * vec2_complex([0.0, 1.0])    # complex number, vec2_complex
+            expp0 = tm.cexp(-2 * PI * self.TDI_data.frequency_samples[i] * kp0 * vec2_complex([0.0, 1.0]))    # complex number, vec2_complex
+            commonfac = tm.cmul(prefactor, expp0)    # complex number, vec2_complex
+
+            self._FD_response_assistance[i]['single_links']['link12'] = sinc12 * tm.cmul(tm.cmul(commonfac, n3Hn3), exp12)    # complex, vec2_complex
+            self._FD_response_assistance[i]['single_links']['link21'] = sinc21 * tm.cmul(tm.cmul(commonfac, n3Hn3), exp12)    # complex, vec2_complex
+            self._FD_response_assistance[i]['single_links']['link23'] = sinc23 * tm.cmul(tm.cmul(commonfac, n1Hn1), exp23)    # complex, vec2_complex
+            self._FD_response_assistance[i]['single_links']['link32'] = sinc32 * tm.cmul(tm.cmul(commonfac, n1Hn1), exp23)    # complex, vec2_complex
+            self._FD_response_assistance[i]['single_links']['link31'] = sinc31 * tm.cmul(tm.cmul(commonfac, n2Hn2), exp31)    # complex, vec2_complex
+            self._FD_response_assistance[i]['single_links']['link13'] = sinc13 * tm.cmul(tm.cmul(commonfac, n2Hn2), exp31)    # complex, vec2_complex
+
+            for chan in ti.static(self.TDI_data.data_info['channels']):
+                self.response_container[i][chan] = tm.cmul(self._FD_response_assistance[i]['TDI_gen_prefactor'], TDI_combination_funcs[chan](self._FD_response_assistance[i]['delay_factor'], self._FD_response_assistance[i]['single_links']))
     
     def update_wavelet_domain_response(self)->None:
         return None
@@ -648,7 +716,7 @@ class SpaceborneInterferometer(object):
         ==========
         parameters: dict
             parameters describes the GW source
-        waveform: waveform object which contains the detector.wavefrom_container
+        waveform: waveform object which contains the detector.waveform_container
             
         '''
         waveform.update_waveform(parameters)
@@ -847,12 +915,4 @@ class SpaceborneInterferometer(object):
     #     return None
 
 
-    # def set_strains_TD_from_FD(self):
-    #     pass
-    #     return None
-
-
-    # def set_strains_FD_from_TD(self):
-    #     pass
-    #     return None
 
