@@ -24,7 +24,7 @@ data_length_list = []
 
 minimum_frequency = 1e-5
 maximum_frequency = 1e-1
-cadance = 5
+cadence = 5
 f_cut = 0.2
 max_mass = maximum_frequency/f_cut/MTSUN_SI
 # print(max_mass)
@@ -51,13 +51,13 @@ from bbhx.likelihood import Likelihood
 from bbhx.utils.constants import *
 
 # duration = 3600*24
-# n = int(duration / cadance)
-# f_array = np.fft.rfftfreq(n, cadance)
+# n = int(duration / cadence)
+# f_array = np.fft.rfftfreq(n, cadence)
 # bound = ((f_array >= minimum_frequency) * (f_array <= maximum_frequency))
 # f_array = f_array[bound]
 # # print(len(f_array))
 # # print(f_array)
-# # f_array = np.arange(0, 1.0/(2*cadance), 1.0/duration)
+# # f_array = np.arange(0, 1.0/(2*cadence), 1.0/duration)
 # # bound = ((f_array >= minimum_frequency) * (f_array <= maximum_frequency))
 # # f_array = f_array[bound]
 # # print(len(f_array))
@@ -194,7 +194,7 @@ print(ll, like.d_h)
 
 # # duration = 3600*24*30*12*5
 # duration = 3600
-# f_array = np.arange(0, 1.0/(2*cadance), 1.0/duration)
+# f_array = np.arange(0, 1.0/(2*cadence), 1.0/duration)
 # bound = ((f_array >= minimum_frequency) * (f_array <= maximum_frequency))
 # f_array = f_array[bound]
 # data_channels = bbhx_wf(parameters.iloc[0]['mass_1'],
@@ -289,11 +289,11 @@ print(ll, like.d_h)
 
 
 
-# det15 = LISALike(name='LISA', duration=3600*24*30*12*5, cadance=cadance, minimum_frequency=minimum_frequency, 
+# det15 = LISALike(name='LISA', duration=3600*24*30*12*5, cadence=cadence, minimum_frequency=minimum_frequency, 
 #                  maximum_frequency=maximum_frequency, TDI_channels=('A', 'E', 'T'), 
 #                  TDI_generation='1.5')
 # wf15 = ti_IMRPhenomD(det15.frequencies, det15.waveform_container)
-# det20 = LISALike(name='LISA', duration=3600*24*30*12*5, cadance=cadance, minimum_frequency=minimum_frequency, 
+# det20 = LISALike(name='LISA', duration=3600*24*30*12*5, cadence=cadence, minimum_frequency=minimum_frequency, 
 #                  maximum_frequency=maximum_frequency, TDI_channels=('A', 'E', 'T'), 
 #                  TDI_generation='2.0')
 # wf20 = ti_IMRPhenomD(det20.frequencies, det20.waveform_container)
@@ -324,7 +324,7 @@ print(ll, like.d_h)
 
 # for p in powers_of_2:
 #     duration = 2**p
-#     det15 = LISALike(name='LISA', duration=duration, cadance=cadance, minimum_frequency=minimum_frequency, 
+#     det15 = LISALike(name='LISA', duration=duration, cadence=cadence, minimum_frequency=minimum_frequency, 
 #                      maximum_frequency=maximum_frequency, TDI_channels=('A', 'E'), 
 #                      TDI_generation='1.5')
 #     wf15 = ti_IMRPhenomD(det15.frequencies, det15.waveform_container)
@@ -351,7 +351,7 @@ print(ll, like.d_h)
 
 # for p in powers_of_2:
 #     duration = 2**p
-#     f_array = np.arange(0, 1.0/(2*cadance), 1.0/duration)
+#     f_array = np.arange(0, 1.0/(2*cadence), 1.0/duration)
 #     bound = ((f_array >= minimum_frequency) * (f_array <= maximum_frequency))
 #     f_array = f_array[bound]
 #     data_channels = bbhx_wf(parameters.iloc[0]['mass_1'],
@@ -455,10 +455,10 @@ print(ll, like.d_h)
 # from peSpace.waveform import IMRPhenomD_h22_Amplitude_Phase_tf as pyIMRPhenomD_h22_Amplitude_Phase_tf
 # from peSpace.detectors import LISALike as pyLISALike
 
-# pydet15 = pyLISALike(name='LISA', duration=864000, cadance=10, minimum_frequency=1e-4, 
+# pydet15 = pyLISALike(name='LISA', duration=864000, cadence=10, minimum_frequency=1e-4, 
 #                maximum_frequency=0.1, TDI_channels=('X', 'Y', 'Z', 'A', 'E', 'T'), 
 #                TDI_generation='1.5')
-# pydet20 = pyLISALike(name='LISA', duration=864000, cadance=10, minimum_frequency=1e-4, 
+# pydet20 = pyLISALike(name='LISA', duration=864000, cadence=10, minimum_frequency=1e-4, 
 #                maximum_frequency=0.1, TDI_channels=('X', 'Y', 'Z', 'A', 'E', 'T'), 
 #                TDI_generation='2.0')
 

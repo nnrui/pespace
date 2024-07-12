@@ -25,10 +25,10 @@ parameters = dict(total_mass=4e6,
                   inclination = 1.047,
                   reference_phase = 0.0,)
 
-det15 = LISALike(name='LISA', duration=864000, cadance=10, minimum_frequency=1e-5, 
+det15 = LISALike(name='LISA', duration=864000, cadence=10, minimum_frequency=1e-5, 
                maximum_frequency=0.1, TDI_channels=('X', 'Y', 'Z', 'A', 'E', 'T'), 
                TDI_generation='1.5')
-det20 = LISALike(name='LISA', duration=864000, cadance=10, minimum_frequency=1e-4, 
+det20 = LISALike(name='LISA', duration=864000, cadence=10, minimum_frequency=1e-4, 
                maximum_frequency=0.1, TDI_channels=('X', 'Y', 'Z', 'A', 'E', 'T'), 
                TDI_generation='2.0')
 
@@ -102,10 +102,10 @@ print('ti time consuming: ', ed-st)
 # from peSpace.waveform import IMRPhenomD_h22_Amplitude_Phase_tf as pyIMRPhenomD_h22_Amplitude_Phase_tf
 # from peSpace.detectors import LISALike as pyLISALike
 
-# pydet15 = pyLISALike(name='LISA', duration=864000, cadance=10, minimum_frequency=1e-4, 
+# pydet15 = pyLISALike(name='LISA', duration=864000, cadence=10, minimum_frequency=1e-4, 
 #                maximum_frequency=0.1, TDI_channels=('X', 'Y', 'Z', 'A', 'E', 'T'), 
 #                TDI_generation='1.5')
-# pydet20 = pyLISALike(name='LISA', duration=864000, cadance=10, minimum_frequency=1e-4, 
+# pydet20 = pyLISALike(name='LISA', duration=864000, cadence=10, minimum_frequency=1e-4, 
 #                maximum_frequency=0.1, TDI_channels=('X', 'Y', 'Z', 'A', 'E', 'T'), 
 #                TDI_generation='2.0')
 

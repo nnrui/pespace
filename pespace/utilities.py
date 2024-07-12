@@ -70,7 +70,7 @@ def polarization_tensor_SSB(lam: ti.f64, beta: ti.f64, psi: ti.f64) -> Polarizat
                               cross= (p.outer_product(q) + q.outer_product(p)))
 
 @ti.func
-def GW_propagation_unit_vector_k(lam: ti.f64, beta: ti.f64) -> tm.vec3:                    # note that beta is (-pi/2, pi/2)
+def GW_propagation_unit_vector(lam: ti.f64, beta: ti.f64) -> tm.vec3:                    # note that beta is (-pi/2, pi/2)
     return tm.vec3([-tm.cos(beta)*tm.cos(lam), -tm.cos(beta)*tm.sin(lam), -tm.sin(beta)])
 
 

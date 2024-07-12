@@ -10,7 +10,8 @@
 
 
 ##########################################################################################
-1.tm.vec2 support float64
+- vectorized
+- use a class to character orbit
 
 
 

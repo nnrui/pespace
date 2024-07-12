@@ -17,8 +17,8 @@ def test():
     print(pol.plus)
     print(pol.cross)
 
-    print('GW_propagation_unit_vector_k(lam, beta):')
-    k = GW_propagation_unit_vector_k(1.2, 2.3)
+    print('GW_propagation_unit_vector(lam, beta):')
+    k = GW_propagation_unit_vector(1.2, 2.3)
     print(k)
     print(k.norm())
 

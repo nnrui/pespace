@@ -10,12 +10,12 @@ ti.init(arch=ti.cpu, default_fp=ti.f64)
 
 from ti_peSpace.waveform import IMRPhenomD_h22_Amplitude_Phase_tf
 
-cadance = 10
+cadence = 10
 duration = 3600*24*30
 minimum_frequency = 1e-4
 maximum_frequency = 1e-1
 
-f = np.arange(0, 1.0/(2*cadance), 1.0/duration)
+f = np.arange(0, 1.0/(2*cadence), 1.0/duration)
 bound = ((f >= minimum_frequency) * (f <= maximum_frequency))
 frequencies = f[bound]
 length = len(frequencies)

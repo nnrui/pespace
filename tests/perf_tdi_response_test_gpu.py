@@ -23,7 +23,7 @@ data_length_list = []
 
 minimum_frequency = 1e-5
 maximum_frequency = 1e-1
-cadance = 5
+cadence = 5
 f_cut = 0.2
 max_mass = maximum_frequency/f_cut/MTSUN_SI
 # print(max_mass)
@@ -56,8 +56,8 @@ from bbhx.waveformbuild import BBHWaveformFD
 
 for p in powers_of_2:
     duration = 2**p
-    n = int(duration / cadance)
-    f_array = np.fft.rfftfreq(n, cadance)
+    n = int(duration / cadence)
+    f_array = np.fft.rfftfreq(n, cadence)
     bound = ((f_array >= minimum_frequency) * (f_array <= maximum_frequency))
     f_array = f_array[bound]
     data_length_list.append(len(f_array))
@@ -89,7 +89,7 @@ for p in powers_of_2:
     time_consuming_bbhx.append(time_consuming)
     print(f'bbhx, time:{time_consuming}')
     ####################################
-    det15 = LISALike(name='LISA', duration=duration, cadance=cadance, minimum_frequency=minimum_frequency, 
+    det15 = LISALike(name='LISA', duration=duration, cadence=cadence, minimum_frequency=minimum_frequency, 
                      maximum_frequency=maximum_frequency, TDI_channels=('A', 'E', 'T'), 
                      TDI_generation='1.5')
     wf15 = ti_IMRPhenomD(det15.frequencies, det15.waveform_container)
@@ -122,8 +122,8 @@ labeled_duration = [day, week, month, year]
 labeled_data_length_list = []
 labeled_duration_text = ['day', 'week', 'month', 'year']
 for t in labeled_duration:
-    n = int(t / cadance)
-    f_array = np.fft.rfftfreq(n, cadance)
+    n = int(t / cadence)
+    f_array = np.fft.rfftfreq(n, cadence)
     bound = ((f_array >= minimum_frequency) * (f_array <= maximum_frequency))
     f_array = f_array[bound]
     data_length = len(f_array)
