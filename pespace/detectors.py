@@ -5,6 +5,7 @@
 # protect SpaceborneInterferometer.TDI_data unchange
 import warnings
 from typing import Callable
+from dataclasses import dataclass, field
 
 from scipy import signal
 import numpy as np
@@ -252,22 +253,89 @@ implemented_TDI_generations = ('1.5', '2.0')
 
 
 ################################################################################
+@dataclass(frozen=True)
+class DataInfo(object):
+    """Storing TDI channels data information.
+    
+    Parameters:
+    -----------
+    channels: TDI channels, choose from ['X', 'Y', 'Z', 'A', 'E', 'T'];
+    generation: TDI generation, one of '1.5' or '2.0';
+    duration: observing duration of data, in the unit of second;
+    cadence: sampling cadence, in the unit of second;
+    start_time: the time label for the first time sample, in the unit of second;
+    minimum_frequency: the minimum for the limited frequency band;
+    maximum_frequency: the maximum for the limited frequency band.
+    """
+    channels:tuple[str, ...]
+    generation:str
+    duration:float
+    cadence:float
+    start_time:float=0.0
+    minimum_frequency_in:float=1e-5
+    maximum_frequency_in:float=0.1
+
+    minimum_frequency:float=field(init=False)
+    maximum_frequency:float=field(init=False)
+    sampling_frequency:float=field(init=False)
+    delta_frequency:float=field(init=False) 
+    time_series_length:int=field(init=False)
+    time_samples_array:NDArray[np.float64]=field(init=False)
+    full_frequency_series_length:int=field(init=False)
+    full_frequency_samples_array:NDArray[np.float64]=field(init=False)
+    frequency_mask_array:NDArray[np.bool_]=field(init=False)
+    frequency_samples_array:NDArray[np.float64]=field(init=False)
+    frequency_series_length:int=field(init=False)
+
+    def __post_init__(self)->None:
+        """Generating useful numbers from the duration and cadence, and setting proper time and frequency samples:
+        TODO: 1. describing rules for minimum_frequency, maximum_frequency
+              2. describing rules for time samples and frequency samples
+        """
+        if not all([chan in TDI_combination_funcs.keys() for chan in self.channels]):
+            raise ValueError(f"You are setting TDIChannelData with channels of {self.channels}. While current supported channels are only including {TDI_combination_funcs.keys()}")
+        if not self.generation in implemented_TDI_generations:
+            raise ValueError(f"You are setting TDIChannelData with generation of {self.generation}. While current supported channels are only including {implemented_TDI_generations}")
+
+        sampling_frequency = 1/self.cadence
+        delta_frequency = 1/self.duration
+        fmax = np.minimum(self.maximum_frequency_in, sampling_frequency/2)
+        fmin = np.maximum(self.minimum_frequency_in, 1/self.duration)
+
+        time_series_length = int(np.round(self.duration/self.cadence) + 1)    # using round rather // to avoid missing the last sample due to possible numerical error
+        time_samples_array = np.arange(time_series_length) * self.cadence + self.start_time
+        
+        full_frequency_series_length = int(time_series_length//2 + 1)
+        full_frequency_samples_array = np.arange(full_frequency_series_length) * delta_frequency
+        frequency_mask_array = (full_frequency_samples_array >= fmin) * (full_frequency_samples_array <= fmax)
+        frequency_samples_array = full_frequency_samples_array[frequency_mask_array]
+        frequency_series_length = int(len(frequency_samples_array))
+
+        object.__setattr__(self, 'minimum_frequency', fmin)
+        object.__setattr__(self, 'maximum_frequency', fmax)
+        object.__setattr__(self, 'sampling_frequency', sampling_frequency)
+        object.__setattr__(self, 'delta_frequency', delta_frequency)
+        object.__setattr__(self, 'time_series_length', time_series_length)
+        object.__setattr__(self, 'time_samples_array', time_samples_array)
+        object.__setattr__(self, 'full_frequency_series_length', full_frequency_series_length)
+        object.__setattr__(self, 'full_frequency_samples_array', full_frequency_samples_array)
+        object.__setattr__(self, 'frequency_mask_array', frequency_mask_array)
+        object.__setattr__(self, 'frequency_samples_array', frequency_samples_array)
+        object.__setattr__(self, 'frequency_series_length', frequency_series_length)
+
+        return None
+
+
 class TDIChannelsData(object):
+    # TODO: when setting data_info, check _reset_flag, and give warning        
+    # if self._reset_flag:
+    #       warnings.warn("You are setting data_info, whereas you have set TDI data of current instance previously. \
+    #                      Setting `data_info` along may lead mismatch of data_info and the stored data. \n \
+    #                      Please check whether this is intential.")
     """Storing TDI strain and noise feature, transfering data from different domain."""
 
     def __init__(self, minimum_frequency:float=1e-5, maximum_frequency:float=0.1) -> None:
-        self.data_info = dict(channels=(), generation=None,
-                              duration=None, cadence=None, start_time=0.0,
-                              sampling_frequency=None, delta_frequency=None, 
-                              time_series_length=None,
-                              _time_samples_array=None,
-                              full_frequency_series_length=None,
-                              frequency_series_length=None,
-                              _full_frequency_samples_array=None,
-                              _frequency_bound=None,
-                              _frequency_samples_array=None,
-                              minimum_frequency=None, 
-                              maximum_frequency=None)
+        self.data_info = None
         self.time_samples = None
         self.frequency_samples = None
         self.wavelet_samples = None
@@ -287,62 +355,6 @@ class TDIChannelsData(object):
     
     def _reset(self)->None:
         self.__init__(self._fmin_in, self._fmax_in)
-        return None
-    
-    def set_data_info(self, channels:tuple[str, ...], generation:str, duration:float, cadence:float, start_time:float=0.0)->None:
-        """Set information for the TDI data, inlcuding:
-        
-        Parameters:
-        -----------
-        channels: TDI channels, choose from ['X', 'Y', 'Z', 'A', 'E', 'T'];
-        generation: TDI generation, one of '1.5' or '2.0';
-        duration: observing duration of data, in the unit of second;
-        cadence: sampling cadence, in the unit of second;
-        start_time: the time label for the first time sample, in the unit of second;
-
-        """
-        if self._reset_flag:
-            warnings.warn("You are setting data_info, whereas you have set TDI data of current instance previously. \
-                           Setting `data_info` along may lead mismatch of data_info and the stored data. \n \
-                           Please check whether this is intential.")
-
-        sampling_frequency = 1/cadence
-        delta_frequency = 1/duration
-        fmax = np.minimum(self._fmax_in, sampling_frequency/2)
-        fmin = np.maximum(self._fmin_in, 1/duration)
-
-        time_series_length = int(np.round(duration/cadence) + 1)    # using round rather // to avoid missing the last sample due to possible numerical error
-        _time_samples_array = np.arange(time_series_length) * cadence + start_time
-        
-        full_frequency_series_length = int(time_series_length//2 + 1)
-        _full_frequency_samples_array = np.arange(full_frequency_series_length) * delta_frequency
-        _frequency_bound_array = (_full_frequency_samples_array >= fmin) * (_full_frequency_samples_array <= fmax)
-        _frequency_samples_array = _full_frequency_samples_array[_frequency_bound_array]
-        frequency_series_length = int(len(_frequency_samples_array))
-
-        if not all([chan in TDI_combination_funcs.keys() for chan in channels]):
-            raise ValueError(f"You are setting TDIChannelData with channels of {channels}. While current supported channels are only including {TDI_combination_funcs.keys()}")
-        else:
-            self.data_info['channels'] = channels
-        if not generation in implemented_TDI_generations:
-            raise ValueError(f"You are setting TDIChannelData with generation of {generation}. While current supported channels are only including {implemented_TDI_generations}")
-        else:
-            self.data_info['generation'] = generation
-
-        self.data_info['duration'] = duration
-        self.data_info['cadence'] = cadence
-        self.data_info['start_time'] = start_time
-        self.data_info['sampling_frequency'] = sampling_frequency
-        self.data_info['delta_frequency'] = delta_frequency
-        self.data_info['time_series_length'] = time_series_length
-        self.data_info['_time_samples_array'] = _time_samples_array
-        self.data_info['full_frequency_series_length'] = full_frequency_series_length
-        self.data_info['frequency_series_length'] = frequency_series_length
-        self.data_info['_full_frequency_samples_array'] = _full_frequency_samples_array
-        self.data_info['_frequency_bound_array'] = _frequency_bound_array
-        self.data_info['_frequency_samples_array'] = _frequency_samples_array
-        self.data_info['minimum_frequency'] = fmin
-        self.data_info['maximum_frequency'] = fmax
         return None
     
     def set_time_domain_data_from_input_array(self, channels:tuple[str, ...], generation:str, duration:float, cadence:float, TDI_data:NDArray[np.float64], start_time:float=0.0)->None:
