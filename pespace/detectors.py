@@ -260,7 +260,12 @@ class TDIChannelsData(object):
                               duration=None, cadence=None, start_time=0.0,
                               sampling_frequency=None, delta_frequency=None, 
                               time_series_length=None,
+                              _time_samples_array=None,
+                              full_frequency_series_length=None,
                               frequency_series_length=None,
+                              _full_frequency_samples_array=None,
+                              _frequency_bound=None,
+                              _frequency_samples_array=None,
                               minimum_frequency=None, 
                               maximum_frequency=None)
         self.time_samples = None
@@ -303,10 +308,17 @@ class TDIChannelsData(object):
 
         sampling_frequency = 1/cadence
         delta_frequency = 1/duration
-        time_series_length = int(np.round(duration/cadence) + 1)
         fmax = np.minimum(self._fmax_in, sampling_frequency/2)
         fmin = np.maximum(self._fmin_in, 1/duration)
-        frequency_series_length = int(fmax//delta_frequency - fmin//delta_frequency)
+
+        time_series_length = int(np.round(duration/cadence) + 1)    # using round rather // to avoid missing the last sample due to possible numerical error
+        _time_samples_array = np.arange(time_series_length) * cadence + start_time
+        
+        full_frequency_series_length = int(time_series_length//2 + 1)
+        _full_frequency_samples_array = np.arange(full_frequency_series_length) * delta_frequency
+        _frequency_bound_array = (_full_frequency_samples_array >= fmin) * (_full_frequency_samples_array <= fmax)
+        _frequency_samples_array = _full_frequency_samples_array[_frequency_bound_array]
+        frequency_series_length = int(len(_frequency_samples_array))
 
         if not all([chan in TDI_combination_funcs.keys() for chan in channels]):
             raise ValueError(f"You are setting TDIChannelData with channels of {channels}. While current supported channels are only including {TDI_combination_funcs.keys()}")
@@ -323,7 +335,12 @@ class TDIChannelsData(object):
         self.data_info['sampling_frequency'] = sampling_frequency
         self.data_info['delta_frequency'] = delta_frequency
         self.data_info['time_series_length'] = time_series_length
+        self.data_info['_time_samples_array'] = _time_samples_array
+        self.data_info['full_frequency_series_length'] = full_frequency_series_length
         self.data_info['frequency_series_length'] = frequency_series_length
+        self.data_info['_full_frequency_samples_array'] = _full_frequency_samples_array
+        self.data_info['_frequency_bound_array'] = _frequency_bound_array
+        self.data_info['_frequency_samples_array'] = _frequency_samples_array
         self.data_info['minimum_frequency'] = fmin
         self.data_info['maximum_frequency'] = fmax
         return None
@@ -356,8 +373,8 @@ class TDIChannelsData(object):
             raise ValueError(f"You set channenls with {channels}, while the length of first dimension of input array is {channels_num}.")
         if not self.data_info['time_series_length'] == samples_num:
             raise ValueError(f"The length of second dimension of input array is {samples_num} which is different with the `time_series_length` \
-                             {self.data_info['time_series_length']} set according to the duration and cadence. \
-                             Check the input array or open a issue.")
+                             {self.data_info['time_series_length']} set according to the duration and cadence `time_series_length = int(np.round(duration/cadence) + 1)`. \
+                             If them are different by 1, probably since your input have duraion/cadence > N + 0.5. Check the input array or open a issue.")
 
         t_array = np.linspace(start_time, start_time+duration, self.data_info['time_series_length'])
         time_samples = ti.field(ti.f64, (self.data_info['time_series_length'],))
