@@ -372,6 +372,29 @@ class TDIChannelsData(object):
         self._data_info = DataInfo(channels, generation, duration, cadence, start_time, self._fmin_in, self._fmax_in)
         return None
     
+    def _initialize_time_domain_data(self)->None:
+        """Initializing `ti.field` for `time_samples` and `time_domain_TDI_data`, only for internel calls.
+           Call after setting data_info.
+           Setting time domain data externally using `set_time_domain_data_from_zero`.
+        """
+        self.time_samples = ti.field(ti.f64, (self.data_info.time_series_length,))
+        self.time_samples.from_numpy(self.data_info.time_samples_array)
+        self.time_domain_TDI_data = ti.Struct.field(dict.fromkeys(self.data_info.channels, ti.float64), shape=(self.data_info.time_series_length,))
+        return None
+
+    def _initialize_frequency_domain_data(self)->None:
+        """Initializing `ti.field` for `frequency_samples` and `frequency_domain_TDI_data`, only for internel calls.
+            Call after setting data_info.
+           Setting frequency domain data externally using `set_frequency_domain_data_from_zero`.
+        """
+        self.frequency_samples = ti.field(ti.f64, (self.data_info.frequency_series_length,))
+        self.frequency_samples.from_numpy(self.data_info.frequency_samples_array)
+        self.frequency_domain_TDI_data = ti.Struct.field(dict.fromkeys(self.data_info.channels, vec2_complex), shape=(self.data_info.frequency_series_length,))
+        return None
+
+    def _initialize_wavelet_domain_data(self)->None:
+        return None
+
     def set_time_domain_data_from_input_array(self, channels:tuple[str, ...], generation:str, duration:float, cadence:float, TDI_data_array:NDArray[np.float64], start_time:float=0.0)->None:
         """Set time domain TDI data from input numpy array. 
         
@@ -402,10 +425,8 @@ class TDIChannelsData(object):
             raise ValueError(f"The length of second dimension of input array is {samples_num} which is different with the `time_series_length={self.data_info.time_series_length}` \
                              set according to the duration and cadence by `time_series_length = int(np.round(duration/cadence) + 1)`. \
                              If them are only different by 1, probably since there is duraion/cadence > N + 0.5 in your input. Check the input values or open an issue.")
-
-        self.time_samples = ti.field(ti.f64, (self.data_info.time_series_length,))
-        self.time_samples.from_numpy(self.data_info.time_samples_array)
-        self.time_domain_TDI_data = ti.Struct.field(dict.fromkeys(channels, ti.float64), shape=(self.data_info.time_series_length,))
+        
+        self._initialize_time_domain_data()
         self.time_domain_TDI_data.from_numpy(dict(zip(channels, TDI_data_array)))
         
         self._reset_flag = True
@@ -434,9 +455,7 @@ class TDIChannelsData(object):
                              You may need to crop the TDI_data_array with `TDIChannelsData.data_info.frequency_mask_array` before input. \
                              Considering check the input values again or open an issue.")
 
-        self.frequency_samples = ti.field(ti.f64, (self.data_info.frequency_series_length,))
-        self.frequency_samples.from_numpy(self.data_info.frequency_samples_array)
-        self.frequency_domain_TDI_data = ti.Struct.field(dict.fromkeys(channels, vec2_complex), shape=(self.data_info.frequency_series_length,))
+        self._initialize_frequency_domain_data()
         self.frequency_domain_TDI_data.from_numpy(dict(zip(channels, np.stack((TDI_data_array.real, TDI_data_array.imag), axis=-1))))
 
         self._reset_flag = True
@@ -453,9 +472,7 @@ class TDIChannelsData(object):
         
         self.set_data_info(channels, generation, duration, cadence, start_time)
         
-        self.time_samples = ti.field(ti.f64, (self.data_info.time_series_length,))
-        self.time_samples.from_numpy(self.data_info.time_samples_array)
-        self.time_domain_TDI_data = ti.Struct.field(dict.fromkeys(channels, ti.float64), shape=(self.data_info.time_series_length,))
+        self._initialize_time_domain_data()
         self.time_domain_TDI_data.fill(0.0)
 
         self._reset_flag = True
@@ -472,9 +489,7 @@ class TDIChannelsData(object):
 
         self.set_data_info(channels, generation, duration, cadence)
 
-        self.frequency_samples = ti.field(ti.f64, (self.data_info.frequency_series_length,))
-        self.frequency_samples.from_numpy(self.data_info.frequency_samples_array)
-        self.frequency_domain_TDI_data = ti.Struct.field(dict.fromkeys(channels, vec2_complex), shape=(self.data_info.frequency_series_length,))
+        self._initialize_frequency_domain_data()
         self.frequency_domain_TDI_data.fill(0.0)
 
         self._reset_flag = True
@@ -490,19 +505,18 @@ class TDIChannelsData(object):
         """see scipy.signal.get_window for more details about window parameter"""
 
         if (self.time_domain_TDI_data is None) or (self.frequency_domain_TDI_data is not None):
-            raise ValueError("Fourier transform will not be excuted since the `time_domain_TDI_data` is not set or \
-                             `frequency_domain_TDI_data` has been set previously")
-        
-        weight = signal.get_window(window, self.data_info.time_series_length)
-        self.frequency_domain_TDI_data = ti.Struct.field(dict.fromkeys(self.data_info.channels, vec2_complex), shape=(self.data_info.frequency_series_length,))
-
-        for chan in self.data_info.channels:
-            td_strain = self.time_domain_TDI_data.get_member_field(chan).to_numpy()
-            windowed_strain = td_strain * weight
-            fd_strain = np.fft.rfft(windowed_strain)
-            fd_strain /= self.data_info.sampling_frequency
-            fd_strain = fd_strain[self.data_info.frequency_mask_array]
-            self.frequency_domain_TDI_data.get_member_field(chan).from_numpy(np.stack((fd_strain.real, fd_strain.imag), axis=-1))
+            warnings.warn("Fourier transform will not be excuted since the `time_domain_TDI_data` is not set or \
+                           `frequency_domain_TDI_data` has been set previously")
+        else:
+            self._initialize_frequency_domain_data()
+            weight = signal.get_window(window, self.data_info.time_series_length)
+            for chan in self.data_info.channels:
+                td_strain = self.time_domain_TDI_data.get_member_field(chan).to_numpy()
+                windowed_strain = td_strain * weight
+                fd_strain = np.fft.rfft(windowed_strain)
+                fd_strain /= self.data_info.sampling_frequency
+                fd_strain = fd_strain[self.data_info.frequency_mask_array]
+                self.frequency_domain_TDI_data.get_member_field(chan).from_numpy(np.stack((fd_strain.real, fd_strain.imag), axis=-1))
 
         return None
     
@@ -523,6 +537,43 @@ class TDIChannelsData(object):
     
     def set_PSD_from_input_array(self)->None:
         return None
+    
+    @property
+    def time_samples_numpy_array(self)->Optional[NDArray[np.float64]]:
+        """Low performance, do not use in MCMC sampling"""
+        if self.data_info is not None:
+            return self.data_info.time_samples_array
+        else:
+            return None
+    
+    @property
+    def frequency_samples_numpy_array(self)->Optional[NDArray[np.float64]]:
+        """Low performance, do not use in MCMC sampling"""
+        if self.data_info is not None:
+            return self.data_info.frequency_samples_array
+        else:
+            return None
+
+    @property
+    def time_domain_TDI_data_numpy_array(self)->Optional[dict[str, NDArray[np.float64]]]:
+        """Low performance, do not use in MCMC sampling"""
+        if self.time_domain_TDI_data is not None:
+            return self.time_domain_TDI_data.to_numpy()
+        else:
+            return None
+    
+    @property
+    def frequency_domain_TDI_data_numpy_array(self)->Optional[dict[str, NDArray[np.complex128]]]:
+        """Low performance, do not use in MCMC sampling"""
+        if self.frequency_domain_TDI_data is not None:
+            array_dict = self.frequency_domain_TDI_data.to_numpy()
+            returned_dict = {}
+            for chan, data in array_dict.items():
+                returned_dict[chan] = data[:,0] + 1j*data[:,1]
+            return returned_dict
+        else:
+            return None
+
     
 
 @ti.data_oriented
