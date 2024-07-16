@@ -545,7 +545,7 @@ class TDIChannelsData(object):
     def set_frequency_domain_noise_power_density_from_time_domain_data(self)->None:
         return None
     
-    def set_frequency_domain_noise_power_density_from_analystic_model(self, noise_model:dict[str, Callable[[np.float64], np.float64]])->None:
+    def set_frequency_domain_noise_power_density_from_analystic_model(self, noise_model:Callable[[NDArray[np.float64], str, str], NDArray[np.float64]])->None:
         if self.data_info is None:
             raise ValueError('The `data_info` has not yet set. Can not obtain `frequency_series_length` to initialize `frequency_domain_noise_power_density` \
                              Please first set TDI_data in any domain or call directly `data_info`.')
@@ -554,7 +554,7 @@ class TDIChannelsData(object):
                           It will be reset and updated, please make sure the updated noise power density is consistent with the stored TDI data.")
         self.frequency_domain_noise_power_density = ti.Struct.field(dict.fromkeys(self.data_info.channels, ti.f64), shape=(self.data_info.frequency_series_length,))
         for chan in self.data_info.channels:
-            self.frequency_domain_noise_power_density.get_member_field(chan).from_numpy(noise_model[chan](self.data_info.frequency_samples_array))
+            self.frequency_domain_noise_power_density.get_member_field(chan).from_numpy(noise_model(self.data_info.frequency_samples_array, chan, self.data_info.generation))
         return None
     
     def set_frequency_domain_noise_power_density_from_input_array(self)->None:
@@ -576,9 +576,11 @@ class TDIChannelsData(object):
         seed: integer, 
             set the seed for predictable random number sequence, default is None
         """
+        if self.frequency_domain_noise_power_density is None:
+            raise ValueError("Setting `frequency_domain_noise_power_density` before generating noise realization.")
+
         rng = np.random.default_rng(seed=seed)
         var = 0.5  / (self.data_info.delta_frequency)**0.5
-
         noise_strains = {}
         for chan in self.data_info.channels:
             # generate white noise
