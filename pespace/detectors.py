@@ -29,6 +29,16 @@ SingleLinksStruct = ti.types.struct(link12=vec2_complex, link21=vec2_complex,
 
 
 @ti.kernel
+def _add_1d_field_into_TDI_data(TDI_data:ti.template(), input:ti.template()):
+    """Add a 1d field into TDI_data. The input field must has same shape and same channels with TDI_data.
+    StructField has the default layout of AoS, unrolling the channels in the inner loop for memory accessing efficiency.
+    """
+    for i in TDI_data:
+        for chan in ti.static(TDI_data.keys):
+            TDI_data[i][chan] += input[i][chan]
+
+
+@ti.kernel
 def _inject_into_strains_FD(strains_FD: ti.template(), injected: ti.template()):
     for i in strains_FD:
         for chan in ti.static(strains_FD.keys):
@@ -327,7 +337,8 @@ class DataInfo(object):
 
 
 class TDIChannelsData(object):
-    # TODO: check the normalizing factor of the rfft function
+    # TODO: 
+    # - check the normalizing factor of the rfft function
 
     """Storing TDI strain and noise feature, transfering data from different domain."""
 
@@ -346,8 +357,9 @@ class TDIChannelsData(object):
         self.frequency_domain_TDI_data = None
         self.wavelet_domain_TDI_data = None
 
-        self.noise_power_spectrum_frequency_domain = None
-        self.noise_power_spectrum_wavelet_domain = None
+        # self.time_domain_noise_correlation_function = None
+        self.frequency_domain_noise_power_density = None
+        self.wavelet_domain_noise_power_density = None
 
         self._data_info = None
         self._reset_flag = False
@@ -498,11 +510,10 @@ class TDIChannelsData(object):
     def set_wavelet_domain_data_with_zero_value(self)->None:
         return None
     
-    def generate_frequency_domain_data_from_PSD(self)->None:
-        return None
-    
-    def FT_time_domain_data_to_frequency_domain(self, window:float|str|tuple[str|float]=('tukey', 0.2))->None:
-        """see scipy.signal.get_window for more details about window parameter"""
+    def Fourier_transform_time_domain_data_to_frequency_domain(self, window:float|str|tuple[str|float]=('tukey', 0.2))->None:
+        """see scipy.signal.get_window for more details about window parameter
+           TODO: check the normalizing factor
+        """
 
         if (self.time_domain_TDI_data is None) or (self.frequency_domain_TDI_data is not None):
             warnings.warn("Fourier transform will not be excuted since the `time_domain_TDI_data` is not set or \
@@ -520,24 +531,107 @@ class TDIChannelsData(object):
 
         return None
     
-    def IFT_frequency_domain_data_to_time_domain(self)->None:
+    def inverse_Fourier_transform_frequency_domain_data_to_time_domain(self)->None:
+        """ By default, irfft assumes an even output length which puts the last entry at the Nyquist frequency;
+        To avoid losing information, the correct length of the real input must be given."""
         return None
     
-    def WT_time_domain_data_to_wavelet_domain(self)->None:
+    def wavelet_transform_time_domain_data_to_wavelet_domain(self)->None:
         return None
     
-    def WT_frequency_domain_data_to_wavelet_domain(self)->None:
+    def wavelet_transform_frequency_domain_data_to_wavelet_domain(self)->None:
         return None
     
-    def set_PSD_from_time_domain_data(self)->None:
+    def set_frequency_domain_noise_power_density_from_time_domain_data(self)->None:
         return None
     
-    def set_PSD_from_analystic_model(self)->None:
+    def set_frequency_domain_noise_power_density_from_analystic_model(self, noise_model:dict[str, Callable[[np.float64], np.float64]])->None:
+        if self.data_info is None:
+            raise ValueError('The `data_info` has not yet set. Can not obtain `frequency_series_length` to initialize `frequency_domain_noise_power_density` \
+                             Please first set TDI_data in any domain or call directly `data_info`.')
+        if self.frequency_domain_noise_power_density is not None:
+            warnings.warn("You are setting `frequency_domain_noise_power_density` for current instance, whereas it have been set previously. \
+                          It will be reset and updated, please make sure the updated noise power density is consistent with the stored TDI data.")
+        self.frequency_domain_noise_power_density = ti.Struct.field(dict.fromkeys(self.data_info.channels, ti.f64), shape=(self.data_info.frequency_series_length,))
+        for chan in self.data_info.channels:
+            self.frequency_domain_noise_power_density.get_member_field(chan).from_numpy(noise_model[chan](self.data_info.frequency_samples_array))
         return None
     
-    def set_PSD_from_input_array(self)->None:
+    def set_frequency_domain_noise_power_density_from_input_array(self)->None:
         return None
     
+    def generate_realization_from_frequency_domain_noise_power_density(self, seed=None, output_type:str='taichi')->ti.StructField|dict[str, NDArray[np.complex128]]:
+        """Generating a noise realization in frequency domian. 
+        there is no sanity check
+        To avoid directly modifiying the stroed TDI_data internally, which could potentially leading the missmatch among data of different domain, 
+        this method only return the generated noise data as `NDArray`. Using `add_into_frequency_domian_data` manually to add the noise realization into the TDI_data externally.
+        
+        generate a noise realization from psd
+        Reference:
+        (eq.12) in https://journals.aps.org/prd/abstract/10.1103/PhysRevD.102.023033
+        https://lscsoft.docs.ligo.org/bilby/api/bilby.gw.detector.psd.PowerSpectralDensity.html#bilby.gw.detector.psd.PowerSpectralDensity.get_noise_realisation
+        
+        Parameters
+        ==========
+        seed: integer, 
+            set the seed for predictable random number sequence, default is None
+        """
+        rng = np.random.default_rng(seed=seed)
+        var = 0.5  / (self.data_info.delta_frequency)**0.5
+
+        noise_strains = {}
+        for chan in self.data_info.channels:
+            # generate white noise
+            re, im = rng.normal(0, var, (2, self.data_info.full_frequency_series_length))
+            # set DC component
+            re[0] = 0.0
+            im[0] = 0.0
+            # set Nyquist frequency component for ensuring the Hermitian symmetry
+            if np.mod(self.data_info.time_series_length, 2) == 0:
+                im[-1] = 0.0
+            noise = np.vstack((re[self.data_info.frequency_mask_array], im[self.data_info.frequency_mask_array])) * self.frequency_domain_noise_power_density_numpy_array[chan] ** 0.5
+            noise_strains[chan] = noise.T
+
+        if output_type == "taichi":
+            ret = ti.Struct.field(dict.fromkeys(self.data_info.channels, vec2_complex), shape=(self.data_info.frequency_series_length, ))
+            ret.from_numpy(noise_strains)
+        elif output_type == "numpy":
+            ret = {}
+            for chan, data in noise_strains.items():
+                ret[chan] = data[:,0] + 1j*data[:, 1]
+
+        return ret
+    
+    
+    def add_into_time_domian_data(self)->None:
+        return None
+    
+
+    def add_into_frequency_domian_data(self, input:ti.StructField|dict[str, NDArray[np.complex128]])->None:
+        if isinstance(input, ti.StructField):
+            if not input.shape == (self.data_info.frequency_series_length, ):
+                raise ValueError("Cannot add the input StructField into the `frequency_domian_TDI_data`, since the shape of input is different with the TDI data")
+            if not set(input.keys) == set(self.data_info.channels):
+                raise ValueError("Cannot add the input StructField into the `frequency_domian_TDI_data`, since the channnels contained by input is different with the TDI data")
+            input_field = input
+
+        elif isinstance(input, dict):
+            if not all([len(data)==self.data_info.frequency_series_length for _, data in input.items()]):
+                raise ValueError("Cannot add the input dict of array into the `frequency_domian_TDI_data`, since there is at least one array in the input dict having different length with the TDI data.")
+            if not set(input.keys()) == set(self.data_info.channels):
+                raise ValueError('Cannot add the input dict of array into the `frequency_domian_TDI_data`, since the channnels contained by input is different with the TDI data')
+            input_field = ti.Struct.field(dict.fromkeys(self.data_info.channels, vec2_complex), shape=(self.data_info.frequency_series_length,))
+            input_field.from_numpy(input)
+        else:
+            raise TypeError("Unsupported type, expect ti.StructField or dict[NDArray]")
+        
+        _add_1d_field_into_TDI_data(self.frequency_domain_TDI_data, input_field)
+        return None
+
+    def add_into_wavelet_domian_data(self)->None:
+        return None
+
+
     @property
     def time_samples_numpy_array(self)->Optional[NDArray[np.float64]]:
         """Low performance, do not use in MCMC sampling"""
@@ -571,6 +665,14 @@ class TDIChannelsData(object):
             for chan, data in array_dict.items():
                 returned_dict[chan] = data[:,0] + 1j*data[:,1]
             return returned_dict
+        else:
+            return None
+        
+    @property
+    def frequency_domain_noise_power_density_numpy_array(self)->Optional[dict[str, NDArray[np.complex128]]]:
+        """Low performance, do not use in MCMC sampling"""
+        if self.frequency_domain_noise_power_density is not None:
+            return self.frequency_domain_noise_power_density.to_numpy()
         else:
             return None
 
