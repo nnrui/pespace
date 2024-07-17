@@ -591,7 +591,7 @@ class TDIChannelsData(object):
             # set Nyquist frequency component for ensuring the Hermitian symmetry
             if np.mod(self.data_info.time_series_length, 2) == 0:
                 im[-1] = 0.0
-            noise = np.vstack((re[self.data_info.frequency_mask_array], im[self.data_info.frequency_mask_array])) * self.frequency_domain_noise_power_density_numpy_array[chan] ** 0.5
+            noise = np.vstack((re[self.data_info.frequency_mask_array], im[self.data_info.frequency_mask_array])) * (self.frequency_domain_noise_power_density_numpy_array[chan]) ** 0.5
             noise_strains[chan] = noise.T
 
         if output_type == "taichi":
@@ -623,7 +623,7 @@ class TDIChannelsData(object):
             if not set(input.keys()) == set(self.data_info.channels):
                 raise ValueError('Cannot add the input dict of array into the `frequency_domian_TDI_data`, since the channnels contained by input is different with the TDI data')
             input_field = ti.Struct.field(dict.fromkeys(self.data_info.channels, vec2_complex), shape=(self.data_info.frequency_series_length,))
-            input_field.from_numpy(input)
+            input_field.from_numpy(dict([(chan, np.vstack([data.real, data.imag]).T) for chan, data in input.items()]))
         else:
             raise TypeError("Unsupported type, expect ti.StructField or dict[NDArray]")
         
