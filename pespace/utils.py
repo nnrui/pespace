@@ -16,22 +16,6 @@ complex_number = ti.types.vector(2, ti.f64)
 vec3 = ti.types.vector(3, ti.f64)    
 
 
-def func():
-    '''
-    description
-    
-    Parameters
-    ==========
-
-
-    Returns:
-    ========
-
-    '''
-
-    return None
-
-
 @ti.func
 def sinc(x: ti.f64) -> ti.f64:
     ret = 0.0
