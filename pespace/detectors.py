@@ -39,74 +39,6 @@ def _add_1d_field_into_TDI_data(TDI_data:ti.template(), input:ti.template()):
 
 
 @ti.kernel
-def _inject_into_strains_FD(strains_FD: ti.template(), injected: ti.template()):
-    for i in strains_FD:
-        for chan in ti.static(strains_FD.keys):
-            strains_FD[i][chan] += injected[i][chan]
-
-
-@ti.kernel
-def _generate_TDI_responses(TDI_data: ti.template(),   # ti.field  # ti.Struct.field, keep ti.template() point to the same memory address to avoid kernal repeated instantiation
-                            waveform: ti.template(),    # ti.Struct.field
-                                                        # the computaion is evaluated in the order of frequency point
-                                                        # using AoS structure to store data for efficiency
-                            orbit_model: ti.template(),                           
-                            armL_sec: ti.f64,
-                            lam: ti.f64,
-                            beta: ti.f64,
-                            psi: ti.f64,
-                            ):
-
-    pol_tensor = polarization_tensor_SSB(lam, beta, psi)    # tm.mat3
-    k = GW_propagation_unit_vector(lam, beta)             # tm.vec3
-
-    for i in TDI_data:
-
-        constellation_vectors = orbit_model(waveform[i].tf)
-
-        n1Hn1 = (constellation_vectors.n1 @ (pol_tensor.plus) @ constellation_vectors.n1) * waveform[i].hplus + (constellation_vectors.n1 @ (pol_tensor.cross) @ constellation_vectors.n1) * waveform[i].hcross    # complex number, complex_number   
-        n2Hn2 = (constellation_vectors.n2 @ (pol_tensor.plus) @ constellation_vectors.n2) * waveform[i].hplus + (constellation_vectors.n2 @ (pol_tensor.cross) @ constellation_vectors.n2) * waveform[i].hcross    # complex number, complex_number   
-        n3Hn3 = (constellation_vectors.n3 @ (pol_tensor.plus) @ constellation_vectors.n3) * waveform[i].hplus + (constellation_vectors.n3 @ (pol_tensor.cross) @ constellation_vectors.n3) * waveform[i].hcross    # complex number, complex_number   
-
-        kn1 = k@constellation_vectors.n1    # scalar
-        kn2 = k@constellation_vectors.n2    # scalar
-        kn3 = k@constellation_vectors.n3    # scalar
-
-        kp1Lp2L = k@(constellation_vectors.p1_det + constellation_vectors.p2_det)    # scalar
-        kp2Lp3L = k@(constellation_vectors.p2_det + constellation_vectors.p3_det)    # scalar
-        kp3Lp1L = k@(constellation_vectors.p3_det + constellation_vectors.p1_det)    # scalar
-
-        kp0 = k@constellation_vectors.p0    # scalar
-
-        common_sinc = PI * TDI_data[i].frequencies * armL_sec    # scalar
-        sinc12 = sinc(common_sinc * (1.-kn3))    # scalar
-        sinc21 = sinc(common_sinc * (1.+kn3))    # scalar
-        sinc23 = sinc(common_sinc * (1.-kn1))    # scalar
-        sinc32 = sinc(common_sinc * (1.+kn1))    # scalar
-        sinc31 = sinc(common_sinc * (1.-kn2))    # scalar
-        sinc13 = sinc(common_sinc * (1.+kn2))    # scalar
-
-        common_exp = -PI * TDI_data[i].frequencies * complex_number([0.0, 1.0])    # complex number, complex_number
-        exp12 = tm.cexp(common_exp*(armL_sec+kp1Lp2L))    # complex number, complex_number
-        exp23 = tm.cexp(common_exp*(armL_sec+kp2Lp3L))    # complex number, complex_number
-        exp31 = tm.cexp(common_exp*(armL_sec+kp3Lp1L))    # complex number, complex_number
-
-        prefactor = -PI * TDI_data[i].frequencies * armL_sec * complex_number([0.0, 1.0])    # complex number, complex_number
-        expp0 = tm.cexp(-2 * PI * TDI_data[i].frequencies * kp0 * complex_number([0.0, 1.0]))    # complex number, complex_number
-        commonfac = tm.cmul(prefactor, expp0)    # complex number, complex_number
-
-        TDI_data[i]['single_links']['link12'] = sinc12 * tm.cmul(tm.cmul(commonfac, n3Hn3), exp12)    # complex, complex_number
-        TDI_data[i]['single_links']['link21'] = sinc21 * tm.cmul(tm.cmul(commonfac, n3Hn3), exp12)    # complex, complex_number
-        TDI_data[i]['single_links']['link23'] = sinc23 * tm.cmul(tm.cmul(commonfac, n1Hn1), exp23)    # complex, complex_number
-        TDI_data[i]['single_links']['link32'] = sinc32 * tm.cmul(tm.cmul(commonfac, n1Hn1), exp23)    # complex, complex_number
-        TDI_data[i]['single_links']['link31'] = sinc31 * tm.cmul(tm.cmul(commonfac, n2Hn2), exp31)    # complex, complex_number
-        TDI_data[i]['single_links']['link13'] = sinc13 * tm.cmul(tm.cmul(commonfac, n2Hn2), exp31)    # complex, complex_number
-
-        for chan in ti.static(TDI_data.channels_data.keys):
-            TDI_data[i]['channels_data'][chan] = tm.cmul(TDI_data[i]['TDI_gen_prefactor'], TDI_combine_function_FD[chan](TDI_data[i]['delay_factor'], TDI_data[i]['single_links']))
-        
-
-@ti.kernel
 def _compute_TDI_prefactor_FD_response(frequency_field: ti.template(),         
                                        delay_factor_field: ti.template(), 
                                        prefactor_field: ti.template(),
@@ -679,7 +611,6 @@ class TDIChannelsData(object):
         else:
             return None
 
-    
 
 @ti.data_oriented
 class SpaceborneInterferometer(object):
@@ -769,6 +700,11 @@ class SpaceborneInterferometer(object):
 
     @ti.kernel
     def update_frequency_domain_response(self, waveform:ti.template(), lam:ti.f64, beta:ti.f64, psi:ti.f64):
+        '''
+        keep ti.template() point to the same memory address to avoid kernal repeated instantiation
+        the computaion is evaluated in the order of frequency point
+        using AoS structure to store data for efficiency               
+        '''
         pol_tensor = polarization_tensor_SSB(lam, beta, psi)    # matrix: 3*3
         k = GW_propagation_unit_vector(lam, beta)               # vector: 3
         
@@ -837,6 +773,8 @@ class SpaceborneInterferometer(object):
     
     def plot(self):
         pass
+
+
 
     def initialize_TDI_data(self):
         '''
