@@ -14,7 +14,7 @@ from matplotlib import pyplot as plt
 import taichi as ti
 import taichi.math as tm
 
-from .utilities import polarization_tensor_SSB, GW_propagation_unit_vector, sinc, \
+from .utils import polarization_tensor_SSB, GW_propagation_unit_vector, sinc, \
                        noise_weighted_inner_product, \
                        recursively_save_dict_contents_to_group, recursively_load_dict_contents_from_group, \
                        complex_number

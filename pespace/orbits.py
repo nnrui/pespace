@@ -3,7 +3,7 @@ import taichi.math as tm
 import numpy as np
 
 from .constants import *
-from .utilities import vec3
+from .utils import vec3
 
 sqrt3 = np.sqrt(3)
 Omega0 = 2 * PI / YEAR_SI                        # Omega0: orbital angular velocity of the constellation
