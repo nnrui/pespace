@@ -10,9 +10,10 @@ from bilby.gw.conversion import component_masses_to_symmetric_mass_ratio
 
 from .constants import *
 
-
-PolarizationStruct = ti.types.struct(plus=tm.mat3, cross=tm.mat3)
-vec2_complex = ti.types.vector(2, ti.f64)
+# Avoid using tm.vec3, tm.mat3, ..., since their dtype depend on the global set for precision of float.
+PolarizationStruct = ti.types.struct(plus=ti.types.matrix(3, 3, ti.f64), cross=ti.types.matrix(3, 3, ti.f64))
+complex_number = ti.types.vector(2, ti.f64)
+vec3 = ti.types.vector(3, ti.f64)    
 
 
 def func():
@@ -58,10 +59,10 @@ def polarization_tensor_SSB(lam: ti.f64, beta: ti.f64, psi: ti.f64) -> Polarizat
     array: 3*3 array
     '''
     # todo the constant should compute only once to reduce compution burden.
-    p = tm.vec3([tm.sin(lam) * tm.cos(psi) - tm.sin(beta) * tm.cos(lam) * tm.sin(psi), 
+    p = vec3([tm.sin(lam) * tm.cos(psi) - tm.sin(beta) * tm.cos(lam) * tm.sin(psi), 
                  -(tm.sin(beta) * tm.sin(lam) * tm.sin(psi)) - tm.cos(lam) * tm.cos(psi), 
                  tm.cos(beta) * tm.sin(psi)])
-    q = tm.vec3([-tm.cos(lam) * tm.cos(psi) * tm.sin(beta) - tm.sin(lam) * tm.sin(psi), 
+    q = vec3([-tm.cos(lam) * tm.cos(psi) * tm.sin(beta) - tm.sin(lam) * tm.sin(psi), 
                  -tm.cos(psi) * tm.sin(beta) * tm.sin(lam) + tm.cos(lam) * tm.sin(psi),
                  tm.cos(beta) * tm.cos(psi)])
     
@@ -70,8 +71,8 @@ def polarization_tensor_SSB(lam: ti.f64, beta: ti.f64, psi: ti.f64) -> Polarizat
                               cross= (p.outer_product(q) + q.outer_product(p)))
 
 @ti.func
-def GW_propagation_unit_vector(lam: ti.f64, beta: ti.f64) -> tm.vec3:                    # note that beta is (-pi/2, pi/2)
-    return tm.vec3([-tm.cos(beta)*tm.cos(lam), -tm.cos(beta)*tm.sin(lam), -tm.sin(beta)])
+def GW_propagation_unit_vector(lam: ti.f64, beta: ti.f64) -> vec3:                    # note that beta is (-pi/2, pi/2)
+    return vec3([-tm.cos(beta)*tm.cos(lam), -tm.cos(beta)*tm.sin(lam), -tm.sin(beta)])
 
 
 

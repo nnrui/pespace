@@ -17,15 +17,15 @@ import taichi.math as tm
 from .utilities import polarization_tensor_SSB, GW_propagation_unit_vector, sinc, \
                        noise_weighted_inner_product, \
                        recursively_save_dict_contents_to_group, recursively_load_dict_contents_from_group, \
-                       vec2_complex
+                       complex_number
 from .orbits import available_orbit_models, OrbitVectorStruct
 from .constants import *
 from .noise import noise_models
 
 
-SingleLinksStruct = ti.types.struct(link12=vec2_complex, link21=vec2_complex, 
-                                    link23=vec2_complex, link32=vec2_complex, 
-                                    link31=vec2_complex, link13=vec2_complex)
+SingleLinksStruct = ti.types.struct(link12=complex_number, link21=complex_number, 
+                                    link23=complex_number, link32=complex_number, 
+                                    link31=complex_number, link13=complex_number)
 
 
 @ti.kernel
@@ -64,17 +64,17 @@ def _generate_TDI_responses(TDI_data: ti.template(),   # ti.field  # ti.Struct.f
 
         constellation_vectors = orbit_model(waveform[i].tf)
 
-        n1Hn1 = (constellation_vectors.n1 @ (pol_tensor.plus) @ constellation_vectors.n1) * waveform[i].hplus + (constellation_vectors.n1 @ (pol_tensor.cross) @ constellation_vectors.n1) * waveform[i].hcross    # complex number, vec2_complex   
-        n2Hn2 = (constellation_vectors.n2 @ (pol_tensor.plus) @ constellation_vectors.n2) * waveform[i].hplus + (constellation_vectors.n2 @ (pol_tensor.cross) @ constellation_vectors.n2) * waveform[i].hcross    # complex number, vec2_complex   
-        n3Hn3 = (constellation_vectors.n3 @ (pol_tensor.plus) @ constellation_vectors.n3) * waveform[i].hplus + (constellation_vectors.n3 @ (pol_tensor.cross) @ constellation_vectors.n3) * waveform[i].hcross    # complex number, vec2_complex   
+        n1Hn1 = (constellation_vectors.n1 @ (pol_tensor.plus) @ constellation_vectors.n1) * waveform[i].hplus + (constellation_vectors.n1 @ (pol_tensor.cross) @ constellation_vectors.n1) * waveform[i].hcross    # complex number, complex_number   
+        n2Hn2 = (constellation_vectors.n2 @ (pol_tensor.plus) @ constellation_vectors.n2) * waveform[i].hplus + (constellation_vectors.n2 @ (pol_tensor.cross) @ constellation_vectors.n2) * waveform[i].hcross    # complex number, complex_number   
+        n3Hn3 = (constellation_vectors.n3 @ (pol_tensor.plus) @ constellation_vectors.n3) * waveform[i].hplus + (constellation_vectors.n3 @ (pol_tensor.cross) @ constellation_vectors.n3) * waveform[i].hcross    # complex number, complex_number   
 
         kn1 = k@constellation_vectors.n1    # scalar
         kn2 = k@constellation_vectors.n2    # scalar
         kn3 = k@constellation_vectors.n3    # scalar
 
-        kp1Lp2L = k@(constellation_vectors.p1D + constellation_vectors.p2D)    # scalar
-        kp2Lp3L = k@(constellation_vectors.p2D + constellation_vectors.p3D)    # scalar
-        kp3Lp1L = k@(constellation_vectors.p3D + constellation_vectors.p1D)    # scalar
+        kp1Lp2L = k@(constellation_vectors.p1_det + constellation_vectors.p2_det)    # scalar
+        kp2Lp3L = k@(constellation_vectors.p2_det + constellation_vectors.p3_det)    # scalar
+        kp3Lp1L = k@(constellation_vectors.p3_det + constellation_vectors.p1_det)    # scalar
 
         kp0 = k@constellation_vectors.p0    # scalar
 
@@ -86,24 +86,24 @@ def _generate_TDI_responses(TDI_data: ti.template(),   # ti.field  # ti.Struct.f
         sinc31 = sinc(common_sinc * (1.-kn2))    # scalar
         sinc13 = sinc(common_sinc * (1.+kn2))    # scalar
 
-        common_exp = -PI * TDI_data[i].frequencies * vec2_complex([0.0, 1.0])    # complex number, vec2_complex
-        exp12 = tm.cexp(common_exp*(armL_sec+kp1Lp2L))    # complex number, vec2_complex
-        exp23 = tm.cexp(common_exp*(armL_sec+kp2Lp3L))    # complex number, vec2_complex
-        exp31 = tm.cexp(common_exp*(armL_sec+kp3Lp1L))    # complex number, vec2_complex
+        common_exp = -PI * TDI_data[i].frequencies * complex_number([0.0, 1.0])    # complex number, complex_number
+        exp12 = tm.cexp(common_exp*(armL_sec+kp1Lp2L))    # complex number, complex_number
+        exp23 = tm.cexp(common_exp*(armL_sec+kp2Lp3L))    # complex number, complex_number
+        exp31 = tm.cexp(common_exp*(armL_sec+kp3Lp1L))    # complex number, complex_number
 
-        prefactor = -PI * TDI_data[i].frequencies * armL_sec * vec2_complex([0.0, 1.0])    # complex number, vec2_complex
-        expp0 = tm.cexp(-2 * PI * TDI_data[i].frequencies * kp0 * vec2_complex([0.0, 1.0]))    # complex number, vec2_complex
-        commonfac = tm.cmul(prefactor, expp0)    # complex number, vec2_complex
+        prefactor = -PI * TDI_data[i].frequencies * armL_sec * complex_number([0.0, 1.0])    # complex number, complex_number
+        expp0 = tm.cexp(-2 * PI * TDI_data[i].frequencies * kp0 * complex_number([0.0, 1.0]))    # complex number, complex_number
+        commonfac = tm.cmul(prefactor, expp0)    # complex number, complex_number
 
-        TDI_data[i]['single_links']['link12'] = sinc12 * tm.cmul(tm.cmul(commonfac, n3Hn3), exp12)    # complex, vec2_complex
-        TDI_data[i]['single_links']['link21'] = sinc21 * tm.cmul(tm.cmul(commonfac, n3Hn3), exp12)    # complex, vec2_complex
-        TDI_data[i]['single_links']['link23'] = sinc23 * tm.cmul(tm.cmul(commonfac, n1Hn1), exp23)    # complex, vec2_complex
-        TDI_data[i]['single_links']['link32'] = sinc32 * tm.cmul(tm.cmul(commonfac, n1Hn1), exp23)    # complex, vec2_complex
-        TDI_data[i]['single_links']['link31'] = sinc31 * tm.cmul(tm.cmul(commonfac, n2Hn2), exp31)    # complex, vec2_complex
-        TDI_data[i]['single_links']['link13'] = sinc13 * tm.cmul(tm.cmul(commonfac, n2Hn2), exp31)    # complex, vec2_complex
+        TDI_data[i]['single_links']['link12'] = sinc12 * tm.cmul(tm.cmul(commonfac, n3Hn3), exp12)    # complex, complex_number
+        TDI_data[i]['single_links']['link21'] = sinc21 * tm.cmul(tm.cmul(commonfac, n3Hn3), exp12)    # complex, complex_number
+        TDI_data[i]['single_links']['link23'] = sinc23 * tm.cmul(tm.cmul(commonfac, n1Hn1), exp23)    # complex, complex_number
+        TDI_data[i]['single_links']['link32'] = sinc32 * tm.cmul(tm.cmul(commonfac, n1Hn1), exp23)    # complex, complex_number
+        TDI_data[i]['single_links']['link31'] = sinc31 * tm.cmul(tm.cmul(commonfac, n2Hn2), exp31)    # complex, complex_number
+        TDI_data[i]['single_links']['link13'] = sinc13 * tm.cmul(tm.cmul(commonfac, n2Hn2), exp31)    # complex, complex_number
 
         for chan in ti.static(TDI_data.channels_data.keys):
-            TDI_data[i]['channels_data'][chan] = tm.cmul(TDI_data[i]['TDI_gen_prefactor'], TDI_combination_funcs[chan](TDI_data[i]['delay_factor'], TDI_data[i]['single_links']))
+            TDI_data[i]['channels_data'][chan] = tm.cmul(TDI_data[i]['TDI_gen_prefactor'], TDI_combine_function_FD[chan](TDI_data[i]['delay_factor'], TDI_data[i]['single_links']))
         
 
 @ti.kernel
@@ -114,20 +114,20 @@ def _compute_TDI_prefactor_FD_response(frequency_field: ti.template(),
                                        TDI_gen: ti.u8
                                       ):
     for i in frequency_field:
-        z = tm.cexp(- 2.0 * PI * frequency_field[i] * armlength_sec * vec2_complex([0, 1]))
+        z = tm.cexp(- 2.0 * PI * frequency_field[i] * armlength_sec * complex_number([0, 1]))
         
-        prefactor = vec2_complex(0.0, 0.0)
+        prefactor = complex_number(0.0, 0.0)
         if TDI_gen == 1:
-            prefactor = vec2_complex(1, 0) - tm.cpow(z, 2)
+            prefactor = complex_number(1, 0) - tm.cpow(z, 2)
         elif TDI_gen == 2:
-            prefactor = vec2_complex(1, 0) - tm.cpow(z, 2) - tm.cpow(z, 4) + tm.cpow(z, 6)
+            prefactor = complex_number(1, 0) - tm.cpow(z, 2) - tm.cpow(z, 4) + tm.cpow(z, 6)
         
         prefactor_field[i] = prefactor
         delay_factor_field[i] = z
 
 
 @ti.func
-def _TDI_X(z: vec2_complex, singlelink_responses: SingleLinksStruct) -> vec2_complex:
+def _TDI_X_FD(z: complex_number, singlelink_responses: SingleLinksStruct) -> complex_number:
     '''
     function for computing X channel of TDI combination
 
@@ -147,7 +147,7 @@ def _TDI_X(z: vec2_complex, singlelink_responses: SingleLinksStruct) -> vec2_com
 
 
 @ti.func
-def _TDI_Y(z: vec2_complex, singlelink_responses: SingleLinksStruct) -> vec2_complex:
+def _TDI_Y_FD(z: complex_number, singlelink_responses: SingleLinksStruct) -> complex_number:
     '''
     function for computing Y channel of TDI combination
 
@@ -166,7 +166,7 @@ def _TDI_Y(z: vec2_complex, singlelink_responses: SingleLinksStruct) -> vec2_com
 
 
 @ti.func
-def _TDI_Z(z: vec2_complex, singlelink_responses: SingleLinksStruct) -> vec2_complex:
+def _TDI_Z_FD(z: complex_number, singlelink_responses: SingleLinksStruct) -> complex_number:
     '''
     function for computing Z channel of TDI combination
 
@@ -185,7 +185,7 @@ def _TDI_Z(z: vec2_complex, singlelink_responses: SingleLinksStruct) -> vec2_com
 
 
 @ti.func
-def _TDI_A(z: vec2_complex, singlelink_responses: SingleLinksStruct) -> vec2_complex:
+def _TDI_A_FD(z: complex_number, singlelink_responses: SingleLinksStruct) -> complex_number:
     '''
     function for computing A channel of TDI noise-indenpendent combination
 
@@ -202,12 +202,12 @@ def _TDI_A(z: vec2_complex, singlelink_responses: SingleLinksStruct) -> vec2_com
     '''
     return (singlelink_responses['link23'] + tm.cmul(z, singlelink_responses['link32']) 
          + singlelink_responses['link21'] + tm.cmul(z, singlelink_responses['link12'])
-         - tm.cmul((vec2_complex(1, 0) + z), (singlelink_responses['link13']) + singlelink_responses['link31'])
+         - tm.cmul((complex_number(1, 0) + z), (singlelink_responses['link13']) + singlelink_responses['link31'])
          )/tm.sqrt(2)
 
 
 @ti.func
-def _TDI_E(z: vec2_complex, singlelink_responses: SingleLinksStruct) -> vec2_complex:
+def _TDI_E_FD(z: complex_number, singlelink_responses: SingleLinksStruct) -> complex_number:
     '''
     function for computing E channel of TDI noise-indenpendent combination
 
@@ -222,14 +222,14 @@ def _TDI_E(z: vec2_complex, singlelink_responses: SingleLinksStruct) -> vec2_com
     ========
     array, the E channel without the prefactor which is determined by the TDI generation.
     '''
-    return (tm.cmul((vec2_complex(1, 0) - z), (singlelink_responses['link31'] - singlelink_responses['link13'])) + 
-         tm.cmul((z + vec2_complex(2, 0)), (singlelink_responses['link32'] - singlelink_responses['link12'])) + 
-         tm.cmul((vec2_complex(1, 0) + 2*z), (singlelink_responses['link23'] - singlelink_responses['link21']))
+    return (tm.cmul((complex_number(1, 0) - z), (singlelink_responses['link31'] - singlelink_responses['link13'])) + 
+         tm.cmul((z + complex_number(2, 0)), (singlelink_responses['link32'] - singlelink_responses['link12'])) + 
+         tm.cmul((complex_number(1, 0) + 2*z), (singlelink_responses['link23'] - singlelink_responses['link21']))
         )/tm.sqrt(6)
 
 
 @ti.func
-def _TDI_T(z: vec2_complex, singlelink_responses: SingleLinksStruct) -> vec2_complex:
+def _TDI_T_FD(z: complex_number, singlelink_responses: SingleLinksStruct) -> complex_number:
     '''
     function for computing T channel of TDI noise-indenpendent combination
 
@@ -247,19 +247,20 @@ def _TDI_T(z: vec2_complex, singlelink_responses: SingleLinksStruct) -> vec2_com
     return (tm.cmul((singlelink_responses['link12'] - singlelink_responses['link21'] + 
                   singlelink_responses['link23'] - singlelink_responses['link32'] +
                   singlelink_responses['link31'] - singlelink_responses['link13']), 
-                  (vec2_complex(1, 0) - z)
+                  (complex_number(1, 0) - z)
                 )
          )/tm.sqrt(3)
 
 
-TDI_combination_funcs = {'X': _TDI_X,
-                         'Y': _TDI_Y,
-                         'Z': _TDI_Z,
-                         'A': _TDI_A,
-                         'E': _TDI_E,
-                         'T': _TDI_T
-                         }
+TDI_combine_function_FD = {'X': _TDI_X_FD,
+                           'Y': _TDI_Y_FD,
+                           'Z': _TDI_Z_FD,
+                           'A': _TDI_A_FD,
+                           'E': _TDI_E_FD,
+                           'T': _TDI_T_FD
+                           }
 implemented_TDI_generations = ('1.5', '2.0')
+implemented_TDI_channels = ('X', 'Y', 'Z', 'A', 'E', 'T')
 
 
 ################################################################################
@@ -302,8 +303,8 @@ class DataInfo(object):
         TODO: 1. describing rules for minimum_frequency, maximum_frequency
               2. describing rules for time samples and frequency samples
         """
-        if not all([chan in TDI_combination_funcs.keys() for chan in self.channels]):
-            raise ValueError(f"You are setting TDIChannelData with channels of {self.channels}. While current supported channels are only including {TDI_combination_funcs.keys()}")
+        if not all([chan in implemented_TDI_generations for chan in self.channels]):
+            raise ValueError(f"You are setting TDIChannelData with channels of {self.channels}. While current supported channels are only including {implemented_TDI_channelsI}")
         if not self.generation in implemented_TDI_generations:
             raise ValueError(f"You are setting TDIChannelData with generation of {self.generation}. While current supported channels are only including {implemented_TDI_generations}")
 
@@ -401,7 +402,7 @@ class TDIChannelsData(object):
         """
         self.frequency_samples = ti.field(ti.f64, (self.data_info.frequency_series_length,))
         self.frequency_samples.from_numpy(self.data_info.frequency_samples_array)
-        self.frequency_domain_TDI_data = ti.Struct.field(dict.fromkeys(self.data_info.channels, vec2_complex), shape=(self.data_info.frequency_series_length,))
+        self.frequency_domain_TDI_data = ti.Struct.field(dict.fromkeys(self.data_info.channels, complex_number), shape=(self.data_info.frequency_series_length,))
         return None
 
     def _initialize_wavelet_domain_data(self)->None:
@@ -595,7 +596,7 @@ class TDIChannelsData(object):
             noise_strains[chan] = noise.T
 
         if output_type == "taichi":
-            ret = ti.Struct.field(dict.fromkeys(self.data_info.channels, vec2_complex), shape=(self.data_info.frequency_series_length, ))
+            ret = ti.Struct.field(dict.fromkeys(self.data_info.channels, complex_number), shape=(self.data_info.frequency_series_length, ))
             ret.from_numpy(noise_strains)
         elif output_type == "numpy":
             ret = {}
@@ -622,7 +623,7 @@ class TDIChannelsData(object):
                 raise ValueError("Cannot add the input dict of array into the `frequency_domian_TDI_data`, since there is at least one array in the input dict having different length with the TDI data.")
             if not set(input.keys()) == set(self.data_info.channels):
                 raise ValueError('Cannot add the input dict of array into the `frequency_domian_TDI_data`, since the channnels contained by input is different with the TDI data')
-            input_field = ti.Struct.field(dict.fromkeys(self.data_info.channels, vec2_complex), shape=(self.data_info.frequency_series_length,))
+            input_field = ti.Struct.field(dict.fromkeys(self.data_info.channels, complex_number), shape=(self.data_info.frequency_series_length,))
             input_field.from_numpy(dict([(chan, np.vstack([data.real, data.imag]).T) for chan, data in input.items()]))
         else:
             raise TypeError("Unsupported type, expect ti.StructField or dict[NDArray]")
@@ -682,26 +683,24 @@ class TDIChannelsData(object):
 
 @ti.data_oriented
 class SpaceborneInterferometer(object):
+    # TODO:
+    # - combine orbit and armlength into a class
+    # - include suppot to higher modes
 
     def __init__(self, name:str, TDI_data:TDIChannelsData, 
                  orbit:str|Callable[[ti.f64], OrbitVectorStruct]='LISA_analytic', armlength:float=ARM_LENGTH_LISA_SI, 
-                 TDI_channels:tuple[str, ...]=('A', 'E'), TDI_generation:str='1.5', response_model:str='full')->None:
+                 response_model:str='full')->None:
         '''
         Instantiate an space detector object.
 
         Parameters
         ==========
         TDI_data: 
-        orbit: string
+        orbit: 
             orbit model of the constellation, see ".orbits.orbit_models.keys()" for all available options
-        armlength: float
+        armlength: 
             armlength in meter
-        TDI_channels: tuple
-            TDI channels considered, could be any of "X", "Y", "Z", "A", "E", "T"
-            but can only be ("A", "E", "T") or ("A", "E") when computing likelihood
-        TDI_generation: string
-            TDI generation, could be '1.5' or '2.0'
-        response_model: string
+        response_model: 
             one of 'full', 'low-frequency', 'frozen', 'frozen_low-frequency' (only full are implemented currently)
         '''
         self.name = name
@@ -717,8 +716,6 @@ class SpaceborneInterferometer(object):
 
         self.armlength = armlength
         self.armlength_sec = armlength/C_SI
-        self.TDI_channels = tuple(TDI_channels)
-        self.TDI_generation = TDI_generation
         self.response_model = response_model
 
         self.TDI_data = TDI_data
@@ -730,24 +727,20 @@ class SpaceborneInterferometer(object):
         return None
     
     def initialize_response_container_in_frequency_domain(self)->None:
-        if self.TDI_data.frequency_domain_TDI_data is None:
-            raise ValueError("The `frequency_domain_TDI_data` of the passed-in TDI_data is `None`. \
+        if self.TDI_data.data_info is None:
+            raise ValueError("The `data_info` of the passed-in TDI_data is `None`. Can not determine the frequency series length. \
                              Please set it before calling `initilize_response_container_in_frequency_domain`.")
         else:
-            self.response_container = ti.Struct.field(dict.fromkeys(self.TDI_data.data_info.channels, vec2_complex), 
-                                                      shape=(self.TDI_data.data_info.frequency_series_length,),
-                                                      name='frequency domain response container')
-            self._FD_response_assistance = ti.Struct.field(dict(delay_factor = vec2_complex,
-                                                                TDI_generation_prefactor = vec2_complex,
+            self.response_container = ti.Struct.field(dict.fromkeys(self.TDI_data.data_info.channels, complex_number), 
+                                                      shape=(self.TDI_data.data_info.frequency_series_length,))
+            self._FD_response_assistance = ti.Struct.field(dict(delay_factor = complex_number,
+                                                                TDI_generation_prefactor = complex_number,
                                                                 single_links = SingleLinksStruct), 
                                                            shape=(self.TDI_data.data_info.frequency_series_length,))
             if self.TDI_data.data_info.generation == '1.5':
                 int_TDI_gen = 1
             elif self.TDI_data.data_info.generation == '2.0':
                 int_TDI_gen = 2
-            else:
-                raise ValueError(f"TDI generation {self.TDI_data.data_info.generation} is unknown. \n \
-                                 Please choose from '1.5' or '2.0'.")
             _compute_TDI_prefactor_FD_response(self.TDI_data.frequency_samples, 
                                                self._FD_response_assistance.delay_factor, 
                                                self._FD_response_assistance.TDI_generation_prefactor,
@@ -758,69 +751,71 @@ class SpaceborneInterferometer(object):
     def initialize_response_container_in_wavelet_domain(self)->None:
         return None
     
-    def initialize_waveform_container_in_time_domain(self)->None:
-        return None
+    # def initialize_waveform_container_in_time_domain(self)->None:
+    #     return None
     
-    def initialize_waveform_container_in_frequency_domain(self)->None:
-        self.waveform_container = ti.Struct.field({'hf_plus': vec2_complex,
-                                                   'hf_cross': vec2_complex,
-                                                   'tf': ti.f64}, 
-                                                   shape=(self.TDI_data.data_info.frequency_series_length,))
-        
-        return None
+    # def initialize_waveform_container_in_frequency_domain(self)->None:
+    #     if self.TDI_data.data_info is None:
+    #         raise ValueError("The `data_info` of the passed-in TDI_data is `None`. Can not determine the frequency series length. \
+    #                          Please set it before calling `initialize_waveform_container_in_frequency_domain`.")
+    #     self.waveform_container = ti.Struct.field({'hf_plus': complex_number,
+    #                                                'hf_cross': complex_number,
+    #                                                'tf': ti.f64}, 
+    #                                                shape=(self.TDI_data.data_info.frequency_series_length,))
+    #     return None
 
-    def initialize_waveform_container_in_wavelet_domain(self)->None:
-        return None
+    # def initialize_waveform_container_in_wavelet_domain(self)->None:
+    #     return None
 
     @ti.kernel
     def update_frequency_domain_response(self, waveform:ti.template(), lam:ti.f64, beta:ti.f64, psi:ti.f64):
-        pol_tensor = polarization_tensor_SSB(lam, beta, psi)    # tm.mat3
-        k = GW_propagation_unit_vector(lam, beta)             # tm.vec3
+        pol_tensor = polarization_tensor_SSB(lam, beta, psi)    # matrix: 3*3
+        k = GW_propagation_unit_vector(lam, beta)               # vector: 3
         
         for i in self.response_container:
 
             constellation_vectors = self.orbit_vectors_function(waveform[i].tf)
 
-            n1Hn1 = (constellation_vectors.n1 @ (pol_tensor.plus) @ constellation_vectors.n1) * waveform[i].hplus + (constellation_vectors.n1 @ (pol_tensor.cross) @ constellation_vectors.n1) * waveform[i].hcross    # complex number, vec2_complex   
-            n2Hn2 = (constellation_vectors.n2 @ (pol_tensor.plus) @ constellation_vectors.n2) * waveform[i].hplus + (constellation_vectors.n2 @ (pol_tensor.cross) @ constellation_vectors.n2) * waveform[i].hcross    # complex number, vec2_complex   
-            n3Hn3 = (constellation_vectors.n3 @ (pol_tensor.plus) @ constellation_vectors.n3) * waveform[i].hplus + (constellation_vectors.n3 @ (pol_tensor.cross) @ constellation_vectors.n3) * waveform[i].hcross    # complex number, vec2_complex   
+            n1_h_n1 = (constellation_vectors.n1 @ (pol_tensor.plus) @ constellation_vectors.n1) * waveform[i].hplus + (constellation_vectors.n1 @ (pol_tensor.cross) @ constellation_vectors.n1) * waveform[i].hcross    # complex number  
+            n2_h_n2 = (constellation_vectors.n2 @ (pol_tensor.plus) @ constellation_vectors.n2) * waveform[i].hplus + (constellation_vectors.n2 @ (pol_tensor.cross) @ constellation_vectors.n2) * waveform[i].hcross    # complex number  
+            n3_h_n3 = (constellation_vectors.n3 @ (pol_tensor.plus) @ constellation_vectors.n3) * waveform[i].hplus + (constellation_vectors.n3 @ (pol_tensor.cross) @ constellation_vectors.n3) * waveform[i].hcross    # complex number  
 
-            kn1 = k@constellation_vectors.n1    # scalar
-            kn2 = k@constellation_vectors.n2    # scalar
-            kn3 = k@constellation_vectors.n3    # scalar
+            k_n1 = k@constellation_vectors.n1    # scalar
+            k_n2 = k@constellation_vectors.n2    # scalar
+            k_n3 = k@constellation_vectors.n3    # scalar
 
-            kp1Lp2L = k@(constellation_vectors.p1D + constellation_vectors.p2D)    # scalar
-            kp2Lp3L = k@(constellation_vectors.p2D + constellation_vectors.p3D)    # scalar
-            kp3Lp1L = k@(constellation_vectors.p3D + constellation_vectors.p1D)    # scalar
+            k_p1det_p2det = k@(constellation_vectors.p1_det + constellation_vectors.p2_det)    # scalar
+            k_p2det_p3det = k@(constellation_vectors.p2_det + constellation_vectors.p3_det)    # scalar
+            k_p3det_p1det = k@(constellation_vectors.p3_det + constellation_vectors.p1_det)    # scalar
 
-            kp0 = k@constellation_vectors.p0    # scalar
+            k_p0 = k@constellation_vectors.p0    # scalar
 
             common_sinc = PI * self.TDI_data.frequency_samples[i] * self.armlength_sec  # scalar
-            sinc12 = sinc(common_sinc * (1.-kn3))    # scalar
-            sinc21 = sinc(common_sinc * (1.+kn3))    # scalar
-            sinc23 = sinc(common_sinc * (1.-kn1))    # scalar
-            sinc32 = sinc(common_sinc * (1.+kn1))    # scalar
-            sinc31 = sinc(common_sinc * (1.-kn2))    # scalar
-            sinc13 = sinc(common_sinc * (1.+kn2))    # scalar
+            sinc12 = sinc(common_sinc * (1.-k_n3))    # scalar
+            sinc21 = sinc(common_sinc * (1.+k_n3))    # scalar
+            sinc23 = sinc(common_sinc * (1.-k_n1))    # scalar
+            sinc32 = sinc(common_sinc * (1.+k_n1))    # scalar
+            sinc31 = sinc(common_sinc * (1.-k_n2))    # scalar
+            sinc13 = sinc(common_sinc * (1.+k_n2))    # scalar
 
-            common_exp = -PI * self.TDI_data.frequency_samples[i] * vec2_complex([0.0, 1.0])    # complex number, vec2_complex
-            exp12 = tm.cexp(common_exp*(self.armlength_sec+kp1Lp2L))    # complex number, vec2_complex
-            exp23 = tm.cexp(common_exp*(self.armlength_sec+kp2Lp3L))    # complex number, vec2_complex
-            exp31 = tm.cexp(common_exp*(self.armlength_sec+kp3Lp1L))    # complex number, vec2_complex
+            common_exp = -PI * self.TDI_data.frequency_samples[i] * complex_number([0.0, 1.0])    # complex_number
+            exp12 = tm.cexp(common_exp*(self.armlength_sec+k_p1det_p2det))    # complex_number
+            exp23 = tm.cexp(common_exp*(self.armlength_sec+k_p2det_p3det))    # complex_number
+            exp31 = tm.cexp(common_exp*(self.armlength_sec+k_p3det_p1det))    # complex_number
 
-            prefactor = -PI * self.TDI_data.frequency_samples[i] * self.armlength_sec * vec2_complex([0.0, 1.0])    # complex number, vec2_complex
-            expp0 = tm.cexp(-2 * PI * self.TDI_data.frequency_samples[i] * kp0 * vec2_complex([0.0, 1.0]))    # complex number, vec2_complex
-            commonfac = tm.cmul(prefactor, expp0)    # complex number, vec2_complex
+            prefactor = -PI * self.TDI_data.frequency_samples[i] * self.armlength_sec * complex_number([0.0, 1.0])    # complex_number
+            exp_p0 = tm.cexp(-2 * PI * self.TDI_data.frequency_samples[i] * k_p0 * complex_number([0.0, 1.0]))    # complex_number
+            common_factor = tm.cmul(prefactor, exp_p0)    # complex_number
 
-            self._FD_response_assistance[i]['single_links']['link12'] = sinc12 * tm.cmul(tm.cmul(commonfac, n3Hn3), exp12)    # complex, vec2_complex
-            self._FD_response_assistance[i]['single_links']['link21'] = sinc21 * tm.cmul(tm.cmul(commonfac, n3Hn3), exp12)    # complex, vec2_complex
-            self._FD_response_assistance[i]['single_links']['link23'] = sinc23 * tm.cmul(tm.cmul(commonfac, n1Hn1), exp23)    # complex, vec2_complex
-            self._FD_response_assistance[i]['single_links']['link32'] = sinc32 * tm.cmul(tm.cmul(commonfac, n1Hn1), exp23)    # complex, vec2_complex
-            self._FD_response_assistance[i]['single_links']['link31'] = sinc31 * tm.cmul(tm.cmul(commonfac, n2Hn2), exp31)    # complex, vec2_complex
-            self._FD_response_assistance[i]['single_links']['link13'] = sinc13 * tm.cmul(tm.cmul(commonfac, n2Hn2), exp31)    # complex, vec2_complex
+            self._FD_response_assistance[i]['single_links']['link12'] = sinc12 * tm.cmul(tm.cmul(common_factor, n3_h_n3), exp12)    # complex_number
+            self._FD_response_assistance[i]['single_links']['link21'] = sinc21 * tm.cmul(tm.cmul(common_factor, n3_h_n3), exp12)    # complex_number
+            self._FD_response_assistance[i]['single_links']['link23'] = sinc23 * tm.cmul(tm.cmul(common_factor, n1_h_n1), exp23)    # complex_number
+            self._FD_response_assistance[i]['single_links']['link32'] = sinc32 * tm.cmul(tm.cmul(common_factor, n1_h_n1), exp23)    # complex_number
+            self._FD_response_assistance[i]['single_links']['link31'] = sinc31 * tm.cmul(tm.cmul(common_factor, n2_h_n2), exp31)    # complex_number
+            self._FD_response_assistance[i]['single_links']['link13'] = sinc13 * tm.cmul(tm.cmul(common_factor, n2_h_n2), exp31)    # complex_number
 
             for chan in ti.static(self.TDI_data.data_info.channels):
-                self.response_container[i][chan] = tm.cmul(self._FD_response_assistance[i]['TDI_gen_prefactor'], TDI_combination_funcs[chan](self._FD_response_assistance[i]['delay_factor'], self._FD_response_assistance[i]['single_links']))
+                self.response_container[i][chan] = tm.cmul(self._FD_response_assistance[i]['TDI_gen_prefactor'], TDI_combine_function_FD[chan](self._FD_response_assistance[i]['delay_factor'], self._FD_response_assistance[i]['single_links']))
     
     def update_wavelet_domain_response(self)->None:
         return None
@@ -848,18 +843,18 @@ class SpaceborneInterferometer(object):
         set TDI_data field, using AoS structure to store data for efficiency, 
         keep the memory address fixed to avoid repeated repeated instantiation of the computational kernel
         {frequencies: ti.f64, 
-         delay_factor: vec2_complex, 
-         TDI_gen_prefactor: vec2_complex, 
+         delay_factor: complex_number, 
+         TDI_gen_prefactor: complex_number, 
          single_links: SingleLinksStruct, 
          channels_data: ti.types.struct(TDI_chan_dict)
          }
         '''
-        TDI_chan_dict = dict.fromkeys(self.TDI_channels, vec2_complex)
+        TDI_chan_dict = dict.fromkeys(self.TDI_channels, complex_number)
         TDI_chan_struct = ti.types.struct(**TDI_chan_dict)
         
         TDI_data_struct = ti.types.struct(frequencies = ti.f64, 
-                                          delay_factor = vec2_complex,
-                                          TDI_gen_prefactor = vec2_complex,
+                                          delay_factor = complex_number,
+                                          TDI_gen_prefactor = complex_number,
                                           single_links = SingleLinksStruct,
                                           channels_data = TDI_chan_struct)
         TDI_data_field = TDI_data_struct.field()
@@ -881,8 +876,8 @@ class SpaceborneInterferometer(object):
     
     
     def initialize_waveform_container(self):
-        waveform_field = ti.Struct.field({'hplus': vec2_complex,
-                                          'hcross': vec2_complex,
+        waveform_field = ti.Struct.field({'hplus': complex_number,
+                                          'hcross': complex_number,
                                           'tf': ti.f64})
         ti.root.dense(ti.i, self.data_length).place(waveform_field)
         self.waveform_container = waveform_field
@@ -910,7 +905,7 @@ class SpaceborneInterferometer(object):
 
     
     def initialize_strains_FD(self):
-        strains_FD_field = ti.Struct.field(dict.fromkeys(self.TDI_channels, vec2_complex))
+        strains_FD_field = ti.Struct.field(dict.fromkeys(self.TDI_channels, complex_number))
         ti.root.dense(ti.i, self.data_length).place(strains_FD_field)
         self.strains_FD = strains_FD_field
         return None
@@ -937,7 +932,7 @@ class SpaceborneInterferometer(object):
         self.updata_TDI_responses(parameters)
         _inject_into_strains_FD(self.strains_FD, self.TDI_data.channels_data)
 
-        injected_signals = ti.Struct.field(dict.fromkeys(self.TDI_channels, vec2_complex), shape=(self.data_length,))
+        injected_signals = ti.Struct.field(dict.fromkeys(self.TDI_channels, complex_number), shape=(self.data_length,))
         injected_signals.copy_from(self.TDI_data.channels_data)
         self.signals.append(injected_signals)
 
@@ -993,7 +988,7 @@ class SpaceborneInterferometer(object):
             im = rng.normal(0, var, self.data_length) * (self._np_array_PSDs[chan])**0.5
             noise_strains[chan] = np.vstack((re, im)).T
 
-        noise_strains_field = ti.Struct.field(dict.fromkeys(self.TDI_channels, vec2_complex), shape=(self.data_length, ))
+        noise_strains_field = ti.Struct.field(dict.fromkeys(self.TDI_channels, complex_number), shape=(self.data_length, ))
         noise_strains_field.from_numpy(noise_strains)
         _inject_into_strains_FD(self.strains_FD, noise_strains_field)
 
