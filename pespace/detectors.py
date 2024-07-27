@@ -651,7 +651,7 @@ class SpaceborneInterferometer(object):
 
         self.TDI_data = TDI_data
         self.response_container = None
-        self.waveform_container = None
+        # self.waveform_container = None
         self._FD_response_assistance = None
 
     def initialize_response_container_in_time_domain(self)->None:
@@ -701,7 +701,7 @@ class SpaceborneInterferometer(object):
     @ti.kernel
     def update_frequency_domain_response(self, waveform:ti.template(), lam:ti.f64, beta:ti.f64, psi:ti.f64):
         '''
-        keep ti.template() point to the same memory address to avoid kernal repeated instantiation
+        keep `waveform` point to the same memory address to avoid kernal repeated instantiation
         the computaion is evaluated in the order of frequency point
         using AoS structure to store data for efficiency               
         '''
@@ -712,9 +712,9 @@ class SpaceborneInterferometer(object):
 
             constellation_vectors = self.orbit_vectors_function(waveform[i].tf)
 
-            n1_h_n1 = (constellation_vectors.n1 @ (pol_tensor.plus) @ constellation_vectors.n1) * waveform[i].hplus + (constellation_vectors.n1 @ (pol_tensor.cross) @ constellation_vectors.n1) * waveform[i].hcross    # complex number  
-            n2_h_n2 = (constellation_vectors.n2 @ (pol_tensor.plus) @ constellation_vectors.n2) * waveform[i].hplus + (constellation_vectors.n2 @ (pol_tensor.cross) @ constellation_vectors.n2) * waveform[i].hcross    # complex number  
-            n3_h_n3 = (constellation_vectors.n3 @ (pol_tensor.plus) @ constellation_vectors.n3) * waveform[i].hplus + (constellation_vectors.n3 @ (pol_tensor.cross) @ constellation_vectors.n3) * waveform[i].hcross    # complex number  
+            n1_h_n1 = constellation_vectors.n1 @ pol_tensor.plus @ constellation_vectors.n1 * waveform[i].hplus + constellation_vectors.n1 @ pol_tensor.cross @ constellation_vectors.n1 * waveform[i].hcross    # complex number  
+            n2_h_n2 = constellation_vectors.n2 @ pol_tensor.plus @ constellation_vectors.n2 * waveform[i].hplus + constellation_vectors.n2 @ pol_tensor.cross @ constellation_vectors.n2 * waveform[i].hcross    # complex number  
+            n3_h_n3 = constellation_vectors.n3 @ pol_tensor.plus @ constellation_vectors.n3 * waveform[i].hplus + constellation_vectors.n3 @ pol_tensor.cross @ constellation_vectors.n3 * waveform[i].hcross    # complex number  
 
             k_n1 = k@constellation_vectors.n1    # scalar
             k_n2 = k@constellation_vectors.n2    # scalar
@@ -759,8 +759,33 @@ class SpaceborneInterferometer(object):
     def inject_time_domain_signal(self)->None:
         pass
 
-    def inject_frequency_domain_signal(self)->None:
-        pass
+    def inject_frequency_domain_signal(self, waveform:ti.StructField|dict[str, NDArray[np.complex128]], lam:ti.f64, beta:ti.f64, psi:ti.f64)->None:
+        """Using dict[NDArray] as input requires instantiate a new waveform_field in each
+         function call, which can lead to repeated instantiation of the kernel for
+          the  `updata_frequency_domain_response` method, and deteriorate computaional 
+          efficiency. If there are many signals to inject, using a ti.StructField with 
+          the same memroy address as the input.
+          """
+        if isinstance(waveform, ti.StructField):
+            if not waveform.shape == (self.TDI_data.data_info.frequency_series_length, ):
+                raise ValueError("Cannot perfrom injection, since the shape of input \
+                                 waveform is different with the TDI data")
+            waveform_field = waveform
+
+        elif isinstance(waveform, dict):
+            if not all([len(data)==self.TDI_data.data_info.frequency_series_length for _, data in waveform.items()]):
+                raise ValueError("Cannot perfrom injection, since there is at least one \
+                                 array in the input dict having different length with \
+                                 the TDI data.")
+            waveform_field = ti.Struct.field(dict.fromkeys(waveform.keys(), complex_number), shape=(self.TDI_data.data_info.frequency_series_length,))
+            waveform_field.from_numpy(dict([(chan, np.vstack([data.real, data.imag]).T) for chan, data in waveform.items()]))
+        else:
+            raise TypeError("Unsupported type, expect `ti.StructField` or `dict[NDArray]`")
+        
+        self.update_frequency_domain_response(waveform_field, lam, beta, psi)
+        self.TDI_data.add_into_frequency_domian_data(self.response_container)
+
+        return None
 
     def inject_wavelet_domain_signal(self)->None:
         pass
@@ -776,161 +801,170 @@ class SpaceborneInterferometer(object):
 
 
 
-    def initialize_TDI_data(self):
-        '''
-        set TDI_data field, using AoS structure to store data for efficiency, 
-        keep the memory address fixed to avoid repeated repeated instantiation of the computational kernel
-        {frequencies: ti.f64, 
-         delay_factor: complex_number, 
-         TDI_gen_prefactor: complex_number, 
-         single_links: SingleLinksStruct, 
-         channels_data: ti.types.struct(TDI_chan_dict)
-         }
-        '''
-        TDI_chan_dict = dict.fromkeys(self.TDI_channels, complex_number)
-        TDI_chan_struct = ti.types.struct(**TDI_chan_dict)
+
+
+
+
+
+
+
+
+# ############################################################################################################
+#     def initialize_TDI_data(self):
+#         '''
+#         set TDI_data field, using AoS structure to store data for efficiency, 
+#         keep the memory address fixed to avoid repeated repeated instantiation of the computational kernel
+#         {frequencies: ti.f64, 
+#          delay_factor: complex_number, 
+#          TDI_gen_prefactor: complex_number, 
+#          single_links: SingleLinksStruct, 
+#          channels_data: ti.types.struct(TDI_chan_dict)
+#          }
+#         '''
+#         TDI_chan_dict = dict.fromkeys(self.TDI_channels, complex_number)
+#         TDI_chan_struct = ti.types.struct(**TDI_chan_dict)
         
-        TDI_data_struct = ti.types.struct(frequencies = ti.f64, 
-                                          delay_factor = complex_number,
-                                          TDI_gen_prefactor = complex_number,
-                                          single_links = SingleLinksStruct,
-                                          channels_data = TDI_chan_struct)
-        TDI_data_field = TDI_data_struct.field()
-        ti.root.dense(ti.i, self.data_length).place(TDI_data_field)
+#         TDI_data_struct = ti.types.struct(frequencies = ti.f64, 
+#                                           delay_factor = complex_number,
+#                                           TDI_gen_prefactor = complex_number,
+#                                           single_links = SingleLinksStruct,
+#                                           channels_data = TDI_chan_struct)
+#         TDI_data_field = TDI_data_struct.field()
+#         ti.root.dense(ti.i, self.data_length).place(TDI_data_field)
 
-        # set frequencies field
-        TDI_data_field.frequencies.copy_from(self.frequencies)
-        # set dalay_factor and TDI_gen_prefactor
-        if self.TDI_generation == '1.5':
-            int_TDI_gen = 1
-        elif self.TDI_generation == '2.0':
-            int_TDI_gen = 2
-        _compute_TDI_prefactor(TDI_data_field.frequencies, TDI_data_field.delay_factor, TDI_data_field.TDI_gen_prefactor,
-                               self.armlength_sec, int_TDI_gen)
+#         # set frequencies field
+#         TDI_data_field.frequencies.copy_from(self.frequencies)
+#         # set dalay_factor and TDI_gen_prefactor
+#         if self.TDI_generation == '1.5':
+#             int_TDI_gen = 1
+#         elif self.TDI_generation == '2.0':
+#             int_TDI_gen = 2
+#         _compute_TDI_prefactor(TDI_data_field.frequencies, TDI_data_field.delay_factor, TDI_data_field.TDI_gen_prefactor,
+#                                self.armlength_sec, int_TDI_gen)
 
-        self.TDI_data = TDI_data_field
+#         self.TDI_data = TDI_data_field
 
-        return None
+#         return None
     
     
-    def initialize_waveform_container(self):
-        waveform_field = ti.Struct.field({'hplus': complex_number,
-                                          'hcross': complex_number,
-                                          'tf': ti.f64})
-        ti.root.dense(ti.i, self.data_length).place(waveform_field)
-        self.waveform_container = waveform_field
-        return None
+#     def initialize_waveform_container(self):
+#         waveform_field = ti.Struct.field({'hplus': complex_number,
+#                                           'hcross': complex_number,
+#                                           'tf': ti.f64})
+#         ti.root.dense(ti.i, self.data_length).place(waveform_field)
+#         self.waveform_container = waveform_field
+#         return None
 
 
-    def updata_TDI_responses(self, parameters):
-        '''
-        compute the strain of TDI channels from given waveform
+#     def updata_TDI_responses(self, parameters):
+#         '''
+#         compute the strain of TDI channels from given waveform
         
-        Parameters
-        ==========
-        waveform: dict
-            contains the keys "amplitude", "phase", "tf", "frequencies"
-        parameters: dict
-            parameters describes the GW source
+#         Parameters
+#         ==========
+#         waveform: dict
+#             contains the keys "amplitude", "phase", "tf", "frequencies"
+#         parameters: dict
+#             parameters describes the GW source
 
-        Returns:
-        ========
-        dict, strains of TDI channels of current instance
-        '''
-        _generate_TDI_responses(self.TDI_data, self.waveform_container, self._orbit_vectors_func, self.armlength_sec, 
-                                parameters['ecliptic_longitude'],  parameters['ecliptic_latitude'],  parameters['polarization'])
-        return None
+#         Returns:
+#         ========
+#         dict, strains of TDI channels of current instance
+#         '''
+#         _generate_TDI_responses(self.TDI_data, self.waveform_container, self._orbit_vectors_func, self.armlength_sec, 
+#                                 parameters['ecliptic_longitude'],  parameters['ecliptic_latitude'],  parameters['polarization'])
+#         return None
 
     
-    def initialize_strains_FD(self):
-        strains_FD_field = ti.Struct.field(dict.fromkeys(self.TDI_channels, complex_number))
-        ti.root.dense(ti.i, self.data_length).place(strains_FD_field)
-        self.strains_FD = strains_FD_field
-        return None
+#     def initialize_strains_FD(self):
+#         strains_FD_field = ti.Struct.field(dict.fromkeys(self.TDI_channels, complex_number))
+#         ti.root.dense(ti.i, self.data_length).place(strains_FD_field)
+#         self.strains_FD = strains_FD_field
+#         return None
     
 
-    def initialize_strains_TD(self):
-        self.strains_TD = None
-        return None
+#     def initialize_strains_TD(self):
+#         self.strains_TD = None
+#         return None
 
 
-    def inject_signal_FD(self, parameters, waveform):
-        '''
-        TODO wavefrom_dictionary
-        inject the GW signal into the detector strains
+#     def inject_signal_FD(self, parameters, waveform):
+#         '''
+#         TODO wavefrom_dictionary
+#         inject the GW signal into the detector strains
 
-        Parameters
-        ==========
-        parameters: dict
-            parameters describes the GW source
-        waveform: waveform object which contains the detector.waveform_container
+#         Parameters
+#         ==========
+#         parameters: dict
+#             parameters describes the GW source
+#         waveform: waveform object which contains the detector.waveform_container
             
-        '''
-        waveform.update_waveform(parameters)
-        self.updata_TDI_responses(parameters)
-        _inject_into_strains_FD(self.strains_FD, self.TDI_data.channels_data)
+#         '''
+#         waveform.update_waveform(parameters)
+#         self.updata_TDI_responses(parameters)
+#         _inject_into_strains_FD(self.strains_FD, self.TDI_data.channels_data)
 
-        injected_signals = ti.Struct.field(dict.fromkeys(self.TDI_channels, complex_number), shape=(self.data_length,))
-        injected_signals.copy_from(self.TDI_data.channels_data)
-        self.signals.append(injected_signals)
+#         injected_signals = ti.Struct.field(dict.fromkeys(self.TDI_channels, complex_number), shape=(self.data_length,))
+#         injected_signals.copy_from(self.TDI_data.channels_data)
+#         self.signals.append(injected_signals)
 
-        return None
+#         return None
     
-    def initialize_PSDs(self):
-        self.PSDs = ti.Struct.field(dict.fromkeys(self.TDI_channels, ti.f64), shape=(self.data_length,))
-        return None
+#     def initialize_PSDs(self):
+#         self.PSDs = ti.Struct.field(dict.fromkeys(self.TDI_channels, ti.f64), shape=(self.data_length,))
+#         return None
 
-    def set_PSDs_from_noise_model(self):
-        '''
-        compute the psd array from the give noise model
+#     def set_PSDs_from_noise_model(self):
+#         '''
+#         compute the psd array from the give noise model
         
-        Parameters
-        ==========
-        frequencies: array, 
-            default is None which will use the self.frequencies
+#         Parameters
+#         ==========
+#         frequencies: array, 
+#             default is None which will use the self.frequencies
         
-        Returns:
-        ========
-        dict, psd array of each TDI channels
-        '''
-        PSDs_array = {}
-        for chan in self.TDI_channels:
-            PSDs_array[chan] = noise_models[self.psd_model](self._np_array_frequenices, chan, self.TDI_generation)
-        self.PSDs.from_numpy(PSDs_array)
-        self._np_array_PSDs = PSDs_array
-        return None
+#         Returns:
+#         ========
+#         dict, psd array of each TDI channels
+#         '''
+#         PSDs_array = {}
+#         for chan in self.TDI_channels:
+#             PSDs_array[chan] = noise_models[self.psd_model](self._np_array_frequenices, chan, self.TDI_generation)
+#         self.PSDs.from_numpy(PSDs_array)
+#         self._np_array_PSDs = PSDs_array
+#         return None
     
-    @property
-    def np_array_PSDs(self):
-        return self._np_array_PSDs
+#     @property
+#     def np_array_PSDs(self):
+#         return self._np_array_PSDs
 
 
-    def inject_noise_FD_realization_from_psd(self, seed=None):
-        '''
-        generate a noise realization from psd
-        (eq.12) in https://journals.aps.org/prd/abstract/10.1103/PhysRevD.102.023033
+#     def inject_noise_FD_realization_from_psd(self, seed=None):
+#         '''
+#         generate a noise realization from psd
+#         (eq.12) in https://journals.aps.org/prd/abstract/10.1103/PhysRevD.102.023033
 
-        Parameters
-        ==========
-        seed: integer, 
-            set the seed for predictable random number sequence, default is None
-        '''
-        rng = np.random.default_rng(seed=seed)
-        var = 0.5 * (1. / self.delta_f)**0.5
-        noise_strains = {}
-        for chan in self.TDI_channels:
-            # noise_amp = rng.normal(0, var, num) * (self.psd_array[chan])**0.5
-            # random_phase = rng.uniform(0, 2*PI, num)
-            # noise_chan = noise_amp * np.exp(1j*random_phase)
-            re = rng.normal(0, var, self.data_length) * (self._np_array_PSDs[chan])**0.5
-            im = rng.normal(0, var, self.data_length) * (self._np_array_PSDs[chan])**0.5
-            noise_strains[chan] = np.vstack((re, im)).T
+#         Parameters
+#         ==========
+#         seed: integer, 
+#             set the seed for predictable random number sequence, default is None
+#         '''
+#         rng = np.random.default_rng(seed=seed)
+#         var = 0.5 * (1. / self.delta_f)**0.5
+#         noise_strains = {}
+#         for chan in self.TDI_channels:
+#             # noise_amp = rng.normal(0, var, num) * (self.psd_array[chan])**0.5
+#             # random_phase = rng.uniform(0, 2*PI, num)
+#             # noise_chan = noise_amp * np.exp(1j*random_phase)
+#             re = rng.normal(0, var, self.data_length) * (self._np_array_PSDs[chan])**0.5
+#             im = rng.normal(0, var, self.data_length) * (self._np_array_PSDs[chan])**0.5
+#             noise_strains[chan] = np.vstack((re, im)).T
 
-        noise_strains_field = ti.Struct.field(dict.fromkeys(self.TDI_channels, complex_number), shape=(self.data_length, ))
-        noise_strains_field.from_numpy(noise_strains)
-        _inject_into_strains_FD(self.strains_FD, noise_strains_field)
+#         noise_strains_field = ti.Struct.field(dict.fromkeys(self.TDI_channels, complex_number), shape=(self.data_length, ))
+#         noise_strains_field.from_numpy(noise_strains)
+#         _inject_into_strains_FD(self.strains_FD, noise_strains_field)
 
-        return None
+#         return None
     
 
     # def optimal_snr(self):
