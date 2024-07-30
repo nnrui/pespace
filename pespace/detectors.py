@@ -5,11 +5,13 @@
 # protect SpaceborneInterferometer.TDI_data unchange
 import warnings
 from typing import Callable, Optional
+from typing_extensions import Self
 from dataclasses import dataclass, field
 
 from scipy import signal
 import numpy as np
 from numpy.typing import NDArray
+import h5py
 from matplotlib import pyplot as plt
 import taichi as ti
 import taichi.math as tm
@@ -275,7 +277,7 @@ class TDIChannelsData(object):
 
     """Storing TDI strain and noise feature, transfering data from different domain."""
 
-    def __init__(self, minimum_frequency:float=1e-5, maximum_frequency:float=0.1) -> None:
+    def __init__(self, label:str, minimum_frequency:float=1e-5, maximum_frequency:float=0.1) -> None:
         """
         Parameters:
         -----------
@@ -299,6 +301,8 @@ class TDIChannelsData(object):
         self._fmin_in = minimum_frequency
         self._fmax_in = maximum_frequency
 
+        self.label = label
+        
         return None
     
     def _reset(self)->None:
@@ -565,6 +569,47 @@ class TDIChannelsData(object):
 
     def add_into_wavelet_domian_data(self)->None:
         return None
+    
+    def save_to_hdf5(self, filename:Optional[str]=None)->None:
+        """Save the data stored in the instance to a hdf5 file.
+        This method may be significantly modified in the future.
+        """
+        if filename is None:
+            filename = f"{self.label}.hdf5"
+        
+        samples_data = ['time_samples', 'frequency_samples', 'wavelet_samples']
+        tdi_data = ['time_domain_TDI_data', 'frequency_domain_TDI_data', 'wavelet_domain_TDI_data']
+        noise_data = ['frequency_domain_noise_power_density', 'wavelet_domain_noise_power_density']
+
+        with h5py.File(filename, 'r') as file:
+
+            for name in samples_data:
+                data = getattr(self, name)
+                if data is not None:
+                    file.create_dataset(f'samples_data/{name}', data=data.to_numpy())
+            
+            for name in tdi_data:
+                data = getattr(self,name)
+                if data is not None:
+                    for chan, chan_array in data.to_numpy().items():
+                        file.create_dataset(f'tdi_data/{name}/{chan}', data=chan_array)
+
+            for name in noise_data:
+                data = getattr(self,name)
+                if data is not None:
+                    for chan, chan_array in data.to_numpy().items():
+                        file.create_dataset(f'_data/{name}/{chan}', data=chan_array)
+
+        return None
+    
+    # @classmethod
+    # def recover_from_file(cls, filename:str)->Self:
+    #     """Recovering `TDIChannelData` instance from the file saved by the 
+    #     `save_to_file` method. For other data format, please using methods for setting 
+    #     from input array according to the domain of the data, like `set_time_domain_data_from_input_array`, etc.
+    #     This method may be significantly modified in the future.
+    #     """
+    #     return cls
 
 
     @property
