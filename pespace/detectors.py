@@ -237,8 +237,8 @@ class DataInfo(object):
         TODO: 1. describing rules for minimum_frequency, maximum_frequency
               2. describing rules for time samples and frequency samples
         """
-        if not all([chan in implemented_TDI_generations for chan in self.channels]):
-            raise ValueError(f"You are setting TDIChannelData with channels of {self.channels}. While current supported channels are only including {implemented_TDI_channelsI}")
+        if not all([chan in implemented_TDI_channels for chan in self.channels]):
+            raise ValueError(f"You are setting TDIChannelData with channels of {self.channels}. While current supported channels are only including {implemented_TDI_channels}")
         if not self.generation in implemented_TDI_generations:
             raise ValueError(f"You are setting TDIChannelData with generation of {self.generation}. While current supported channels are only including {implemented_TDI_generations}")
 
