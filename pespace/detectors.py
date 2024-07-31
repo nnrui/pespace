@@ -796,7 +796,7 @@ class SpaceborneInterferometer(object):
             self._FD_response_assistance[i]['single_links']['link13'] = sinc13 * tm.cmul(tm.cmul(common_factor, n2_h_n2), exp31)    # complex_number
 
             for chan in ti.static(self.TDI_data.data_info.channels):
-                self.response_container[i][chan] = tm.cmul(self._FD_response_assistance[i]['TDI_gen_prefactor'], TDI_combine_function_FD[chan](self._FD_response_assistance[i]['delay_factor'], self._FD_response_assistance[i]['single_links']))
+                self.response_container[i][chan] = tm.cmul(self._FD_response_assistance[i]['TDI_generation_prefactor'], TDI_combine_function_FD[chan](self._FD_response_assistance[i]['delay_factor'], self._FD_response_assistance[i]['single_links']))
     
     def update_wavelet_domain_response(self)->None:
         return None
@@ -835,14 +835,6 @@ class SpaceborneInterferometer(object):
     def inject_wavelet_domain_signal(self)->None:
         pass
 
-    def view_response_as_numpy_array(self):
-        pass
-
-    def view_waveform_as_numpy_array(self):
-        pass
-    
-    def plot(self):
-        pass
 
 
 
