@@ -101,7 +101,7 @@ noise_models = {
         acc_noise_level=(3.0e-15) ** 2,
         arm_length_sec=2.5e9 / C_SI,
     ),  # https://arxiv.org/abs/2108.01167
-    "Taiji_": AnalysticNoisePSDModel(
+    "Taiji_TDC": AnalysticNoisePSDModel(
         OMS_noise_level=(8.0e-12) ** 2,
         acc_noise_level=(3.0e-15) ** 2,
         arm_length_sec=3.0e9 / C_SI,
