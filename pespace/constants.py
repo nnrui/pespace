@@ -1,24 +1,24 @@
-import lal 
+'''
+Useful constants, copied from lalsuite
+'''
 
+# Speed of light in vacuum, m s^-1
+C_SI = 299792458.0
 
-Mf_CUT_PhenomD = 0.2   # copied from lalsimultion
+# Geometrized nominal solar mass, s
+# MTSUN_SI = GMSUN_SI / (C_SI * C_SI * C_SI)
+MTSUN_SI = 4.925490947641266978197229498498379006e-6
 
-# constants
-C_SI = lal.C_SI
-MTSUN_SI = lal.MTSUN_SI
-MSUN_SI = lal.MSUN_SI
-YEAR_SI = lal.YRJUL_SI
-AU_SI = lal.AU_SI
-AU_SEC = AU_SI/C_SI
-PI = lal.PI
+# Nominal solar mass, kg
+# MSUN_SI = GMSUN_SI / G_SI
+MSUN_SI = 1.988409870698050731911960804878414216e30
 
+# Julian year, s
+YEAR_SI = 31557600.0
 
-ARM_LENGTH_LISA_SI = 2.5e9  # meters
-ARM_LENGTH_LISA_SEC = ARM_LENGTH_LISA_SI/C_SI # seconds
+# Astronomical unit
+AU_SI = 149597870700.0    # m
+AU_SEC = AU_SI/C_SI    # s
 
-
-SUCCESS = 1
-FAILURE = 0
-
-DEBUG = False
-
+# Math constants
+PI = 3.141592653589793238462643383279502884
