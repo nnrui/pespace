@@ -1,6 +1,6 @@
-'''
+"""
 Useful constants, copied from lalsuite
-'''
+"""
 
 # Speed of light in vacuum, m s^-1
 C_SI = 299792458.0
@@ -17,8 +17,8 @@ MSUN_SI = 1.988409870698050731911960804878414216e30
 YEAR_SI = 31557600.0
 
 # Astronomical unit
-AU_SI = 149597870700.0    # m
-AU_SEC = AU_SI/C_SI    # s
+AU_SI = 149597870700.0  # m
+AU_SEC = AU_SI / C_SI  # s
 
 # Math constants
 PI = 3.141592653589793238462643383279502884
