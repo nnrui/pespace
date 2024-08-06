@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from abc import ABC, abstractmethod
 
 import numpy as np
 from numpy import sin, cos
@@ -7,8 +8,22 @@ from numpy.typing import NDArray
 from .constants import *
 
 
+class FrequencyNoiseModel(ABC):
+    @abstractmethod
+    def power_spectrum_density_array(
+        self,
+        frequencies: NDArray[np.float64],
+        TDI_channel: tuple[str, ...],
+        TDI_generation: str,
+    ) -> dict[str, NDArray[np.float64]]:
+        pass
+
+    def __init_subclass__(cls) -> None:
+        cls.__call__ = cls.power_spectrum_density_array
+
+
 @dataclass
-class AnalysticNoisePSDModel(object):
+class AnalysticNoisePSDModel(FrequencyNoiseModel):
     """
     Analystic model for noise power spectrum density, the fomulae come from
     https://arxiv.org/abs/2108.01167
@@ -26,7 +41,7 @@ class AnalysticNoisePSDModel(object):
     acc_noise_level: float
     arm_length_sec: float
 
-    def __call__(
+    def power_spectrum_density_array(
         self,
         frequencies: NDArray[np.float64],
         TDI_channel: tuple[str, ...],
@@ -34,7 +49,7 @@ class AnalysticNoisePSDModel(object):
     ):
         """Generate psd array for given frequency array"""
 
-        # Convert displace noise and acceleration noise to the same dimension of relative frequency
+        # Convert displacement noise and acceleration noise to the same dimension of relative frequency
         S_oms = (
             self.OMS_noise_level
             * (1.0 + (2.0e-3 / frequencies) ** 4)
