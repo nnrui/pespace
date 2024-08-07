@@ -8,9 +8,9 @@ from numpy.typing import NDArray
 from .constants import *
 
 
-class FrequencyNoiseModel(ABC):
+class FrequencyDomainNoiseModel(ABC):
     @abstractmethod
-    def power_spectrum_density_array(
+    def power_spectral_density_array(
         self,
         frequencies: NDArray[np.float64],
         TDI_channel: tuple[str, ...],
@@ -19,13 +19,13 @@ class FrequencyNoiseModel(ABC):
         pass
 
     def __init_subclass__(cls) -> None:
-        cls.__call__ = cls.power_spectrum_density_array
+        cls.__call__ = cls.power_spectral_density_array
 
 
 @dataclass
-class AnalysticNoisePSDModel(FrequencyNoiseModel):
+class AnalysticPowerSpectralDensity(FrequencyDomainNoiseModel):
     """
-    Analystic model for noise power spectrum density, the fomulae come from
+    Analystic model for noise power spectral density, the fomulae come from
     https://arxiv.org/abs/2108.01167
 
     OMS_noise_level:
@@ -41,7 +41,7 @@ class AnalysticNoisePSDModel(FrequencyNoiseModel):
     acc_noise_level: float
     arm_length_sec: float
 
-    def power_spectrum_density_array(
+    def power_spectral_density_array(
         self,
         frequencies: NDArray[np.float64],
         TDI_channel: tuple[str, ...],
@@ -111,17 +111,17 @@ class AnalysticNoisePSDModel(FrequencyNoiseModel):
 
 
 noise_models = {
-    "LISA_SciRDv1": AnalysticNoisePSDModel(
+    "LISA_SciRDv1": AnalysticPowerSpectralDensity(
         OMS_noise_level=(15.0e-12) ** 2,
         acc_noise_level=(3.0e-15) ** 2,
         arm_length_sec=2.5e9 / C_SI,
     ),  # https://arxiv.org/abs/2108.01167
-    "Taiji_TDC": AnalysticNoisePSDModel(
+    "Taiji_TDC": AnalysticPowerSpectralDensity(
         OMS_noise_level=(8.0e-12) ** 2,
         acc_noise_level=(3.0e-15) ** 2,
         arm_length_sec=3.0e9 / C_SI,
     ),  # https://doi.org/10.1038/s41550-019-1008-4
-    "Tianqin_Luo2016": AnalysticNoisePSDModel(
+    "Tianqin_Luo2016": AnalysticPowerSpectralDensity(
         OMS_noise_level=(1.0e-12) ** 2,
         acc_noise_level=(1.0e-15) ** 2,
         arm_length_sec=1.0e8 / C_SI,
