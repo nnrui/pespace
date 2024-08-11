@@ -34,6 +34,7 @@ class OrbitModel(ABC):
         pass
 
 
+@ti.data_oriented
 class KeplerianGeocentric(OrbitModel):
     """The analystic Keplerian geocentric orbit model, used for Tianqin."""
 
