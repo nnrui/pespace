@@ -15,6 +15,8 @@ MSUN_SI = 1.988409870698050731911960804878414216e30
 
 # Julian year, s
 YEAR_SI = 31557600.0
+# Julian day, s
+DAY_SI = 86400.0
 
 # Astronomical unit, m
 AU_SI = 149597870700.0  # m
