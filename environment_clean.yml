@@ -1,0 +1,24 @@
+name: pespace
+channels:
+  - conda-forge
+dependencies:
+  # python
+  - python =3.10 # in order to compatible with taichi
+  - pip
+  # used for data analysis
+  - bilby
+  - pandas
+  - numpy
+  - scipy
+  - matplotlib
+  - multinest
+  - pymultinest
+  - mpi4py
+  - mpich
+  # used for taichi
+  - dill
+  - markdown-it-py
+  - mdurl
+  - rich
+  - pip:
+    - taichi

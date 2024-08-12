@@ -2,7 +2,7 @@ import sys
 sys.path.append('/home/hydrogen/workspace/Space_GW/peSpace')
 
 import taichi as ti
-from ti_peSpace.utilities import *
+from ti_peSpace.utils import *
 
 ti.init(arch=ti.cpu, default_fp=ti.f64)
 

@@ -9,7 +9,7 @@ from .utils import vec3
 
 
 # orbit vectors of detector constellation in ecliptic coordinate
-OrbitVectorStruct = ti.types.struct(
+OrbitVectorsStruct = ti.types.struct(
     n1=vec3,  # unit vector of link2->3
     n2=vec3,  # unit vector of link3->1
     n3=vec3,  # unit vector of link1->2
@@ -22,7 +22,7 @@ OrbitVectorStruct = ti.types.struct(
 
 class OrbitModel(ABC):
     @abstractmethod
-    def orbit_vectors(self, time: ti.f64) -> OrbitVectorStruct:
+    def orbit_vectors(self, time: ti.f64) -> OrbitVectorsStruct:
         pass
 
     # Since currently only analystic Keplerian orbit models where the armlength is a
@@ -89,7 +89,7 @@ class KeplerianGeocentric(OrbitModel):
         return self.arm_length / C_SI
 
     @ti.func
-    def orbit_vectors(self, time: ti.f64) -> OrbitVectorStruct:
+    def orbit_vectors(self, time: ti.f64) -> OrbitVectorsStruct:
         # alpha: revolution ortial phase
         alpha = self.omega_revolution * time + self.revolution_initial
         # kappa_n: rotaion phase for each node
@@ -126,7 +126,7 @@ class KeplerianGeocentric(OrbitModel):
             ]
         )
 
-        return OrbitVectorStruct(
+        return OrbitVectorsStruct(
             n1=(node3_det - node2_det) / self.arm_length_sec,
             n2=(node1_det - node3_det) / self.arm_length_sec,
             n3=(node2_det - node1_det) / self.arm_length_sec,
@@ -186,7 +186,7 @@ class KaplerianHeliocentric(OrbitModel):
         return self.arm_length / C_SI
 
     @ti.func
-    def orbit_vectors(self, time: ti.f64) -> OrbitVectorStruct:
+    def orbit_vectors(self, time: ti.f64) -> OrbitVectorsStruct:
         # alpha: revolution ortial phase
         alpha = self.omega * time + self.revolution_initial
         ca = tm.cos(alpha)
@@ -215,7 +215,7 @@ class KaplerianHeliocentric(OrbitModel):
             ]
         )
 
-        return OrbitVectorStruct(
+        return OrbitVectorsStruct(
             n1=(node3_det - node2_det) / self.arm_length_sec,
             n2=(node1_det - node3_det) / self.arm_length_sec,
             n3=(node2_det - node1_det) / self.arm_length_sec,
