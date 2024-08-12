@@ -110,7 +110,7 @@ class AnalysticPowerSpectralDensity(FrequencyDomainNoiseModel):
         return psd_dict
 
 
-noise_models = {
+available_noise_models = {
     "LISA_SciRDv1": AnalysticPowerSpectralDensity(
         OMS_noise_level=(15.0e-12) ** 2,
         acc_noise_level=(3.0e-15) ** 2,
