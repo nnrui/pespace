@@ -12,7 +12,7 @@ from .constants import *
 
 # Avoid using tm.vec3, tm.mat3, ..., since their dtype depend on the global set for precision of float.
 PolarizationStruct = ti.types.struct(plus=ti.types.matrix(3, 3, ti.f64), cross=ti.types.matrix(3, 3, ti.f64))
-complex_number = ti.types.vector(2, ti.f64)
+ComplexNumber = ti.types.vector(2, ti.f64)
 vec3 = ti.types.vector(3, ti.f64)    
 
 

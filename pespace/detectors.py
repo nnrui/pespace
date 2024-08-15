@@ -16,7 +16,7 @@ from .utils import (
     noise_weighted_inner_product,
     recursively_save_dict_contents_to_group,
     recursively_load_dict_contents_from_group,
-    complex_number,
+    ComplexNumber,
 )
 from .orbits import OrbitModel, available_orbit_models
 from .constants import *
@@ -24,12 +24,12 @@ from .noise import FrequencyDomainNoiseModel, available_noise_models
 
 
 SingleLinksStruct = ti.types.struct(
-    link12=complex_number,
-    link21=complex_number,
-    link23=complex_number,
-    link32=complex_number,
-    link31=complex_number,
-    link13=complex_number,
+    link12=ComplexNumber,
+    link21=ComplexNumber,
+    link23=ComplexNumber,
+    link32=ComplexNumber,
+    link31=ComplexNumber,
+    link13=ComplexNumber,
 )
 
 
@@ -56,15 +56,15 @@ def _compute_TDI_prefactor_for_FD_response(
 ):
     for i in frequency_field:
         z = tm.cexp(
-            -2.0 * PI * frequency_field[i] * armlength_sec * complex_number([0, 1])
+            -2.0 * PI * frequency_field[i] * armlength_sec * ComplexNumber([0, 1])
         )
 
-        prefactor = complex_number(0.0, 0.0)
+        prefactor = ComplexNumber(0.0, 0.0)
         if TDI_gen == 1:
-            prefactor = complex_number(1, 0) - tm.cpow(z, 2)
+            prefactor = ComplexNumber(1, 0) - tm.cpow(z, 2)
         elif TDI_gen == 2:
             prefactor = (
-                complex_number(1, 0) - tm.cpow(z, 2) - tm.cpow(z, 4) + tm.cpow(z, 6)
+                ComplexNumber(1, 0) - tm.cpow(z, 2) - tm.cpow(z, 4) + tm.cpow(z, 6)
             )
 
         prefactor_field[i] = prefactor
@@ -73,8 +73,8 @@ def _compute_TDI_prefactor_for_FD_response(
 
 @ti.func
 def _TDI_X_FD(
-    z: complex_number, singlelink_responses: SingleLinksStruct
-) -> complex_number:
+    z: ComplexNumber, singlelink_responses: SingleLinksStruct
+) -> ComplexNumber:
     """
     Function for computing X channel of TDI combination in frequency domain.
 
@@ -99,8 +99,8 @@ def _TDI_X_FD(
 
 @ti.func
 def _TDI_Y_FD(
-    z: complex_number, singlelink_responses: SingleLinksStruct
-) -> complex_number:
+    z: ComplexNumber, singlelink_responses: SingleLinksStruct
+) -> ComplexNumber:
     """
     Function for computing Y channel of TDI combination in frequency domain.
 
@@ -125,8 +125,8 @@ def _TDI_Y_FD(
 
 @ti.func
 def _TDI_Z_FD(
-    z: complex_number, singlelink_responses: SingleLinksStruct
-) -> complex_number:
+    z: ComplexNumber, singlelink_responses: SingleLinksStruct
+) -> ComplexNumber:
     """
     Function for computing Z channel of TDI combination in frequency domain.
 
@@ -151,8 +151,8 @@ def _TDI_Z_FD(
 
 @ti.func
 def _TDI_A_FD(
-    z: complex_number, singlelink_responses: SingleLinksStruct
-) -> complex_number:
+    z: ComplexNumber, singlelink_responses: SingleLinksStruct
+) -> ComplexNumber:
     """
     Function for computing A channel of TDI combination in frequency domain.
 
@@ -173,7 +173,7 @@ def _TDI_A_FD(
         + singlelink_responses["link21"]
         + tm.cmul(z, singlelink_responses["link12"])
         - tm.cmul(
-            (complex_number(1, 0) + z),
+            (ComplexNumber(1, 0) + z),
             (singlelink_responses["link13"]) + singlelink_responses["link31"],
         )
     ) / tm.sqrt(2)
@@ -181,8 +181,8 @@ def _TDI_A_FD(
 
 @ti.func
 def _TDI_E_FD(
-    z: complex_number, singlelink_responses: SingleLinksStruct
-) -> complex_number:
+    z: ComplexNumber, singlelink_responses: SingleLinksStruct
+) -> ComplexNumber:
     """
     Function for computing E channel of TDI combination in frequency domain.
 
@@ -199,15 +199,15 @@ def _TDI_E_FD(
     """
     return (
         tm.cmul(
-            (complex_number(1, 0) - z),
+            (ComplexNumber(1, 0) - z),
             (singlelink_responses["link31"] - singlelink_responses["link13"]),
         )
         + tm.cmul(
-            (z + complex_number(2, 0)),
+            (z + ComplexNumber(2, 0)),
             (singlelink_responses["link32"] - singlelink_responses["link12"]),
         )
         + tm.cmul(
-            (complex_number(1, 0) + 2 * z),
+            (ComplexNumber(1, 0) + 2 * z),
             (singlelink_responses["link23"] - singlelink_responses["link21"]),
         )
     ) / tm.sqrt(6)
@@ -215,8 +215,8 @@ def _TDI_E_FD(
 
 @ti.func
 def _TDI_T_FD(
-    z: complex_number, singlelink_responses: SingleLinksStruct
-) -> complex_number:
+    z: ComplexNumber, singlelink_responses: SingleLinksStruct
+) -> ComplexNumber:
     """
     Function for computing T channel of TDI combination in frequency domain.
 
@@ -241,7 +241,7 @@ def _TDI_T_FD(
                 + singlelink_responses["link31"]
                 - singlelink_responses["link13"]
             ),
-            (complex_number(1, 0) - z),
+            (ComplexNumber(1, 0) - z),
         )
     ) / tm.sqrt(3)
 
@@ -450,7 +450,7 @@ class TDIChannelsData(object):
         )
         self.frequency_samples.from_numpy(self.data_info.frequency_samples_array)
         self.frequency_domain_TDI_data = ti.Struct.field(
-            dict.fromkeys(self.data_info.channels, complex_number),
+            dict.fromkeys(self.data_info.channels, ComplexNumber),
             shape=(self.data_info.frequency_series_length,),
         )
         return None
@@ -740,7 +740,7 @@ class TDIChannelsData(object):
 
         if output_type == "taichi":
             ret = ti.Struct.field(
-                dict.fromkeys(self.data_info.channels, complex_number),
+                dict.fromkeys(self.data_info.channels, ComplexNumber),
                 shape=(self.data_info.frequency_series_length,),
             )
             ret.from_numpy(noise_strains)
@@ -783,7 +783,7 @@ class TDIChannelsData(object):
                     "Cannot add the input dict of array into the `frequency_domian_TDI_data`, since the channnels contained by input is different with the TDI data"
                 )
             input_field = ti.Struct.field(
-                dict.fromkeys(self.data_info.channels, complex_number),
+                dict.fromkeys(self.data_info.channels, ComplexNumber),
                 shape=(self.data_info.frequency_series_length,),
             )
             input_field.from_numpy(
@@ -952,13 +952,13 @@ class SpaceborneInterferometer(object):
             )
         else:
             self.response_container = ti.Struct.field(
-                dict.fromkeys(self.TDI_data.data_info.channels, complex_number),
+                dict.fromkeys(self.TDI_data.data_info.channels, ComplexNumber),
                 shape=(self.TDI_data.data_info.frequency_series_length,),
             )
             self._FD_response_assistance = ti.Struct.field(
                 dict(
-                    delay_factor=complex_number,
-                    TDI_generation_prefactor=complex_number,
+                    delay_factor=ComplexNumber,
+                    TDI_generation_prefactor=ComplexNumber,
                     single_links=SingleLinksStruct,
                 ),
                 shape=(self.TDI_data.data_info.frequency_series_length,),
@@ -986,8 +986,8 @@ class SpaceborneInterferometer(object):
     #     if self.TDI_data.data_info is None:
     #         raise ValueError("The `data_info` of the passed-in TDI_data is `None`. Can not determine the frequency series length. \
     #                          Please set it before calling `initialize_waveform_container_in_frequency_domain`.")
-    #     self.waveform_container = ti.Struct.field({'hf_plus': complex_number,
-    #                                                'hf_cross': complex_number,
+    #     self.waveform_container = ti.Struct.field({'hf_plus': ComplexNumber,
+    #                                                'hf_cross': ComplexNumber,
     #                                                'tf': ti.f64},
     #                                                shape=(self.TDI_data.data_info.frequency_series_length,))
     #     return None
@@ -1068,63 +1068,63 @@ class SpaceborneInterferometer(object):
             sinc13 = sinc(common_sinc * (1.0 + k_n2))  # scalar
 
             common_exp = (
-                -PI * self.TDI_data.frequency_samples[i] * complex_number([0.0, 1.0])
-            )  # complex_number
+                -PI * self.TDI_data.frequency_samples[i] * ComplexNumber([0.0, 1.0])
+            )  # ComplexNumber
             exp12 = tm.cexp(
                 common_exp * (self.orbit.arm_length_sec + k_p1det_p2det)
-            )  # complex_number
+            )  # ComplexNumber
             exp23 = tm.cexp(
                 common_exp * (self.orbit.arm_length_sec + k_p2det_p3det)
-            )  # complex_number
+            )  # ComplexNumber
             exp31 = tm.cexp(
                 common_exp * (self.orbit.arm_length_sec + k_p3det_p1det)
-            )  # complex_number
+            )  # ComplexNumber
 
             prefactor = (
                 -PI
                 * self.TDI_data.frequency_samples[i]
                 * self.orbit.arm_length_sec
-                * complex_number([0.0, 1.0])
-            )  # complex_number
+                * ComplexNumber([0.0, 1.0])
+            )  # ComplexNumber
             exp_p0 = tm.cexp(
                 -2
                 * PI
                 * self.TDI_data.frequency_samples[i]
                 * k_p0
-                * complex_number([0.0, 1.0])
-            )  # complex_number
-            common_factor = tm.cmul(prefactor, exp_p0)  # complex_number
+                * ComplexNumber([0.0, 1.0])
+            )  # ComplexNumber
+            common_factor = tm.cmul(prefactor, exp_p0)  # ComplexNumber
 
             self._FD_response_assistance[i]["single_links"][
                 "link12"
             ] = sinc12 * tm.cmul(
                 tm.cmul(common_factor, n3_h_n3), exp12
-            )  # complex_number
+            )  # ComplexNumber
             self._FD_response_assistance[i]["single_links"][
                 "link21"
             ] = sinc21 * tm.cmul(
                 tm.cmul(common_factor, n3_h_n3), exp12
-            )  # complex_number
+            )  # ComplexNumber
             self._FD_response_assistance[i]["single_links"][
                 "link23"
             ] = sinc23 * tm.cmul(
                 tm.cmul(common_factor, n1_h_n1), exp23
-            )  # complex_number
+            )  # ComplexNumber
             self._FD_response_assistance[i]["single_links"][
                 "link32"
             ] = sinc32 * tm.cmul(
                 tm.cmul(common_factor, n1_h_n1), exp23
-            )  # complex_number
+            )  # ComplexNumber
             self._FD_response_assistance[i]["single_links"][
                 "link31"
             ] = sinc31 * tm.cmul(
                 tm.cmul(common_factor, n2_h_n2), exp31
-            )  # complex_number
+            )  # ComplexNumber
             self._FD_response_assistance[i]["single_links"][
                 "link13"
             ] = sinc13 * tm.cmul(
                 tm.cmul(common_factor, n2_h_n2), exp31
-            )  # complex_number
+            )  # ComplexNumber
 
             for chan in ti.static(self.TDI_data.data_info.channels):
                 self.response_container[i][chan] = tm.cmul(
@@ -1175,7 +1175,7 @@ class SpaceborneInterferometer(object):
                                  the TDI data."
                 )
             waveform_field = ti.Struct.field(
-                dict.fromkeys(waveform.keys(), complex_number),
+                dict.fromkeys(waveform.keys(), ComplexNumber),
                 shape=(self.TDI_data.data_info.frequency_series_length,),
             )
             waveform_field.from_numpy(
@@ -1207,18 +1207,18 @@ class SpaceborneInterferometer(object):
 #         set TDI_data field, using AoS structure to store data for efficiency,
 #         keep the memory address fixed to avoid repeated repeated instantiation of the computational kernel
 #         {frequencies: ti.f64,
-#          delay_factor: complex_number,
-#          TDI_gen_prefactor: complex_number,
+#          delay_factor: ComplexNumber,
+#          TDI_gen_prefactor: ComplexNumber,
 #          single_links: SingleLinksStruct,
 #          channels_data: ti.types.struct(TDI_chan_dict)
 #          }
 #         '''
-#         TDI_chan_dict = dict.fromkeys(self.TDI_channels, complex_number)
+#         TDI_chan_dict = dict.fromkeys(self.TDI_channels, ComplexNumber)
 #         TDI_chan_struct = ti.types.struct(**TDI_chan_dict)
 
 #         TDI_data_struct = ti.types.struct(frequencies = ti.f64,
-#                                           delay_factor = complex_number,
-#                                           TDI_gen_prefactor = complex_number,
+#                                           delay_factor = ComplexNumber,
+#                                           TDI_gen_prefactor = ComplexNumber,
 #                                           single_links = SingleLinksStruct,
 #                                           channels_data = TDI_chan_struct)
 #         TDI_data_field = TDI_data_struct.field()
@@ -1240,8 +1240,8 @@ class SpaceborneInterferometer(object):
 
 
 #     def initialize_waveform_container(self):
-#         waveform_field = ti.Struct.field({'hplus': complex_number,
-#                                           'hcross': complex_number,
+#         waveform_field = ti.Struct.field({'hplus': ComplexNumber,
+#                                           'hcross': ComplexNumber,
 #                                           'tf': ti.f64})
 #         ti.root.dense(ti.i, self.data_length).place(waveform_field)
 #         self.waveform_container = waveform_field
@@ -1269,7 +1269,7 @@ class SpaceborneInterferometer(object):
 
 
 #     def initialize_strains_FD(self):
-#         strains_FD_field = ti.Struct.field(dict.fromkeys(self.TDI_channels, complex_number))
+#         strains_FD_field = ti.Struct.field(dict.fromkeys(self.TDI_channels, ComplexNumber))
 #         ti.root.dense(ti.i, self.data_length).place(strains_FD_field)
 #         self.strains_FD = strains_FD_field
 #         return None
@@ -1296,7 +1296,7 @@ class SpaceborneInterferometer(object):
 #         self.updata_TDI_responses(parameters)
 #         _inject_into_strains_FD(self.strains_FD, self.TDI_data.channels_data)
 
-#         injected_signals = ti.Struct.field(dict.fromkeys(self.TDI_channels, complex_number), shape=(self.data_length,))
+#         injected_signals = ti.Struct.field(dict.fromkeys(self.TDI_channels, ComplexNumber), shape=(self.data_length,))
 #         injected_signals.copy_from(self.TDI_data.channels_data)
 #         self.signals.append(injected_signals)
 
@@ -1352,7 +1352,7 @@ class SpaceborneInterferometer(object):
 #             im = rng.normal(0, var, self.data_length) * (self._np_array_PSDs[chan])**0.5
 #             noise_strains[chan] = np.vstack((re, im)).T
 
-#         noise_strains_field = ti.Struct.field(dict.fromkeys(self.TDI_channels, complex_number), shape=(self.data_length, ))
+#         noise_strains_field = ti.Struct.field(dict.fromkeys(self.TDI_channels, ComplexNumber), shape=(self.data_length, ))
 #         noise_strains_field.from_numpy(noise_strains)
 #         _inject_into_strains_FD(self.strains_FD, noise_strains_field)
 
