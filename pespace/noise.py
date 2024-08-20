@@ -23,9 +23,9 @@ class FrequencyDomainNoiseModel(ABC):
 
 
 @dataclass
-class AnalysticPowerSpectralDensity(FrequencyDomainNoiseModel):
+class AnalyticPowerSpectralDensity(FrequencyDomainNoiseModel):
     """
-    Analystic model for noise power spectral density, the fomulae come from
+    Analytic model for noise power spectral density, the formulae come from
     https://arxiv.org/abs/2108.01167
 
     OMS_noise_level:
@@ -111,17 +111,17 @@ class AnalysticPowerSpectralDensity(FrequencyDomainNoiseModel):
 
 
 available_noise_models = {
-    "LISA_SciRDv1": AnalysticPowerSpectralDensity(
+    "LISA_SciRDv1": AnalyticPowerSpectralDensity(
         OMS_noise_level=(15.0e-12) ** 2,
         acc_noise_level=(3.0e-15) ** 2,
         arm_length_sec=2.5e9 / C_SI,
     ),  # https://arxiv.org/abs/2108.01167
-    "Taiji_TDC": AnalysticPowerSpectralDensity(
+    "Taiji_TDC": AnalyticPowerSpectralDensity(
         OMS_noise_level=(8.0e-12) ** 2,
         acc_noise_level=(3.0e-15) ** 2,
         arm_length_sec=3.0e9 / C_SI,
     ),  # https://doi.org/10.1038/s41550-019-1008-4
-    "Tianqin_Luo2016": AnalysticPowerSpectralDensity(
+    "Tianqin_Luo2016": AnalyticPowerSpectralDensity(
         OMS_noise_level=(1.0e-12) ** 2,
         acc_noise_level=(1.0e-15) ** 2,
         arm_length_sec=1.0e8 / C_SI,
