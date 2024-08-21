@@ -260,7 +260,7 @@ implemented_TDI_channels = ("X", "Y", "Z", "A", "E", "T")
 
 ########################################################################################
 @dataclass(frozen=True)
-class DataInfo(object):
+class DataInfo:
     """Storing TDI channels data information.
 
     Parameters:
@@ -355,7 +355,7 @@ class DataInfo(object):
         return None
 
 
-class TDIChannelsData(object):
+class TDIChannelsData:
     # TODO:
     # - check the normalizing factor of the rfft function
 
@@ -902,7 +902,7 @@ class TDIChannelsData(object):
 
 
 @ti.data_oriented
-class SpaceborneInterferometer(object):
+class SpaceborneInterferometer:
     # TODO:
     # - include suppot to higher modes
 
