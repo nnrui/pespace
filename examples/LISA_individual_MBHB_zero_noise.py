@@ -18,8 +18,8 @@ ti.init(arch=ti.cuda, default_fp=ti.f64, cpu_max_num_threads=1)
 
 
 duration = 30*DAY_SI  # 1 year observation
-cadance = 10
-TDI_chans = ("A", "E", "T")
+cadence = 10
+TDI_chans = ("A", "E")
 TDI_gen = "1.5"
 parameters = dict(
     total_mass=3089053.9,
@@ -36,10 +36,8 @@ parameters = dict(
 )
 
 lisa_mbhb = TDIChannelsData(label="inj_MBHB_lisa", minimum_frequency=1e-5, maximum_frequency=0.1)
-lisa_mbhb.set_frequency_domain_data_with_zero_value(channels=TDI_chans, generation=TDI_gen, duration=duration, cadence=cadance)
+lisa_mbhb.set_frequency_domain_data_with_zero_value(channels=TDI_chans, generation=TDI_gen, duration=duration, cadence=cadence)
 lisa_mbhb.set_frequency_domain_noise_power_density_from_model("LISA_SciRDv1")
-lisa_noise = lisa_mbhb.generate_realization_from_frequency_domain_noise_power_density()
-lisa_mbhb.add_into_frequency_domian_data(lisa_noise)
 
 lisa = SpaceborneInterferometer(name='LISA', TDI_data=lisa_mbhb, orbit="LISA_analytic")
 lisa.initialize_response_container_in_frequency_domain()
@@ -56,11 +54,11 @@ priors['inclination'] = parameters["inclination"]
 priors['polarization'] = parameters["polarization"]
 priors['reference_phase'] = parameters["reference_phase"]
 priors['coalescence_time'] = parameters["coalescence_time"]
-priors['total_mass'] = bilby.core.prior.Uniform(name='total_mass', minimum=2.5e6, maximum=3.5e6)
+priors['total_mass'] = bilby.core.prior.LogUniform(name='total_mass', minimum=2.5e6, maximum=3.5e6)
 priors['mass_ratio'] = bilby.core.prior.Uniform(name='mass_ratio', minimum=0.05, maximum=0.5)
 priors['luminosity_distance'] = bilby.gw.prior.Uniform(name='luminosity_distance', minimum=4000, maximum=8000)
 
-label = "LISA_MBHB_injection"
+label = "LISA_MBHB_injection_zero_noise"
 outdir = f"outdir_{label}"
 result = bilby.run_sampler(
     likelihood=FrequencyDomainLikelihood(wf, lisa),

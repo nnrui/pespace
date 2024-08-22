@@ -51,7 +51,7 @@ from matplotlib import pyplot as plt
 
 
 duration = 31536000    # 1 year observation
-cadance = 10
+cadence = 10
 TDI_chans = ("A", "E", "T")
 TDI_gen = '1.5'
 inj_parameters = dict(
@@ -76,7 +76,7 @@ from tiwave.waveforms import IMRPhenomD
 
 
 mbhb = TDIChannelsData(label="injection_individual_MBHB")
-mbhb.set_frequency_domain_data_with_zero_value(channels=TDI_chans, generation=TDI_gen, duration=duration, cadence=cadance)
+mbhb.set_frequency_domain_data_with_zero_value(channels=TDI_chans, generation=TDI_gen, duration=duration, cadence=cadence)
 mbhb.set_frequency_domain_noise_power_density_from_analystic_model(noise_models['LISA_SciRDv1'])
 noise_realization = mbhb.generate_realization_from_frequency_domain_noise_power_density()
 mbhb.add_into_frequency_domian_data(noise_realization)
