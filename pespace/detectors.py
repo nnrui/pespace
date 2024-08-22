@@ -308,11 +308,13 @@ class DataInfo:
         """
         if not all([chan in implemented_TDI_channels for chan in self.channels]):
             raise ValueError(
-                f"You are setting TDIChannelData with channels of {self.channels}. While current supported channels are only including {implemented_TDI_channels}"
+                f"You are setting TDIChannelData with channels of {self.channels}. " +
+                f"While current supported channels are only including {implemented_TDI_channels}."
             )
         if not self.generation in implemented_TDI_generations:
             raise ValueError(
-                f"You are setting TDIChannelData with generation of {self.generation}. While current supported channels are only including {implemented_TDI_generations}"
+                f"You are setting TDIChannelData with generation of {self.generation}. " +
+                f"While current supported channels are only including {implemented_TDI_generations}."
             )
 
         sampling_frequency = 1 / self.cadence
@@ -412,9 +414,9 @@ class TDIChannelsData:
     ) -> None:
         if self._reset_flag:
             warnings.warn(
-                "You are setting `data_info`, whereas you have set TDI data of current instance previously. \
-                           Setting `data_info` along may lead mismatch of data_info and the stored data. \n \
-                           Please check whether this is intentional."
+                "You are setting `data_info`, whereas you have set TDI data of current " +
+                "instance previously. Setting `data_info` along may lead mismatch of " +
+                "`data_info` and the stored data. Please check whether this is intentional."
             )
         self._data_info = DataInfo(
             channels,
@@ -482,11 +484,11 @@ class TDIChannelsData:
 
         if self._reset_flag:
             warnings.warn(
-                "You are setting `time_domain_data` with input array, \
-                           whereas you have probably set TDI data of current instance previously. \
-                           Please check whether this is intertional. \n \
-                           In order to avoid potential errors, current instance is reset. \
-                           Please regenerate TDI data of other domian or noise behavior data if needed. "
+                "You are setting `time_domain_data` with input array, whereas you " +
+                "have probably set TDI data of current instance previously. Please " +
+                "check whether this is intertional.\nIn order to avoid potential " + 
+                "errors, current instance is reset. Please regenerate TDI data of " +
+                "other domian or noise behavior data if needed."
             )
             self._reset()
 
@@ -609,7 +611,7 @@ class TDIChannelsData:
         return None
 
     def Fourier_transform_time_domain_data_to_frequency_domain(
-        self, window: float | str | tuple[str | float] = ("tukey", 0.2)
+        self, window: float | str | tuple[str | float] = ("tukey", 0.0)
     ) -> None:
         """see scipy.signal.get_window for more details about window parameter
         TODO: check the normalizing factor
@@ -619,22 +621,22 @@ class TDIChannelsData:
             self.frequency_domain_TDI_data is not None
         ):
             warnings.warn(
-                "Fourier transform will not be excuted since the `time_domain_TDI_data` is not set or \
-                           `frequency_domain_TDI_data` has been set previously"
+                "Fourier transform cannot be excuted since the `time_domain_TDI_data` " +
+                "is not set or `frequency_domain_TDI_data` has been set previously."
             )
         else:
             self._initialize_frequency_domain_data()
             weight = signal.get_window(window, self.data_info.time_series_length)
+            fd_tdi_numpy = dict.fromkeys(self.data_info.channels)
+            td_tdi_numpy = self.time_domain_TDI_data.to_numpy()
             for chan in self.data_info.channels:
-                td_strain = self.time_domain_TDI_data.get_member_field(chan).to_numpy()
+                td_strain = td_tdi_numpy[chan]
                 windowed_strain = td_strain * weight
                 fd_strain = np.fft.rfft(windowed_strain)
                 fd_strain /= self.data_info.sampling_frequency
                 fd_strain = fd_strain[self.data_info.frequency_mask_array]
-                self.frequency_domain_TDI_data.get_member_field(chan).from_numpy(
-                    np.stack((fd_strain.real, fd_strain.imag), axis=-1)
-                )
-
+                fd_tdi_numpy[chan] = np.stack((fd_strain.real, fd_strain.imag), axis=-1)
+            self.frequency_domain_TDI_data.from_numpy(fd_tdi_numpy)
         return None
 
     def inverse_Fourier_transform_frequency_domain_data_to_time_domain(self) -> None:
