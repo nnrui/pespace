@@ -303,18 +303,19 @@ class DataInfo:
 
     def __post_init__(self) -> None:
         """Generating useful numbers from the duration and cadence, and setting proper time and frequency samples:
+        
         TODO: 1. describing rules for minimum_frequency, maximum_frequency
               2. describing rules for time samples and frequency samples
         """
         if not all([chan in implemented_TDI_channels for chan in self.channels]):
             raise ValueError(
-                f"You are setting TDIChannelData with channels of {self.channels}. " +
-                f"While current supported channels are only including {implemented_TDI_channels}."
+                f"You are setting TDIChannelData with channels of {self.channels}. "
+                + f"While current supported channels are only including {implemented_TDI_channels}."
             )
         if not self.generation in implemented_TDI_generations:
             raise ValueError(
-                f"You are setting TDIChannelData with generation of {self.generation}. " +
-                f"While current supported channels are only including {implemented_TDI_generations}."
+                f"You are setting TDIChannelData with generation of {self.generation}. "
+                + f"While current supported channels are only including {implemented_TDI_generations}."
             )
 
         sampling_frequency = 1 / self.cadence
@@ -414,9 +415,9 @@ class TDIChannelsData:
     ) -> None:
         if self._reset_flag:
             warnings.warn(
-                "You are setting `data_info`, whereas you have set TDI data of current " +
-                "instance previously. Setting `data_info` along may lead mismatch of " +
-                "`data_info` and the stored data. Please check whether this is intentional."
+                "You are setting `data_info`, whereas you have set TDI data of current "
+                + "instance previously. Setting `data_info` along may lead mismatch of "
+                + "`data_info` and the stored data. Please check whether this is intentional."
             )
         self._data_info = DataInfo(
             channels,
@@ -484,11 +485,11 @@ class TDIChannelsData:
 
         if self._reset_flag:
             warnings.warn(
-                "You are setting `time_domain_data` with input array, whereas you " +
-                "have probably set TDI data of current instance previously. Please " +
-                "check whether this is intertional.\nIn order to avoid potential " + 
-                "errors, current instance is reset. Please regenerate TDI data of " +
-                "other domian or noise behavior data if needed."
+                "You are setting `time_domain_data` with input array, whereas you "
+                + "have probably set TDI data of current instance previously. Please "
+                + "check whether this is intertional.\nIn order to avoid potential "
+                + "errors, current instance is reset. Please regenerate TDI data of "
+                + "other domian or noise behavior data if needed."
             )
             self._reset()
 
@@ -496,13 +497,16 @@ class TDIChannelsData:
         channels_num, samples_num = TDI_data_array.shape
         if not len(channels) == channels_num:
             raise ValueError(
-                f"You set channenls with {channels}, while the length of first dimension of input TDI_data_array is {channels_num}."
+                f"You set channenls with {channels}, while the length of first "
+                + f"dimension of input TDI_data_array is {channels_num}."
             )
         if not self.data_info.time_series_length == samples_num:
             raise ValueError(
-                f"The length of second dimension of input array is {samples_num} which is different with the `time_series_length={self.data_info.time_series_length}` \
-                             set according to the duration and cadence by `time_series_length = int(np.round(duration/cadence) + 1)`. \
-                             If them are only different by 1, probably since there is duraion/cadence > N + 0.5 in your input. Check the input values or open an issue."
+                f"The length of second dimension of input array is {samples_num} which "
+                + f"is different with the `time_series_length={self.data_info.time_series_length}` "
+                + f"set according to the duration and cadence by `time_series_length = int(np.round(duration/cadence) + 1)`. "
+                + f"If them are only different by 1, probably since there is duraion/cadence > N + 0.5 "
+                + f"in your input. Check the input values or open an issue."
             )
 
         self._initialize_time_domain_data()
@@ -621,8 +625,8 @@ class TDIChannelsData:
             self.frequency_domain_TDI_data is not None
         ):
             warnings.warn(
-                "Fourier transform cannot be excuted since the `time_domain_TDI_data` " +
-                "is not set or `frequency_domain_TDI_data` has been set previously."
+                "Fourier transform cannot be excuted since the `time_domain_TDI_data` "
+                + "is not set or `frequency_domain_TDI_data` has been set previously."
             )
         else:
             self._initialize_frequency_domain_data()
