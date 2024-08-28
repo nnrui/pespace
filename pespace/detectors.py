@@ -303,7 +303,7 @@ class DataInfo:
 
     def __post_init__(self) -> None:
         """Generating useful numbers from the duration and cadence, and setting proper time and frequency samples:
-        
+
         TODO: 1. describing rules for minimum_frequency, maximum_frequency
               2. describing rules for time samples and frequency samples
         """
@@ -615,7 +615,7 @@ class TDIChannelsData:
         return None
 
     def Fourier_transform_time_domain_data_to_frequency_domain(
-        self, window: float | str | tuple[str | float] = ("tukey", 0.0)
+        self, window: None | float | str | tuple[str | float] = None
     ) -> None:
         """see scipy.signal.get_window for more details about window parameter
         TODO: check the normalizing factor
@@ -624,20 +624,35 @@ class TDIChannelsData:
         if (self.time_domain_TDI_data is None) or (
             self.frequency_domain_TDI_data is not None
         ):
-            warnings.warn(
+            raise ValueError(
                 "Fourier transform cannot be excuted since the `time_domain_TDI_data` "
                 + "is not set or `frequency_domain_TDI_data` has been set previously."
             )
         else:
             self._initialize_frequency_domain_data()
-            weight = signal.get_window(window, self.data_info.time_series_length)
+
+            if window is None:
+                weight = np.ones(self.data_info.time_series_length)
+            else:
+                weight = signal.get_window(window, self.data_info.time_series_length)
+
             fd_tdi_numpy = dict.fromkeys(self.data_info.channels)
             td_tdi_numpy = self.time_domain_TDI_data.to_numpy()
+
+            start_time_shift = np.exp(
+                1j
+                * 2
+                * PI
+                * self.data_info.time_samples_array[0]
+                * self.data_info.full_frequency_samples_array
+            )
+
             for chan in self.data_info.channels:
                 td_strain = td_tdi_numpy[chan]
                 windowed_strain = td_strain * weight
                 fd_strain = np.fft.rfft(windowed_strain)
                 fd_strain /= self.data_info.sampling_frequency
+                fd_strain *= start_time_shift
                 fd_strain = fd_strain[self.data_info.frequency_mask_array]
                 fd_tdi_numpy[chan] = np.stack((fd_strain.real, fd_strain.imag), axis=-1)
             self.frequency_domain_TDI_data.from_numpy(fd_tdi_numpy)
