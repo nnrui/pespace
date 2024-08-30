@@ -11,9 +11,11 @@ from bilby.gw.conversion import component_masses_to_symmetric_mass_ratio
 from .constants import *
 
 # Avoid using tm.vec3, tm.mat3, ..., since their dtype depend on the global set for precision of float.
-PolarizationStruct = ti.types.struct(plus=ti.types.matrix(3, 3, ti.f64), cross=ti.types.matrix(3, 3, ti.f64))
+PolarizationStruct = ti.types.struct(
+    plus=ti.types.matrix(3, 3, ti.f64), cross=ti.types.matrix(3, 3, ti.f64)
+)
 ComplexNumber = ti.types.vector(2, ti.f64)
-vec3 = ti.types.vector(3, ti.f64)    
+vec3 = ti.types.vector(3, ti.f64)
 
 
 @ti.func
@@ -22,49 +24,64 @@ def sinc(x: ti.f64) -> ti.f64:
     if x == 0.0:
         ret = 1.0
     else:
-        ret = tm.sin(x)/x
+        ret = tm.sin(x) / x
     return ret
 
 
 @ti.func
-def polarization_tensor_SSB(lam: ti.f64, beta: ti.f64, psi: ti.f64) -> PolarizationStruct:     # 
-    '''
+def polarization_tensor_SSB(
+    lam: ti.f64, beta: ti.f64, psi: ti.f64
+) -> PolarizationStruct:  #
+    """
     return the polarization tensor in SSB, symbols follow the convention in LDC Manual: LISA-LCST-SGS-MAN-001
 
     Parameters
     ==========
-    ecliptic_longitude: lambda, 
+    ecliptic_longitude: lambda,
     ecliptic_latitude: beta, note that beta is (-pi/2, pi/2)
-    polarizatione: psi, 
+    polarizatione: psi,
     mode: one of 'plus', 'cross', 'x', 'y', 'breathing', 'longitudinal'
 
     Returns:
     ========
     array: 3*3 array
-    '''
+    """
     # todo the constant should compute only once to reduce compution burden.
-    p = vec3([tm.sin(lam) * tm.cos(psi) - tm.sin(beta) * tm.cos(lam) * tm.sin(psi), 
-                 -(tm.sin(beta) * tm.sin(lam) * tm.sin(psi)) - tm.cos(lam) * tm.cos(psi), 
-                 tm.cos(beta) * tm.sin(psi)])
-    q = vec3([-tm.cos(lam) * tm.cos(psi) * tm.sin(beta) - tm.sin(lam) * tm.sin(psi), 
-                 -tm.cos(psi) * tm.sin(beta) * tm.sin(lam) + tm.cos(lam) * tm.sin(psi),
-                 tm.cos(beta) * tm.cos(psi)])
-    
-    
-    return PolarizationStruct(plus = (p.outer_product(p) - q.outer_product(q)), 
-                              cross= (p.outer_product(q) + q.outer_product(p)))
+    p = vec3(
+        [
+            tm.sin(lam) * tm.cos(psi) - tm.sin(beta) * tm.cos(lam) * tm.sin(psi),
+            -(tm.sin(beta) * tm.sin(lam) * tm.sin(psi)) - tm.cos(lam) * tm.cos(psi),
+            tm.cos(beta) * tm.sin(psi),
+        ]
+    )
+    q = vec3(
+        [
+            -tm.cos(lam) * tm.sin(beta) * tm.cos(psi) - tm.sin(lam) * tm.sin(psi),
+            -tm.sin(beta) * tm.sin(lam) * tm.cos(psi) + tm.cos(lam) * tm.sin(psi),
+            tm.cos(beta) * tm.cos(psi),
+        ]
+    )
+
+    return PolarizationStruct(
+        plus=(p.outer_product(p) - q.outer_product(q)),
+        cross=(p.outer_product(q) + q.outer_product(p)),
+    )
+
 
 @ti.func
-def GW_propagation_unit_vector(lam: ti.f64, beta: ti.f64) -> vec3:                    # note that beta is (-pi/2, pi/2)
-    return vec3([-tm.cos(beta)*tm.cos(lam), -tm.cos(beta)*tm.sin(lam), -tm.sin(beta)])
-
+def GW_propagation_unit_vector(
+    lam: ti.f64, beta: ti.f64
+) -> vec3:  # note that beta is (-pi/2, pi/2)
+    return vec3(
+        [-tm.cos(beta) * tm.cos(lam), -tm.cos(beta) * tm.sin(lam), -tm.sin(beta)]
+    )
 
 
 # def cutoff_frequency_PhenomD(mass_1, mass_2):
 #     '''
-#     return the high frequency cutoff in Hz, using Mf=0.2 copied form LALSimIMRPhenomD.h, 
+#     return the high frequency cutoff in Hz, using Mf=0.2 copied form LALSimIMRPhenomD.h,
 #     which could be used in determining the sampling frequency in TD or the frequency bound in FD for SMBH.
-    
+
 #     Parameters
 #     ==========
 #     mass_1: mass of heavier object in Msun
@@ -83,7 +100,7 @@ def GW_propagation_unit_vector(lam: ti.f64, beta: ti.f64) -> vec3:              
 # def start_frequency():
 #     '''
 #     description
-    
+
 #     Parameters
 #     ==========
 
@@ -101,7 +118,7 @@ def GW_propagation_unit_vector(lam: ti.f64, beta: ti.f64) -> vec3:              
 #     time to merger from the minimum_frequency
 #     note that the minimum_frequency maybe higher than the low frequency cutoff of the detector
 #     the returned time is a rough approximation with the lead oder
-    
+
 #     Parameters
 #     ==========
 #     mass_1: mass of heavier object in Msun
@@ -137,7 +154,7 @@ def GW_propagation_unit_vector(lam: ti.f64, beta: ti.f64) -> vec3:              
 # def post_merger_time_SMBH():
 #     '''
 #     description
-    
+
 #     Parameters
 #     ==========
 
@@ -145,12 +162,12 @@ def GW_propagation_unit_vector(lam: ti.f64, beta: ti.f64) -> vec3:              
 #     Returns:
 #     ========
 
-#     ''' 
+#     '''
 #     return
 
 
 def noise_weighted_inner_product(aa, bb, psd_array, delta_freq):
-    '''
+    """
     compute the noise weighted inner product between two arrays on the uniform frequency grid, <aa|bb>
 
     Parameters
@@ -167,13 +184,13 @@ def noise_weighted_inner_product(aa, bb, psd_array, delta_freq):
     Returns
     =======
     float
-    '''
+    """
     integrand = aa * np.conj(bb) / psd_array
     return (4 * delta_freq * np.sum(integrand)).real
 
 
 def recursively_save_dict_contents_to_group(h5file, path, dic):
-    '''
+    """
     Recursively save a dictionary to a HDF5 group
     copied from bilby.core.utils.io.recursively_save_dict_contents_to_group
 
@@ -185,26 +202,28 @@ def recursively_save_dict_contents_to_group(h5file, path, dic):
         Path inside the HDF5 file
     dic: dict
         The dictionary containing the data
-    '''
+    """
     for key, value in dic.items():
         if isinstance(value, dict):
             recursively_save_dict_contents_to_group(h5file, path + key + "/", value)
         elif isinstance(value, list):
             if len(value) == 0:
-                h5file[path + key] = h5py.Empty('f')
+                h5file[path + key] = h5py.Empty("f")
             else:
                 for idx, item in enumerate(value):
-                    recursively_save_dict_contents_to_group(h5file, path + key + '/' + f'item_{idx}' + '/', item)
+                    recursively_save_dict_contents_to_group(
+                        h5file, path + key + "/" + f"item_{idx}" + "/", item
+                    )
         elif isinstance(value, np.ndarray):
             h5file[path + key] = value
         elif value is None:
-            h5file[path + key] = h5py.Empty('f')
+            h5file[path + key] = h5py.Empty("f")
         else:
-            raise ValueError(f'Cannot save {key}: {type(value)} type')
+            raise ValueError(f"Cannot save {key}: {type(value)} type")
 
 
 def recursively_load_dict_contents_from_group(h5file, path):
-    '''
+    """
     Recursively load a HDF5 file into a dictionary
     copied from bilby.core.utils.io.recursively_load_dict_contents_from_group
 
@@ -219,19 +238,25 @@ def recursively_load_dict_contents_from_group(h5file, path):
     =======
     output: dict
         The contents of the HDF5 file unpacked into the dictionary.
-    '''
+    """
     output = {}
     for key, item in h5file[path].items():
         if isinstance(item, h5py.Dataset):
             output[key] = item[()]
         elif isinstance(item, h5py.Group):
-            output[key] = recursively_load_dict_contents_from_group(h5file, path + key + "/")
+            output[key] = recursively_load_dict_contents_from_group(
+                h5file, path + key + "/"
+            )
     return output
 
 
-def XYZ_to_AET(X:NDArray[np.float64|np.complex128], Y:NDArray[np.float64|np.complex128], Z:NDArray[np.float64|np.complex128])->dict[str, NDArray[np.float64|np.complex128]]:
-    A = (Z - X)/np.sqrt(2)
-    E = (X - 2*Y + Z)/np.sqrt(6)
-    T = (X + Y + Z)/np.sqrt(3)
+def XYZ_to_AET(
+    X: NDArray[np.float64 | np.complex128],
+    Y: NDArray[np.float64 | np.complex128],
+    Z: NDArray[np.float64 | np.complex128],
+) -> dict[str, NDArray[np.float64 | np.complex128]]:
+    A = (Z - X) / np.sqrt(2)
+    E = (X - 2 * Y + Z) / np.sqrt(6)
+    T = (X + Y + Z) / np.sqrt(3)
 
     return {"A": A, "E": E, "T": T}
