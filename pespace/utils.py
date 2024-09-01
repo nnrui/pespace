@@ -4,10 +4,6 @@ import taichi.math as tm
 import numpy as np
 from numpy.typing import NDArray
 
-import lal
-import lalsimulation as lalsim
-from bilby.gw.conversion import component_masses_to_symmetric_mass_ratio
-
 from .constants import *
 
 # Avoid using tm.vec3, tm.mat3, ..., since their dtype depend on the global set for precision of float.
