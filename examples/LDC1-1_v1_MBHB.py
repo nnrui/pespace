@@ -33,7 +33,7 @@ Path(outdir).mkdir(exist_ok=True)
 
 ########################################################################################
 # Read in the data and print data info
-dataname = "LDC1-1_MBHB_v1_1_TD_noiseless"
+dataname = "LDC1-1_MBHB_v2_FD_noiseless"
 file_path = f"/home/hydrogen/workspace/Space_GW/LDC/LDC_data/{dataname}.hdf5"
 with h5py.File(file_path, "r") as f:
     f.visit(lambda name: print(name))
@@ -44,7 +44,7 @@ with h5py.File(file_path, "r") as f:
         print(f"{parameter}: {value[()]}")
         source_parameters[parameter] = value[()]
 
-    print(f["H5LISA/PreProcess/TDIGenerator"][()])
+    # print(f["H5LISA/PreProcess/TDIGenerator"][()])
     TDI_data = f["H5LISA/PreProcess/TDIdata"][()]
     print(TDI_data)
     print(TDI_data.shape)
@@ -94,9 +94,14 @@ plt.legend(loc='lower right')
 plt.savefig(f"{outdir}/{dataname}_raw_data_AET.png")
 
 cadence = source_parameters["Cadence"]
-duration = source_parameters["CoalescenceTime"] - time_array[0] + DAY_SI
-end_idx = int((duration + time_array[0]) // cadence)
-input_TDI_data_array = np.array([A_array[:end_idx], E_array[:end_idx], T_array[:end_idx]])
+end_idx = int((tc + 0.2*DAY_SI) // cadence)
+start_idx = int((tc - 1*DAY_SI) // cadence)
+input_TDI_data_array = np.array([A_array[start_idx:end_idx], 
+                                 E_array[start_idx:end_idx], 
+                                 T_array[start_idx:end_idx]])
+time_zoomin = time_array[start_idx:end_idx]
+duration = time_zoomin[-1] - time_zoomin[0]
+time_array = time_zoomin
 # print(end_idx)
 # print(time_array[:end_idx])
 # print(source_parameters["CoalescenceTime"] + DAY_SI)
@@ -114,7 +119,7 @@ LDC_mbhb.set_time_domain_data_from_input_array(channels=TDI_chans,
                                                start_time=time_array[0])
 # print(LDC_mbhb.data_info.time_series_length)
 # print(LDC_mbhb.data_info.time_samples_array)
-LDC_mbhb.Fourier_transform_time_domain_data_to_frequency_domain(window=("tukey", 0.0))
+LDC_mbhb.Fourier_transform_time_domain_data_to_frequency_domain()
 plt.figure()
 plt.loglog(LDC_mbhb.data_info.frequency_samples_array, 
            np.abs(LDC_mbhb.frequency_domain_TDI_data_numpy_array['A']),
@@ -130,8 +135,8 @@ plt.savefig(f"{outdir}/{dataname}_td_to_fd.png")
 
 
 
-inj_mbhb = TDIChannelsData(label="inj-MBHB", minimum_frequency=1e-5, maximum_frequency=0.1)
-inj_mbhb.set_frequency_domain_data_with_zero_value(channels=TDI_chans, 
+pespace_mbhb = TDIChannelsData(label="pespace-MBHB", minimum_frequency=1e-5, maximum_frequency=0.1)
+pespace_mbhb.set_frequency_domain_data_with_zero_value(channels=TDI_chans, 
                                                    generation=TDI_gen, 
                                                    duration=duration, 
                                                    cadence=cadence,)
@@ -151,37 +156,37 @@ params_tiwave= dict(
     polarization = source_parameters["InitialAzimuthalAngleL"],
 )
 params_tiwave = bilby.gw.conversion.generate_mass_parameters(params_tiwave)
-wf = IMRPhenomD(inj_mbhb.frequency_samples)
+wf = IMRPhenomD(pespace_mbhb.frequency_samples)
 wf.update_waveform(params_tiwave)
 f_peak = wf.amplitude_coefficients[None].f_peak/wf.source_parameters.M_sec
 # to match the PhaseAtCoalescence in LDC, setting reference_frequency around coalescence frequency
-wf = IMRPhenomD(inj_mbhb.frequency_samples, reference_frequency=f_peak)
+wf = IMRPhenomD(pespace_mbhb.frequency_samples, reference_frequency=f_peak)
 wf.update_waveform(params_tiwave)
 
-lisa = SpaceborneInterferometer(name='LISA', TDI_data=inj_mbhb, orbit=KaplerianHeliocentric(2.5e9, 0.0, 0.0))
+lisa = SpaceborneInterferometer(name='LISA', TDI_data=pespace_mbhb, orbit=KaplerianHeliocentric(2.5e9, 0.0, 0.0))
 lisa.initialize_response_container_in_frequency_domain()
 lisa.inject_frequency_domain_signal(wf.waveform_container, 
                                     params_tiwave['ecliptic_longitude'], 
                                     params_tiwave['ecliptic_latitude'], 
                                     params_tiwave['polarization'])
 plt.figure()
-plt.loglog(lisa.TDI_data.data_info.frequency_samples_array, 
-           np.abs(lisa.TDI_data.frequency_domain_TDI_data_numpy_array['A']),
+plt.semilogx(lisa.TDI_data.data_info.frequency_samples_array, 
+           lisa.TDI_data.frequency_domain_TDI_data_numpy_array['A'].real,
            label="A_pespace")
-plt.loglog(lisa.TDI_data.data_info.frequency_samples_array, 
-           np.abs(lisa.TDI_data.frequency_domain_TDI_data_numpy_array['E']),
+plt.semilogx(lisa.TDI_data.data_info.frequency_samples_array, 
+           lisa.TDI_data.frequency_domain_TDI_data_numpy_array['E'].real,
            label="E_pespace")
-plt.loglog(lisa.TDI_data.data_info.frequency_samples_array, 
-           np.abs(lisa.TDI_data.frequency_domain_TDI_data_numpy_array['T']),
+plt.semilogx(lisa.TDI_data.data_info.frequency_samples_array, 
+           lisa.TDI_data.frequency_domain_TDI_data_numpy_array['T'].real,
            label="T_pespace")
-plt.loglog(LDC_mbhb.data_info.frequency_samples_array, 
-           np.abs(LDC_mbhb.frequency_domain_TDI_data_numpy_array['A']),
+plt.semilogx(LDC_mbhb.data_info.frequency_samples_array, 
+           LDC_mbhb.frequency_domain_TDI_data_numpy_array['A'].real,
            label="A_LDC_fft")
-plt.loglog(LDC_mbhb.data_info.frequency_samples_array, 
-           np.abs(LDC_mbhb.frequency_domain_TDI_data_numpy_array['E']),
+plt.semilogx(LDC_mbhb.data_info.frequency_samples_array, 
+           LDC_mbhb.frequency_domain_TDI_data_numpy_array['E'].real,
            label="E_LDC_fft")
-plt.loglog(LDC_mbhb.data_info.frequency_samples_array, 
-           np.abs(LDC_mbhb.frequency_domain_TDI_data_numpy_array['T']),
+plt.semilogx(LDC_mbhb.data_info.frequency_samples_array, 
+           LDC_mbhb.frequency_domain_TDI_data_numpy_array['T'].real,
            label="T_LDC_fft")
 plt.legend()
 plt.savefig(f"{outdir}/{dataname}_pespace_LDC_fd.png")
@@ -196,34 +201,34 @@ tdi_bbhx = wave_gen(params_tiwave['mass_1'],
                     params_tiwave['chi_1'],
                     params_tiwave['chi_2'],
                     params_tiwave['luminosity_distance']*1e6*PC_SI,
-                    params_tiwave["reference_phase"],
-                    f_peak,
+                    params_tiwave['reference_phase'],
+                    0.0,
                     params_tiwave['inclination'],
                     params_tiwave['ecliptic_longitude'],
                     params_tiwave['ecliptic_latitude'],
                     params_tiwave['polarization'],
-                    0.0,
-                    freqs=inj_mbhb.frequency_samples_numpy_array,
+                    params_tiwave["coalescence_time"],
+                    freqs=pespace_mbhb.frequency_samples_numpy_array,
                     direct=True)[0]
 A_bbhx, E_bbhx, T_bbhx = tdi_bbhx
 plt.figure()
-plt.loglog(lisa.TDI_data.data_info.frequency_samples_array, 
-           np.abs(lisa.TDI_data.frequency_domain_TDI_data_numpy_array['A']),
+plt.semilogx(lisa.TDI_data.data_info.frequency_samples_array, 
+           lisa.TDI_data.frequency_domain_TDI_data_numpy_array['A'].real,
            label="A_pespace")
-plt.loglog(lisa.TDI_data.data_info.frequency_samples_array, 
-           np.abs(lisa.TDI_data.frequency_domain_TDI_data_numpy_array['E']),
+plt.semilogx(lisa.TDI_data.data_info.frequency_samples_array, 
+           lisa.TDI_data.frequency_domain_TDI_data_numpy_array['E'].real,
            label="E_pespace")
-plt.loglog(lisa.TDI_data.data_info.frequency_samples_array, 
-           np.abs(lisa.TDI_data.frequency_domain_TDI_data_numpy_array['T']),
+plt.semilogx(lisa.TDI_data.data_info.frequency_samples_array, 
+           lisa.TDI_data.frequency_domain_TDI_data_numpy_array['T'].real,
            label="T_pespace")
-plt.loglog(LDC_mbhb.data_info.frequency_samples_array, 
-           np.abs(A_bbhx),
+plt.semilogx(LDC_mbhb.data_info.frequency_samples_array, 
+           A_bbhx.real,
            label="A_bbhx")
-plt.loglog(LDC_mbhb.data_info.frequency_samples_array, 
-           np.abs(E_bbhx),
+plt.semilogx(LDC_mbhb.data_info.frequency_samples_array, 
+           E_bbhx.real,
            label="E_bbhx")
-plt.loglog(LDC_mbhb.data_info.frequency_samples_array, 
-           np.abs(T_bbhx),
+plt.semilogx(LDC_mbhb.data_info.frequency_samples_array, 
+           T_bbhx.real,
            label="T_bbhx")
 plt.legend()
 plt.savefig(f"{outdir}/{dataname}_pespace_bbhx_fd.png")

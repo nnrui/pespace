@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+pd.set_option('display.max_columns', None)
 import time
 from matplotlib import pyplot as plt
 import bilby
@@ -8,47 +9,19 @@ MTSUN_SI = 4.925490947641266978197229498498379006e-6
 PI = 3.141592653589793
 PC_SI = 3.085677581491367e+16
 
-local_rank_id = int(os.environ['MPI_LOCALRANKID'])
-gpus_list = os.environ['GPU_DEVICE_ORDINAL'].split(',')
-selected_gpu = gpus_list[local_rank_id%len(gpus_list)]
-os.environ['CUDA_VISIBLE_DEVICES'] = selected_gpu
+# local_rank_id = int(os.environ['MPI_LOCALRANKID'])
+# gpus_list = os.environ['GPU_DEVICE_ORDINAL'].split(',')
+# selected_gpu = gpus_list[local_rank_id%len(gpus_list)]
+# os.environ['CUDA_VISIBLE_DEVICES'] = selected_gpu
 
 
-num_tests = 10000
-
+num_tests = 20
 minimum_frequency = 1e-5
 maximum_frequency = 1e-1
-cadence = 5
+cadence = 10
 f_cut = 0.2
 max_mass = maximum_frequency/f_cut/MTSUN_SI
 # print(max_mass)
-
-rng = np.random.default_rng()
-parameters = {}
-parameters['total_mass'] = rng.uniform(1e3, max_mass, num_tests)
-parameters['mass_ratio'] = rng.uniform(0.2, 1.0, num_tests)
-parameters['chi_1'] = rng.uniform(-1.0, 1.0, num_tests)
-parameters['chi_2'] = rng.uniform(-1.0, 1.0, num_tests)
-parameters['luminosity_distance'] = rng.uniform(1000.0, 10000.0, num_tests)
-parameters['inclination'] = rng.uniform(0, np.pi, num_tests)
-parameters['reference_phase'] = rng.uniform(0, 2*np.pi, num_tests)
-parameters['ecliptic_longitude'] = rng.uniform(-PI, PI, num_tests)
-parameters['ecliptic_latitude'] = rng.uniform(-PI/2, PI/2, num_tests)
-parameters['polarization'] = rng.uniform(0, 2*PI, num_tests)
-parameters['coalescence_time'] = np.zeros(num_tests)
-parameters = bilby.gw.conversion.generate_mass_parameters(parameters)
-parameters = pd.DataFrame(parameters)
-
-
-import sys 
-sys.path.append('/home/changfenggroup/nrui/works/codes/gw_space/pespace')
-sys.path.append('/home/changfenggroup/nrui/works/codes/gw_space/tiwave')
-
-import taichi as ti
-ti.init(arch=ti.cuda, default_fp=ti.f64)
-import numpy as np
-from matplotlib import pyplot as plt
-
 
 duration = 31536000    # 1 year observation
 cadence = 10
@@ -59,7 +32,7 @@ inj_parameters = dict(
     mass_ratio = 0.11,
     chi_1 = 0.3986046314480332,
     chi_2 = 0.5465882372512956,
-    luminosity_distance = 6000.42017466175677,
+    luminosity_distance = 60000.42017466175677,
     inclination = 0.30782038099413395,
     reference_phase = 0.0,
     coalescence_time = 0.0,
@@ -68,19 +41,56 @@ inj_parameters = dict(
     polarization = 1.30782038099413395,
 )
 
+rng = np.random.default_rng()
+parameters = {}
+parameters['total_mass'] = rng.uniform(1e3, max_mass, num_tests)
+parameters['mass_ratio'] = rng.uniform(0.2, 1.0, num_tests)
+parameters['chi_1'] = rng.uniform(-1.0, 1.0, num_tests)
+parameters['chi_2'] = rng.uniform(-1.0, 1.0, num_tests)
+parameters['luminosity_distance'] = rng.uniform(1000.0, 10000.0, num_tests)
+parameters['inclination'] = rng.uniform(0, np.pi, num_tests)
+parameters['reference_phase'] = rng.uniform(0, 2*np.pi, num_tests)
+parameters['ecliptic_longitude'] = np.ones(num_tests) * inj_parameters["ecliptic_longitude"]
+parameters['ecliptic_latitude'] = np.ones(num_tests) * inj_parameters["ecliptic_latitude"]
+parameters['polarization'] = np.ones(num_tests) * inj_parameters["polarization"]
+parameters['coalescence_time'] = rng.uniform(-3600*24, -3600*24, num_tests)
+parameters['log_likelihood'] = np.zeros(num_tests)
+# parameters['luminosity_distance'] = rng.uniform(1000.0, 10000.0, num_tests)
+# parameters['inclination'] = rng.uniform(0, np.pi, num_tests)
+# parameters['reference_phase'] = rng.uniform(0, 2*np.pi, num_tests)
+# parameters['ecliptic_longitude'] = rng.uniform(-PI, PI, num_tests)
+# parameters['ecliptic_latitude'] = rng.uniform(-PI/2, PI/2, num_tests)
+# parameters['polarization'] = rng.uniform(0, 2*PI, num_tests)
+# parameters['coalescence_time'] = np.zeros(num_tests)
+parameters = bilby.gw.conversion.generate_mass_parameters(parameters)
+parameters = pd.DataFrame(parameters)
+
+
+import sys 
+import sys 
+sys.path.append("/home/changfenggroup/nrui/works/codes/gw_space/pespace")
+sys.path.append("/home/changfenggroup/nrui/works/codes/gw_space/tiwave")
+sys.path.append('/home/hydrogen/workspace/Space_GW/pespace')
+sys.path.append('/home/hydrogen/workspace/Space_GW/tiwave')
+import taichi as ti
+ti.init(arch=ti.cuda, default_fp=ti.f64, offline_cache=False)
+import numpy as np
+from matplotlib import pyplot as plt
+
 
 from pespace.detectors import TDIChannelsData, SpaceborneInterferometer
-from pespace.noise import noise_models
+from pespace.noise import available_noise_models
 from pespace.likelihood import FrequencyDomainLikelihood
+from pespace.orbits import KaplerianHeliocentric
 from tiwave.waveforms import IMRPhenomD
 
 
 mbhb = TDIChannelsData(label="injection_individual_MBHB")
 mbhb.set_frequency_domain_data_with_zero_value(channels=TDI_chans, generation=TDI_gen, duration=duration, cadence=cadence)
-mbhb.set_frequency_domain_noise_power_density_from_analystic_model(noise_models['LISA_SciRDv1'])
+mbhb.set_frequency_domain_noise_power_density_from_model(available_noise_models['LISA_SciRDv1'])
 noise_realization = mbhb.generate_realization_from_frequency_domain_noise_power_density()
 mbhb.add_into_frequency_domian_data(noise_realization)
-lisa = SpaceborneInterferometer(name='LISA', TDI_data=mbhb)
+lisa = SpaceborneInterferometer(name='LISA', TDI_data=mbhb, orbit=KaplerianHeliocentric(2.5e9, 0.0, 0.0))
 lisa.initialize_response_container_in_frequency_domain()
 
 wf = IMRPhenomD(lisa.TDI_data.frequency_samples)
@@ -91,10 +101,11 @@ likelihood = FrequencyDomainLikelihood(wf, lisa)
 st = time.perf_counter()
 for i in range(num_tests):
     likelihood.parameters.update(parameters.iloc[i])
-    likelihood.log_likelihood()
+    parameters["log_likelihood"][i] = likelihood.log_likelihood()
 ed = time.perf_counter()
 print('ti time consuming: ', (ed-st)/num_tests)
 
+print(parameters)
 
 # import taichi as ti
 # ti.init(arch=ti.cuda, default_fp=ti.f64, device_memory_fraction=0.9, kernel_profiler=True)

@@ -1,7 +1,7 @@
 #!/bin/sh
-#SBATCH --job-name=LISA_individual_MBHB_full
+#SBATCH --job-name=LDC1-1_v1_MBHB_sampling
 #SBATCH --chdir=/home/changfenggroup/nrui/works/codes/gw_space/pespace/examples
-#SBATCH --output=/home/changfenggroup/nrui/works/codes/gw_space/pespace/examples/output/LISA_individual_MBHB_full_parameters.out
+#SBATCH --output=/home/changfenggroup/nrui/works/codes/gw_space/pespace/examples/output/simulated_MBHB_sampling.out
 #SBATCH --partition=GPU-V100 
 #SBATCH --nodes=2
 #SBATCH --ntasks=80
@@ -16,8 +16,7 @@ export OPENBLAS_NUM_THREADS=1
 export BLIS_NUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 # mpiexec -n 8 python _gpu_visible_test.py
-mpiexec -n 80 python LISA_individual_MBHB_full_parameters.py
-
+mpiexec -n 80 python simulated_MBHB_sampling.py
 
 # #SBATCH --gpu-bind=verbose,map_gpu:0,1,2,3
 # #SBATCH --gpu-bind=verbose,map_gpu:0,1,0,1
