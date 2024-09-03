@@ -398,7 +398,7 @@ class TDIChannelsData:
         return None
 
     def _reset(self) -> None:
-        self.__init__(self._fmin_in, self._fmax_in)
+        self.__init__(self.label, self._fmin_in, self._fmax_in)
         return None
 
     @property
