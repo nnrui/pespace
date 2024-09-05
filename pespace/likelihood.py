@@ -34,9 +34,13 @@ def _compute_frequency_domain_likelihood(
 
 class FrequencyDomainLikelihood(Likelihood):
     # TODO:
-    # - add support for multiple
+    # - add support for multiple, share or check the same frequency samples, different obs duration or cadance
 
-    def __init__(self, waveform: BaseWaveform, detector: SpaceborneInterferometer):
+    def __init__(
+        self,
+        waveform: BaseWaveform,
+        detector: SpaceborneInterferometer | tuple[SpaceborneInterferometer],
+    ):
         """
         create a FrequencyDomainLikelihood instance
 
@@ -49,16 +53,19 @@ class FrequencyDomainLikelihood(Likelihood):
             must be set as ("A","E","T") or ("A","E").
         """
         super(FrequencyDomainLikelihood, self).__init__(parameters=dict())
+
         self.waveform = waveform
-        if not (
-            set(detector.TDI_data.data_info.channels) == {"A", "E"}
-            or set(detector.TDI_data.data_info.channels) == {"A", "E", "T"}
-        ):
-            raise Exception(
-                f"Your set detector channels of {detector.TDI_data.channels}, "
-                + f"while the likelihood compution expect the channels of "
-                + f'("A","E","T") or ("A","E")'
-            )
+
+        if not isinstance(detector, tuple):
+            detector = (detector,)
+        for det in detector:
+            channels = set(det.TDI_data.data_info.channels)
+            if not (channels == {"A", "E"} or channels == {"A", "E", "T"}):
+                raise ValueError(
+                    "The likelihood compution expect the TDI channels of {'A','E','T'} or "
+                    + f"{{'A','E'}}, while the channels of the detector {det.name} "
+                    + f"in the input is {channels}."
+                )
         self.detector = detector
 
     def log_likelihood(self):
@@ -71,19 +78,24 @@ class FrequencyDomainLikelihood(Likelihood):
 
         """
         self.waveform.update_waveform(self.parameters)
-        self.detector.update_frequency_domain_response(
-            self.waveform.waveform_container,
-            self.parameters["ecliptic_longitude"],
-            self.parameters["ecliptic_latitude"],
-            self.parameters["polarization"],
-        )
-        return _compute_frequency_domain_likelihood(
-            self.detector.TDI_data.data_info.channels,
-            self.detector.TDI_data.frequency_domain_TDI_data,
-            self.detector.response_container,
-            self.detector.TDI_data.frequency_domain_noise_power_density,
-            self.detector.TDI_data.data_info.delta_frequency,
-        )
+        logl = 0.0
+        for det in self.detector:
+            det.update_frequency_domain_response(
+                self.waveform.waveform_container,
+                self.parameters["ecliptic_longitude"],
+                self.parameters["ecliptic_latitude"],
+                self.parameters["polarization"],
+            )
+
+            logl += _compute_frequency_domain_likelihood(
+                det.TDI_data.data_info.channels,
+                det.TDI_data.frequency_domain_TDI_data,
+                det.response_container,
+                det.TDI_data.frequency_domain_noise_power_density,
+                det.TDI_data.data_info.delta_frequency,
+            )
+
+        return logl
 
 
 class WaveletDomainLikelihood(Likelihood):
