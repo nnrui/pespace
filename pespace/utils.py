@@ -73,6 +73,30 @@ def GW_propagation_unit_vector(
     )
 
 
+def complex_taichi_field_to_numpy_array_dict(
+    input_field: ti.Field,
+) -> dict[str, NDArray]:
+    array_dict = input_field.to_numpy()
+    ret = {}
+    for key, data in array_dict.items():
+        ret[key] = data[:, 0] + 1j * data[:, 1]
+    return ret
+
+
+def complex_numpy_array_dict_to_taichi_field(
+    input_array_dict: dict[str, NDArray], field_container: ti.Field
+) -> None:
+    field_container.from_numpy(
+        dict(
+            [
+                (key, np.vstack([data.real, data.imag]).T)
+                for key, data in input_array_dict.items()
+            ]
+        )
+    )
+    return None
+
+
 # def cutoff_frequency_PhenomD(mass_1, mass_2):
 #     '''
 #     return the high frequency cutoff in Hz, using Mf=0.2 copied form LALSimIMRPhenomD.h,
