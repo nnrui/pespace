@@ -17,6 +17,7 @@ from .tdi import (
 )
 from ..utils import (
     complex_taichi_field_to_numpy_array_dict,
+    complex_numpy_array_dict_to_taichi_field,
     polarization_tensor_SSB,
     GW_propagation_unit_vector,
     sinc,
@@ -94,12 +95,10 @@ class DataInformation:
     generation: str
     duration: float
     cadence: float
-    start_time: float = 0.0
-    fmin_in: float = 1e-5
-    fmax_in: float = 0.1
+    start_time: float
+    minimum_frequency: float
+    maximum_frequency: float
 
-    minimum_frequency: float = field(init=False)
-    maximum_frequency: float = field(init=False)
     sampling_frequency: float = field(init=False)
     delta_frequency: float = field(init=False)
     time_series_length: int = field(init=False)
@@ -113,8 +112,7 @@ class DataInformation:
     def __post_init__(self) -> None:
         """Generating useful numbers from the duration and cadence, and setting proper time and frequency samples:
 
-        TODO: 1. describing rules for minimum_frequency, maximum_frequency
-              2. describing rules for time samples and frequency samples
+        TODO: - describing rules for time samples and frequency samples
         """
         if not all([chan in implemented_TDI_channels for chan in self.channels]):
             raise ValueError(
@@ -129,27 +127,22 @@ class DataInformation:
 
         sampling_frequency = 1 / self.cadence
         delta_frequency = 1 / self.duration
-        fmax = np.minimum(self.fmax_in, sampling_frequency / 2)
-        fmin = np.maximum(self.fmin_in, 1 / self.duration)
-
-        # using round rather // to avoid missing the last sample due to possible numerical error
-        time_series_length = int(np.round(self.duration / self.cadence) + 1)
+        time_series_length = int(self.duration // self.cadence + 1)
         time_samples_array = (
             np.arange(time_series_length) * self.cadence + self.start_time
         )
 
-        full_frequency_series_length = int(time_series_length // 2 + 1)
-        full_frequency_samples_array = (
-            np.arange(full_frequency_series_length) * delta_frequency
+        full_frequency_samples_array = np.fft.rfftfreq(
+            time_series_length, sampling_frequency
         )
-        frequency_mask_array = (full_frequency_samples_array >= fmin) * (
-            full_frequency_samples_array <= fmax
-        )
+        full_frequency_series_length = int(len(full_frequency_samples_array))
+
+        frequency_mask_array = (
+            full_frequency_samples_array >= self.minimum_frequency
+        ) * (full_frequency_samples_array <= self.maximum_frequency)
         frequency_samples_array = full_frequency_samples_array[frequency_mask_array]
         frequency_series_length = int(len(frequency_samples_array))
 
-        object.__setattr__(self, "minimum_frequency", fmin)
-        object.__setattr__(self, "maximum_frequency", fmax)
         object.__setattr__(self, "sampling_frequency", sampling_frequency)
         object.__setattr__(self, "delta_frequency", delta_frequency)
         object.__setattr__(self, "time_series_length", time_series_length)
@@ -173,18 +166,8 @@ class TDIChannelsData:
 
     """Storing and processing TDI strain and noise feature data."""
 
-    def __init__(
-        self,
-        label: str | None = None,
-        minimum_frequency: float = 1e-5,
-        maximum_frequency: float = 0.1,
-    ) -> None:
-        """
-        Parameters:
-        -----------
-        minimum_frequency:
-        maximum_frequency:
-        """
+    def __init__(self, label: str | None = None) -> None:
+
         self.time_samples = None
         self.frequency_samples = None
         self.wavelet_samples = None
@@ -199,15 +182,13 @@ class TDIChannelsData:
 
         self._data_info = None
         self._reset_flag = False
-        self._fmin_in = minimum_frequency
-        self._fmax_in = maximum_frequency
 
         self.label = label
 
         return None
 
     def _reset(self) -> None:
-        self.__init__(self.label, self._fmin_in, self._fmax_in)
+        self.__init__(self.label)
         return None
 
     @property
@@ -220,7 +201,9 @@ class TDIChannelsData:
         generation: str,
         duration: float,
         cadence: float,
-        start_time: float = 0.0,
+        start_time: float,
+        minimum_frequency: float,
+        maximum_frequency: float,
     ) -> None:
         if self._reset_flag:
             warnings.warn(
@@ -234,15 +217,14 @@ class TDIChannelsData:
             duration,
             cadence,
             start_time,
-            self._fmin_in,
-            self._fmax_in,
+            minimum_frequency,
+            maximum_frequency,
         )
         return None
 
     def _initialize_time_domain_data(self) -> None:
         """Initializing `ti.field` for `time_samples` and `time_domain_TDI_data`, only for internel calls.
-        Call after setting data_info.
-        Setting time domain data externally using `set_time_domain_data_from_zero`.
+        Call after setting data_info. Setting time domain data externally using `set_time_domain_data_from_zero`.
         """
         self.time_samples = ti.field(ti.f64, (self.data_info.time_series_length,))
         self.time_samples.from_numpy(self.data_info.time_samples_array)
@@ -254,8 +236,7 @@ class TDIChannelsData:
 
     def _initialize_frequency_domain_data(self) -> None:
         """Initializing `ti.field` for `frequency_samples` and `frequency_domain_TDI_data`, only for internel calls.
-         Call after setting data_info.
-        Setting frequency domain data externally using `set_frequency_domain_data_from_zero`.
+        Call after setting data_info. Setting frequency domain data externally using `set_frequency_domain_data_from_zero`.
         """
         self.frequency_samples = ti.field(
             ti.f64, (self.data_info.frequency_series_length,)
@@ -278,6 +259,8 @@ class TDIChannelsData:
         cadence: float,
         TDI_data_array: NDArray[np.float64],
         start_time: float = 0.0,
+        minimum_frequency: float = 1e-5,
+        maximum_frequency: float = 0.1,
     ) -> None:
         """Set time domain TDI data from input numpy array.
 
@@ -302,7 +285,15 @@ class TDIChannelsData:
             )
             self._reset()
 
-        self.set_data_info(channels, generation, duration, cadence, start_time)
+        self.set_data_info(
+            channels,
+            generation,
+            duration,
+            cadence,
+            start_time,
+            minimum_frequency,
+            maximum_frequency,
+        )
         channels_num, samples_num = TDI_data_array.shape
         if not len(channels) == channels_num:
             raise ValueError(
@@ -331,9 +322,12 @@ class TDIChannelsData:
         duration: float,
         cadence: float,
         TDI_data_array: NDArray[np.complex128],
+        start_time: float = 0.0,
+        minimum_frequency: float = 1e-5,
+        maximum_frequency: float = 0.1,
     ) -> None:
         """Note: the order in channels list must to be same with the TDI_data_array in input array
-        the  length of input TDI_data_array need to be cropped with fmax = Min(f_Nyquist, fmax_in) and fmin = Max(1/T, fmin_in)
+        the length of input TDI_data_array need to match the self.data_info.frequency_series_length. If the frequency series are obtained from FFT, self.data_info.frequency_mask_array may needed to mask the array.
         """
 
         if self._reset_flag:
@@ -346,7 +340,15 @@ class TDIChannelsData:
             )
             self._reset()
 
-        self.set_data_info(channels, generation, duration, cadence)
+        self.set_data_info(
+            channels,
+            generation,
+            duration,
+            cadence,
+            start_time,
+            minimum_frequency,
+            maximum_frequency,
+        )
         channels_num, samples_num = TDI_data_array.shape
         if not len(channels) == channels_num:
             raise ValueError(
@@ -380,6 +382,8 @@ class TDIChannelsData:
         duration: float,
         cadence: float,
         start_time: float = 0.0,
+        minimum_frequency: float = 1e-5,
+        maximum_frequency: float = 0.1,
     ) -> None:
         if self._reset_flag:
             warnings.warn(
@@ -391,7 +395,15 @@ class TDIChannelsData:
             )
             self._reset()
 
-        self.set_data_info(channels, generation, duration, cadence, start_time)
+        self.set_data_info(
+            channels,
+            generation,
+            duration,
+            cadence,
+            start_time,
+            minimum_frequency,
+            maximum_frequency,
+        )
 
         self._initialize_time_domain_data()
         self.time_domain_TDI_data.fill(0.0)
@@ -400,7 +412,14 @@ class TDIChannelsData:
         return None
 
     def set_frequency_domain_data_with_zero(
-        self, channels: tuple[str, ...], generation, duration: float, cadence: float
+        self,
+        channels: tuple[str, ...],
+        generation,
+        duration: float,
+        cadence: float,
+        start_time: float = 0.0,
+        minimum_frequency: float = 1e-5,
+        maximum_frequency: float = 0.1,
     ) -> None:
         if self._reset_flag:
             warnings.warn(
@@ -412,7 +431,15 @@ class TDIChannelsData:
             )
             self._reset()
 
-        self.set_data_info(channels, generation, duration, cadence)
+        self.set_data_info(
+            channels,
+            generation,
+            duration,
+            cadence,
+            start_time,
+            maximum_frequency,
+            minimum_frequency,
+        )
 
         self._initialize_frequency_domain_data()
         self.frequency_domain_TDI_data.fill(0.0)
@@ -424,7 +451,8 @@ class TDIChannelsData:
         return None
 
     def Fourier_transform(
-        self, window: None | float | str | tuple[str | float] = None
+        self,
+        window: None | float | str | tuple[str | float] | NDArray[np.float64] = None,
     ) -> None:
         """see scipy.signal.get_window for more details about window parameter
         TODO: check the normalizing factor
@@ -442,6 +470,8 @@ class TDIChannelsData:
 
             if window is None:
                 weight = np.ones(self.data_info.time_series_length)
+            elif isinstance(window, np.ndarray):
+                weight = window
             else:
                 weight = signal.get_window(window, self.data_info.time_series_length)
 
@@ -449,7 +479,7 @@ class TDIChannelsData:
             td_tdi_numpy = self.time_domain_TDI_data.to_numpy()
 
             start_time_shift = np.exp(
-                1j
+                -1j
                 * 2
                 * PI
                 * self.data_info.time_samples_array[0]
@@ -460,11 +490,14 @@ class TDIChannelsData:
                 td_strain = td_tdi_numpy[chan]
                 windowed_strain = td_strain * weight
                 fd_strain = np.fft.rfft(windowed_strain)
-                fd_strain /= self.data_info.sampling_frequency
-                fd_strain *= start_time_shift
+                fd_strain *= start_time_shift / self.data_info.sampling_frequency
                 fd_strain = fd_strain[self.data_info.frequency_mask_array]
-                fd_tdi_numpy[chan] = np.stack((fd_strain.real, fd_strain.imag), axis=-1)
-            self.frequency_domain_TDI_data.from_numpy(fd_tdi_numpy)
+                fd_tdi_numpy[chan] = fd_strain
+
+            complex_numpy_array_dict_to_taichi_field(
+                fd_tdi_numpy, self.frequency_domain_TDI_data
+            )
+
         return None
 
     def inverse_Fourier_transform(self) -> None:
@@ -679,7 +712,7 @@ class TDIChannelsData:
     #     This method may be significantly modified in the future.
     #     """
     #     return cls
-    
+
     # def save_to_file(self, filename:None | str)->None:
     #     pass
     #     return None
