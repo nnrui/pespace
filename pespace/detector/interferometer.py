@@ -133,7 +133,7 @@ class DataInformation:
         )
 
         full_frequency_samples_array = np.fft.rfftfreq(
-            time_series_length, sampling_frequency
+            time_series_length, self.cadence
         )
         full_frequency_series_length = int(len(full_frequency_samples_array))
 
