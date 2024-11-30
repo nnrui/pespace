@@ -1,5 +1,4 @@
 import warnings
-from typing import Optional
 from dataclasses import dataclass, field
 
 from scipy import signal
@@ -17,6 +16,7 @@ from .tdi import (
     TDI_combine_function_FD,
 )
 from ..utils import (
+    complex_taichi_field_to_numpy_array_dict,
     polarization_tensor_SSB,
     GW_propagation_unit_vector,
     sinc,
@@ -171,11 +171,11 @@ class TDIChannelsData:
     # TODO:
     # - check the normalizing factor of the rfft function
 
-    """Storing TDI strain and noise feature, transfering data from different domain."""
+    """Storing and processing TDI strain and noise feature data."""
 
     def __init__(
         self,
-        label: Optional[str] = None,
+        label: str | None = None,
         minimum_frequency: float = 1e-5,
         maximum_frequency: float = 0.1,
     ) -> None:
@@ -211,7 +211,7 @@ class TDIChannelsData:
         return None
 
     @property
-    def data_info(self) -> Optional[DataInformation]:
+    def data_info(self) -> None | DataInformation:
         return self._data_info
 
     def set_data_info(
@@ -270,7 +270,7 @@ class TDIChannelsData:
     def _initialize_wavelet_domain_data(self) -> None:
         return None
 
-    def set_time_domain_data_from_input_array(
+    def set_time_domain_data_from_input(
         self,
         channels: tuple[str, ...],
         generation: str,
@@ -324,7 +324,7 @@ class TDIChannelsData:
         self._reset_flag = True
         return None
 
-    def set_frequency_domain_data_from_input_array(
+    def set_frequency_domain_data_from_input(
         self,
         channels: tuple[str, ...],
         generation: str,
@@ -373,7 +373,7 @@ class TDIChannelsData:
         self._reset_flag = True
         return None
 
-    def set_time_domain_data_with_zero_value(
+    def set_time_domain_data_with_zero(
         self,
         channels: tuple[str, ...],
         generation: str,
@@ -399,7 +399,7 @@ class TDIChannelsData:
         self._reset_flag = True
         return None
 
-    def set_frequency_domain_data_with_zero_value(
+    def set_frequency_domain_data_with_zero(
         self, channels: tuple[str, ...], generation, duration: float, cadence: float
     ) -> None:
         if self._reset_flag:
@@ -420,10 +420,10 @@ class TDIChannelsData:
         self._reset_flag = True
         return None
 
-    def set_wavelet_domain_data_with_zero_value(self) -> None:
+    def set_wavelet_domain_data_with_zero(self) -> None:
         return None
 
-    def Fourier_transform_time_domain_data_to_frequency_domain(
+    def Fourier_transform(
         self, window: None | float | str | tuple[str | float] = None
     ) -> None:
         """see scipy.signal.get_window for more details about window parameter
@@ -467,7 +467,7 @@ class TDIChannelsData:
             self.frequency_domain_TDI_data.from_numpy(fd_tdi_numpy)
         return None
 
-    def inverse_Fourier_transform_frequency_domain_data_to_time_domain(self) -> None:
+    def inverse_Fourier_transform(self) -> None:
         """By default, irfft assumes an even output length which puts the last entry at the Nyquist frequency;
         To avoid losing information, the correct length of the real input must be given.
         """
@@ -633,7 +633,7 @@ class TDIChannelsData:
     def add_into_wavelet_domian_data(self) -> None:
         return None
 
-    def save_to_hdf5(self, filename: Optional[str] = None) -> None:
+    def save_to_hdf5(self, filename: None | str = None) -> None:
         """Save the data stored in the instance to a hdf5 file.
         This method may be significantly modified in the future.
         """
@@ -675,60 +675,40 @@ class TDIChannelsData:
     # def recover_from_file(cls, filename:str)->Self:
     #     """Recovering `TDIChannelData` instance from the file saved by the
     #     `save_to_file` method. For other data format, please using methods for setting
-    #     from input array according to the domain of the data, like `set_time_domain_data_from_input_array`, etc.
+    #     from input array according to the domain of the data, like `set_time_domain_data_from_input`, etc.
     #     This method may be significantly modified in the future.
     #     """
     #     return cls
+    
+    # def save_to_file(self, filename:None | str)->None:
+    #     pass
+    #     return None
 
     @property
-    def time_samples_numpy_array(self) -> Optional[NDArray[np.float64]]:
-        """Low performance, do not use in MCMC sampling"""
-        if self.data_info is not None:
-            return self.data_info.time_samples_array
-        else:
-            return None
+    def time_samples_numpy(self) -> NDArray[np.float64]:
+        return self.data_info.time_samples_array
 
     @property
-    def frequency_samples_numpy_array(self) -> Optional[NDArray[np.float64]]:
-        """Low performance, do not use in MCMC sampling"""
-        if self.data_info is not None:
-            return self.data_info.frequency_samples_array
-        else:
-            return None
+    def frequency_samples_numpy(self) -> NDArray[np.float64]:
+        return self.data_info.frequency_samples_array
 
     @property
-    def time_domain_TDI_data_numpy_array(
+    def time_domain_TDI_data_numpy(
         self,
-    ) -> Optional[dict[str, NDArray[np.float64]]]:
-        """Low performance, do not use in MCMC sampling"""
-        if self.time_domain_TDI_data is not None:
-            return self.time_domain_TDI_data.to_numpy()
-        else:
-            return None
+    ) -> dict[str, NDArray[np.float64]]:
+        return self.time_domain_TDI_data.to_numpy()
 
     @property
-    def frequency_domain_TDI_data_numpy_array(
+    def frequency_domain_TDI_data_numpy(
         self,
-    ) -> Optional[dict[str, NDArray[np.complex128]]]:
-        """Low performance, do not use in MCMC sampling"""
-        if self.frequency_domain_TDI_data is not None:
-            array_dict = self.frequency_domain_TDI_data.to_numpy()
-            returned_dict = {}
-            for chan, data in array_dict.items():
-                returned_dict[chan] = data[:, 0] + 1j * data[:, 1]
-            return returned_dict
-        else:
-            return None
+    ) -> dict[str, NDArray[np.complex128]]:
+        return complex_taichi_field_to_numpy_array_dict(self.frequency_domain_TDI_data)
 
     @property
-    def frequency_domain_noise_power_density_numpy_array(
+    def frequency_domain_noise_power_density_numpy(
         self,
-    ) -> Optional[dict[str, NDArray[np.complex128]]]:
-        """Low performance, do not use in MCMC sampling"""
-        if self.frequency_domain_noise_power_density is not None:
-            return self.frequency_domain_noise_power_density.to_numpy()
-        else:
-            return None
+    ) -> dict[str, NDArray[np.float64]]:
+        return self.frequency_domain_noise_power_density.to_numpy()
 
 
 @ti.data_oriented
