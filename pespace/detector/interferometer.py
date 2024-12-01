@@ -132,9 +132,7 @@ class DataInformation:
             np.arange(time_series_length) * self.cadence + self.start_time
         )
 
-        full_frequency_samples_array = np.fft.rfftfreq(
-            time_series_length, self.cadence
-        )
+        full_frequency_samples_array = np.fft.rfftfreq(time_series_length, self.cadence)
         full_frequency_series_length = int(len(full_frequency_samples_array))
 
         frequency_mask_array = (
@@ -437,8 +435,8 @@ class TDIChannelsData:
             duration,
             cadence,
             start_time,
-            maximum_frequency,
             minimum_frequency,
+            maximum_frequency,
         )
 
         self._initialize_frequency_domain_data()
@@ -597,7 +595,7 @@ class TDIChannelsData:
                         im[self.data_info.frequency_mask_array],
                     )
                 )
-                * (self.frequency_domain_noise_power_density_numpy_array[chan]) ** 0.5
+                * (self.frequency_domain_noise_power_density_numpy[chan]) ** 0.5
             )
             noise_strains[chan] = noise.T
 
