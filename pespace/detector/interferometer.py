@@ -43,31 +43,6 @@ def _add_1d_field_into_TDI_data(TDI_data: ti.template(), input: ti.template()):
             TDI_data[i][chan] += input[i][chan]
 
 
-@ti.kernel
-def _compute_TDI_prefactor_for_FD_response(
-    frequency_field: ti.template(),
-    delay_factor_field: ti.template(),
-    prefactor_field: ti.template(),
-    armlength_sec: ti.f64,
-    TDI_gen: ti.u8,
-):
-    for i in frequency_field:
-        z = tm.cexp(
-            -2.0 * PI * frequency_field[i] * armlength_sec * ComplexNumber([0, 1])
-        )
-
-        prefactor = ComplexNumber(0.0, 0.0)
-        if TDI_gen == 1:
-            prefactor = ComplexNumber(1, 0) - tm.cpow(z, 2)
-        elif TDI_gen == 2:
-            prefactor = (
-                ComplexNumber(1, 0) - tm.cpow(z, 2) - tm.cpow(z, 4) + tm.cpow(z, 6)
-            )
-
-        prefactor_field[i] = prefactor
-        delay_factor_field[i] = z
-
-
 ########################################################################################
 @dataclass(frozen=True)
 class DataInformation:
@@ -746,6 +721,7 @@ class TDIChannelsData:
 class SpaceborneInterferometer:
     # TODO:
     # - include suppot to higher modes
+    # - add more tdi combination, and setting it as input argument (or including it in TDIChannelsData class)
 
     def __init__(
         self, name: str, TDI_data: TDIChannelsData, orbit: str | OrbitModel
@@ -779,6 +755,7 @@ class SpaceborneInterferometer:
 
         self.response_container = None
         # self.waveform_container = None
+        # TODO: probably better move it to tdi generation class
         self._FD_response_assistance = None
 
     def initialize_response_container_in_time_domain(self) -> None:
@@ -804,18 +781,29 @@ class SpaceborneInterferometer:
                 ),
                 shape=(self.TDI_data.data_info.frequency_series_length,),
             )
-            if self.TDI_data.data_info.generation == "1.5":
-                int_TDI_gen = 1
-            elif self.TDI_data.data_info.generation == "2.0":
-                int_TDI_gen = 2
-            _compute_TDI_prefactor_for_FD_response(
-                self.TDI_data.frequency_samples,
-                self._FD_response_assistance.delay_factor,
-                self._FD_response_assistance.TDI_generation_prefactor,
-                self.orbit.arm_length_sec,
-                int_TDI_gen,
-            )
+            self._compute_TDI_prefactor_for_FD_response()
         return None
+
+    @ti.kernel
+    def _compute_TDI_prefactor_for_FD_response(self):
+        for i in self.TDI_data.frequency_samples:
+            z = tm.cexp(
+                -2.0
+                * PI
+                * self.TDI_data.frequency_samples[i]
+                * self.orbit.arm_length_sec
+                * ComplexNumber([0, 1])
+            )
+
+            prefactor = ComplexNumber(0.0, 0.0)
+            if ti.static(self.TDI_data.data_info.generation == "1.5"):
+                prefactor = ComplexNumber(1, 0) - tm.cpow(z, 2)
+            elif ti.static(self.TDI_data.data_info.generation == "2.0"):
+                prefactor = (
+                    ComplexNumber(1, 0) - tm.cpow(z, 2) - tm.cpow(z, 4) + tm.cpow(z, 6)
+                )
+            self._FD_response_assistance[i]["TDI_generation_prefactor"] = prefactor
+            self._FD_response_assistance[i]["delay_factor"] = z
 
     def initialize_response_container_in_wavelet_domain(self) -> None:
         return None
