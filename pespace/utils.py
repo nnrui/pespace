@@ -29,7 +29,8 @@ def polarization_tensor_SSB(
     lam: ti.f64, beta: ti.f64, psi: ti.f64
 ) -> PolarizationStruct:  #
     """
-    return the polarization tensor in SSB, symbols follow the convention in LDC Manual: LISA-LCST-SGS-MAN-001
+    return the polarization tensor in SSB, symbols follow the convention in LDC Manual:
+    https://lisa-ldc.lal.in2p3.fr/static/data/pdf/LDC-manual-002.pdf
 
     Parameters
     ==========
@@ -42,7 +43,7 @@ def polarization_tensor_SSB(
     ========
     array: 3*3 array
     """
-    # todo the constant should compute only once to reduce compution burden.
+    # TODO: the constant should compute only once to reduce compution burden.
     p = vec3(
         [
             tm.sin(lam) * tm.cos(psi) - tm.sin(beta) * tm.cos(lam) * tm.sin(psi),
@@ -75,7 +76,7 @@ def GW_propagation_unit_vector(
 
 def complex_taichi_field_to_numpy_array_dict(
     input_field: ti.Field,
-) -> dict[str, NDArray]:
+) -> dict[str, NDArray[np.complex128]]:
     array_dict = input_field.to_numpy()
     ret = {}
     for key, data in array_dict.items():
@@ -84,7 +85,7 @@ def complex_taichi_field_to_numpy_array_dict(
 
 
 def complex_numpy_array_dict_to_taichi_field(
-    input_array_dict: dict[str, NDArray], field_container: ti.Field
+    input_array_dict: dict[str, NDArray[np.complex128]], field_container: ti.Field
 ) -> None:
     field_container.from_numpy(
         dict(

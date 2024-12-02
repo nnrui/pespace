@@ -7,7 +7,7 @@ from bilby.core.likelihood import Likelihood
 from tiwave.waveforms import BaseWaveform
 
 from .constants import *
-from .detectors import SpaceborneInterferometer
+from .detector.interferometer import SpaceborneInterferometer
 
 
 @ti.kernel

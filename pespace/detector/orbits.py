@@ -9,14 +9,14 @@ from ..utils import vec3
 
 
 # orbit vectors of detector constellation in ecliptic coordinate
+# fellowing the convention of LDC (https://lisa-ldc.lal.in2p3.fr/static/data/pdf/LDC-manual-002.pdf)
 OrbitVectorsStruct = ti.types.struct(
-    n1=vec3,  # unit vector of link2->3
-    n2=vec3,  # unit vector of link3->1
-    n3=vec3,  # unit vector of link1->2
-    p1_det=vec3,  # vector of the node 1 relative to the center of costellation, in unit of sec, p1 = p0 + p1_det
-    p2_det=vec3,  # vector of the node 2 relative to the center of costellation, in unit of sec, p2 = p0 + p2_det
-    p3_det=vec3,  # vector of the node 3 relative to the center of costellation, in unit of sec, p3 = p0 + p3_det
-    p0=vec3,  # vector of the center of the costellation relative to the sun, in unit of sec
+    n1=vec3,  # unit vector of link3->2 in SSB
+    n2=vec3,  # unit vector of link1->3 in SSB
+    n3=vec3,  # unit vector of link2->1 in SSB
+    p1=vec3,  # vector of the node 1 in SSB, in unit of sec, p1 = p0 + p1_det
+    p2=vec3,  # vector of the node 2 in SSB, in unit of sec, p2 = p0 + p2_det
+    p3=vec3,  # vector of the node 3 in SSB, in unit of sec, p3 = p0 + p3_det
 )
 
 
@@ -152,10 +152,10 @@ class KaplerianHeliocentric(OrbitModel):
         revolution_initial: float = 0.0,
     ) -> None:
         """
-        https://lisa-ldc.lal.in2p3.fr/static/data/pdf/LDC-manual-Sangria.pdf
+        https://lisa-ldc.lal.in2p3.fr/static/data/pdf/LDC-manual-002.pdf
 
         arm_length:
-            Arm length of the detector, in the unit of metter.
+            Arm length of the detector, in the unit of meter.
         rotation_initial:
             The initial phase of detector rotation around its center, [0, 2*pi], default: 0
         revolution_initial:
@@ -191,39 +191,81 @@ class KaplerianHeliocentric(OrbitModel):
         alpha = self.omega * time + self.revolution_initial
         ca = tm.cos(alpha)
         sa = tm.sin(alpha)
-        # vectors of each node in the detector-center-ecliptic coordinate
-        # pn_det = pn_ssb - p0_ssb
-        node1_det = self.r_prime * vec3(
+        ca_pow2 = ca * ca
+        sa_pow2 = sa * sa
+        # vectors of each spacecraft in the solar system barycentric coordinate
+        # pn_ssb = pn_det_ssb + p0_ssb
+        p1_det = self.r_prime * vec3(
             [
-                sa * ca * self.sk1 - (1 + sa * sa) * self.ck1,
-                sa * ca * self.ck1 - (1 + ca * ca) * self.sk1,
+                sa * ca * self.sk1 - (1 + sa_pow2) * self.ck1,
+                sa * ca * self.ck1 - (1 + ca_pow2) * self.sk1,
                 -self.sqrt3 * (ca * self.ck1 + sa * self.sk1),
             ]
         )
-        node2_det = self.r_prime * vec3(
+        p2_det = self.r_prime * vec3(
             [
-                sa * ca * self.sk2 - (1 + sa * sa) * self.ck2,
-                sa * ca * self.ck2 - (1 + ca * ca) * self.sk2,
+                sa * ca * self.sk2 - (1 + sa_pow2) * self.ck2,
+                sa * ca * self.ck2 - (1 + ca_pow2) * self.sk2,
                 -self.sqrt3 * (ca * self.ck2 + sa * self.sk2),
             ]
         )
-        node3_det = self.r_prime * vec3(
+        p3_det = self.r_prime * vec3(
             [
-                sa * ca * self.sk3 - (1 + sa * sa) * self.ck3,
-                sa * ca * self.ck3 - (1 + ca * ca) * self.sk3,
+                sa * ca * self.sk3 - (1 + sa_pow2) * self.ck3,
+                sa * ca * self.ck3 - (1 + ca_pow2) * self.sk3,
                 -self.sqrt3 * (ca * self.ck3 + sa * self.sk3),
             ]
         )
+        p0 = vec3([ca, sa, 0.0]) * self.AU_sec
 
         return OrbitVectorsStruct(
-            n1=(node3_det - node2_det) / self.arm_length_sec,
-            n2=(node1_det - node3_det) / self.arm_length_sec,
-            n3=(node2_det - node1_det) / self.arm_length_sec,
-            p1_det=node1_det,
-            p2_det=node2_det,
-            p3_det=node3_det,
-            p0=vec3([ca, sa, 0.0]) * self.AU_sec,
+            n1=(p2_det - p3_det) / self.arm_length_sec,
+            n2=(p3_det - p1_det) / self.arm_length_sec,
+            n3=(p1_det - p2_det) / self.arm_length_sec,
+            p1=p1_det + p0,
+            p2=p2_det + p0,
+            p3=p3_det + p0,
         )
+
+    # @ti.func
+    # def orbit_vectors(self, time: ti.f64) -> OrbitVectorsStruct:
+    #     # alpha: revolution ortial phase
+    #     alpha = self.omega * time + self.revolution_initial
+    #     ca = tm.cos(alpha)
+    #     sa = tm.sin(alpha)
+    #     # vectors of each node in the detector-center-ecliptic coordinate
+    #     # pn_det = pn_ssb - p0_ssb
+    #     node1_det = self.r_prime * vec3(
+    #         [
+    #             sa * ca * self.sk1 - (1 + sa * sa) * self.ck1,
+    #             sa * ca * self.ck1 - (1 + ca * ca) * self.sk1,
+    #             -self.sqrt3 * (ca * self.ck1 + sa * self.sk1),
+    #         ]
+    #     )
+    #     node2_det = self.r_prime * vec3(
+    #         [
+    #             sa * ca * self.sk2 - (1 + sa * sa) * self.ck2,
+    #             sa * ca * self.ck2 - (1 + ca * ca) * self.sk2,
+    #             -self.sqrt3 * (ca * self.ck2 + sa * self.sk2),
+    #         ]
+    #     )
+    #     node3_det = self.r_prime * vec3(
+    #         [
+    #             sa * ca * self.sk3 - (1 + sa * sa) * self.ck3,
+    #             sa * ca * self.ck3 - (1 + ca * ca) * self.sk3,
+    #             -self.sqrt3 * (ca * self.ck3 + sa * self.sk3),
+    #         ]
+    #     )
+
+    #     return OrbitVectorsStruct(
+    #         n1=(node2_det - node3_det) / self.arm_length_sec,
+    #         n2=(node3_det - node1_det) / self.arm_length_sec,
+    #         n3=(node1_det - node2_det) / self.arm_length_sec,
+    #         p1_det=node1_det,
+    #         p2_det=node2_det,
+    #         p3_det=node3_det,
+    #         p0=vec3([ca, sa, 0.0]) * self.AU_sec,
+    #     )
 
 
 available_orbit_models = {

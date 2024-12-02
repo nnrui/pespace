@@ -30,20 +30,6 @@ from ..constants import *
 from ..noise import FrequencyDomainNoiseModel, available_noise_models
 
 
-@ti.kernel
-def _add_1d_field_into_TDI_data(TDI_data: ti.template(), input: ti.template()):
-    """
-    Add the input of 1d field into TDI_data. The input field must has same shape and
-    same channels with TDI_data.
-    StructField has the default layout of AoS, unrolling the channels in the inner loop
-    for memory accessing efficiency.
-    """
-    for i in TDI_data:
-        for chan in ti.static(TDI_data.keys):
-            TDI_data[i][chan] += input[i][chan]
-
-
-########################################################################################
 @dataclass(frozen=True)
 class DataInformation:
     """Storing TDI channels data information.
@@ -133,6 +119,7 @@ class DataInformation:
         return None
 
 
+@ti.data_oriented
 class TDIChannelsData:
     # TODO:
     # - check the normalizing factor of the rfft function
@@ -622,19 +609,25 @@ class TDIChannelsData:
                 dict.fromkeys(self.data_info.channels, ComplexNumber),
                 shape=(self.data_info.frequency_series_length,),
             )
-            input_field.from_numpy(
-                dict(
-                    [
-                        (chan, np.vstack([data.real, data.imag]).T)
-                        for chan, data in input.items()
-                    ]
-                )
-            )
+            complex_numpy_array_dict_to_taichi_field(input, input_field)
         else:
             raise TypeError("Unsupported type, expect ti.StructField or dict[NDArray]")
 
-        _add_1d_field_into_TDI_data(self.frequency_domain_TDI_data, input_field)
+        self._add_input_field_into_TDI_data(self.frequency_domain_TDI_data, input_field)
         return None
+
+    @ti.kernel
+    def _add_input_field_into_TDI_data(self, base: ti.template(), input: ti.template()):
+        """
+        Add the input of 1d field into TDI_data. The input field must has same shape and
+        same channels with TDI_data.
+        StructField has the default layout of AoS, unrolling the channels in the inner loop
+        for memory accessing efficiency.
+        the base field is dimensionality-independent, can be used to TDI data of all domain.
+        """
+        for I in base:
+            for chan in ti.static(self.data_info.channels):
+                base[I][chan] += input[I][chan]
 
     def add_into_wavelet_domian_data(self) -> None:
         return None
@@ -829,10 +822,14 @@ class SpaceborneInterferometer:
         self, waveform: ti.template(), lam: ti.f64, beta: ti.f64, psi: ti.f64
     ):
         """
-        TODO: move it into tdi class
+        TODO: move the main calculation into tdi class maybe better?
         keep `waveform` point to the same memory address to avoid kernal repeated instantiation
         the computaion is evaluated in the order of frequency point
         using AoS structure to store data for efficiency
+        note:
+        n1: link3->2
+        n2: link1->3
+        n3: link2->1
         """
         pol_tensor = polarization_tensor_SSB(lam, beta, psi)  # matrix: 3*3
         k = GW_propagation_unit_vector(lam, beta)  # vector: 3
@@ -875,39 +872,37 @@ class SpaceborneInterferometer:
             k_n2 = k @ constellation_vectors.n2  # scalar
             k_n3 = k @ constellation_vectors.n3  # scalar
 
-            k_p1det_p2det = k @ (
-                constellation_vectors.p1_det + constellation_vectors.p2_det
+            k_p1_p2 = k @ (
+                constellation_vectors.p1 + constellation_vectors.p2
             )  # scalar
-            k_p2det_p3det = k @ (
-                constellation_vectors.p2_det + constellation_vectors.p3_det
+            k_p2_p3 = k @ (
+                constellation_vectors.p2 + constellation_vectors.p3
             )  # scalar
-            k_p3det_p1det = k @ (
-                constellation_vectors.p3_det + constellation_vectors.p1_det
+            k_p3_p1 = k @ (
+                constellation_vectors.p3 + constellation_vectors.p1
             )  # scalar
-
-            k_p0 = k @ constellation_vectors.p0  # scalar
 
             common_sinc = (
                 PI * self.TDI_data.frequency_samples[i] * self.orbit.arm_length_sec
             )  # scalar
-            sinc12 = sinc(common_sinc * (1.0 - k_n3))  # scalar
-            sinc21 = sinc(common_sinc * (1.0 + k_n3))  # scalar
-            sinc23 = sinc(common_sinc * (1.0 - k_n1))  # scalar
-            sinc32 = sinc(common_sinc * (1.0 + k_n1))  # scalar
-            sinc31 = sinc(common_sinc * (1.0 - k_n2))  # scalar
-            sinc13 = sinc(common_sinc * (1.0 + k_n2))  # scalar
+            sinc21 = sinc(common_sinc * (1.0 - k_n3))  # scalar
+            sinc12 = sinc(common_sinc * (1.0 + k_n3))  # scalar
+            sinc32 = sinc(common_sinc * (1.0 - k_n1))  # scalar
+            sinc23 = sinc(common_sinc * (1.0 + k_n1))  # scalar
+            sinc13 = sinc(common_sinc * (1.0 - k_n2))  # scalar
+            sinc31 = sinc(common_sinc * (1.0 + k_n2))  # scalar
 
             common_exp = (
                 -PI * self.TDI_data.frequency_samples[i] * ComplexNumber([0.0, 1.0])
             )  # ComplexNumber
             exp12 = tm.cexp(
-                common_exp * (self.orbit.arm_length_sec + k_p1det_p2det)
+                common_exp * (self.orbit.arm_length_sec + k_p1_p2)
             )  # ComplexNumber
             exp23 = tm.cexp(
-                common_exp * (self.orbit.arm_length_sec + k_p2det_p3det)
+                common_exp * (self.orbit.arm_length_sec + k_p2_p3)
             )  # ComplexNumber
             exp31 = tm.cexp(
-                common_exp * (self.orbit.arm_length_sec + k_p3det_p1det)
+                common_exp * (self.orbit.arm_length_sec + k_p3_p1)
             )  # ComplexNumber
 
             prefactor = (
@@ -916,32 +911,24 @@ class SpaceborneInterferometer:
                 * self.orbit.arm_length_sec
                 * ComplexNumber([0.0, 1.0])
             )  # ComplexNumber
-            exp_p0 = tm.cexp(
-                -2
-                * PI
-                * self.TDI_data.frequency_samples[i]
-                * k_p0
-                * ComplexNumber([0.0, 1.0])
-            )  # ComplexNumber
-            common_factor = tm.cmul(prefactor, exp_p0)  # ComplexNumber
 
             self._FD_response_assistance[i]["single_links"]["link12"] = (
-                sinc12 * tm.cmul(tm.cmul(common_factor, n3_h_n3), exp12)
+                sinc12 * tm.cmul(tm.cmul(prefactor, n3_h_n3), exp12)
             )  # ComplexNumber
             self._FD_response_assistance[i]["single_links"]["link21"] = (
-                sinc21 * tm.cmul(tm.cmul(common_factor, n3_h_n3), exp12)
+                sinc21 * tm.cmul(tm.cmul(prefactor, n3_h_n3), exp12)
             )  # ComplexNumber
             self._FD_response_assistance[i]["single_links"]["link23"] = (
-                sinc23 * tm.cmul(tm.cmul(common_factor, n1_h_n1), exp23)
+                sinc23 * tm.cmul(tm.cmul(prefactor, n1_h_n1), exp23)
             )  # ComplexNumber
             self._FD_response_assistance[i]["single_links"]["link32"] = (
-                sinc32 * tm.cmul(tm.cmul(common_factor, n1_h_n1), exp23)
+                sinc32 * tm.cmul(tm.cmul(prefactor, n1_h_n1), exp23)
             )  # ComplexNumber
             self._FD_response_assistance[i]["single_links"]["link31"] = (
-                sinc31 * tm.cmul(tm.cmul(common_factor, n2_h_n2), exp31)
+                sinc31 * tm.cmul(tm.cmul(prefactor, n2_h_n2), exp31)
             )  # ComplexNumber
             self._FD_response_assistance[i]["single_links"]["link13"] = (
-                sinc13 * tm.cmul(tm.cmul(common_factor, n2_h_n2), exp31)
+                sinc13 * tm.cmul(tm.cmul(prefactor, n2_h_n2), exp31)
             )  # ComplexNumber
 
             for chan in ti.static(self.TDI_data.data_info.channels):
@@ -966,11 +953,13 @@ class SpaceborneInterferometer:
         beta: ti.f64,
         psi: ti.f64,
     ) -> None:
-        """Using dict[NDArray] as input requires instantiate a new waveform_field in each
+        """
+        TODO: Using dict[NDArray] as input requires instantiate a new waveform_field in each
         function call, which can lead to repeated instantiation of the kernel for
          the  `updata_frequency_domain_response` method, and deteriorate computaional
          efficiency. If there are many signals to inject, using a ti.StructField with
          the same memroy address as the input.
+         This
         """
         if isinstance(waveform, ti.StructField):
             if not waveform.shape == (self.TDI_data.data_info.frequency_series_length,):
@@ -996,14 +985,7 @@ class SpaceborneInterferometer:
                 dict.fromkeys(waveform.keys(), ComplexNumber),
                 shape=(self.TDI_data.data_info.frequency_series_length,),
             )
-            waveform_field.from_numpy(
-                dict(
-                    [
-                        (chan, np.vstack([data.real, data.imag]).T)
-                        for chan, data in waveform.items()
-                    ]
-                )
-            )
+            complex_numpy_array_dict_to_taichi_field(waveform, waveform_field)
         else:
             raise TypeError(
                 "Unsupported type, expect `ti.StructField` or `dict[NDArray]`"
