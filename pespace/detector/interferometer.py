@@ -625,7 +625,7 @@ class TDIChannelsData:
         for memory accessing efficiency.
         the base field is dimensionality-independent, can be used to TDI data of all domain.
         """
-        for I in base:
+        for I in ti.grouped(base):
             for chan in ti.static(self.data_info.channels):
                 base[I][chan] += input[I][chan]
 
