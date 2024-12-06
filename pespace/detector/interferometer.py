@@ -538,7 +538,8 @@ class TDIChannelsData:
 
         rng = np.random.default_rng(seed=seed)
         var = 0.5 / (self.data_info.delta_frequency) ** 0.5
-        noise_strains = {}
+        noise = {}
+
         for chan in self.data_info.channels:
             # generate white noise
             re, im = rng.normal(
@@ -550,27 +551,19 @@ class TDIChannelsData:
             # set Nyquist frequency component for ensuring the Hermitian symmetry
             if np.mod(self.data_info.time_series_length, 2) == 0:
                 im[-1] = 0.0
-            noise = (
-                np.vstack(
-                    (
-                        re[self.data_info.frequency_mask_array],
-                        im[self.data_info.frequency_mask_array],
-                    )
-                )
-                * (self.frequency_domain_noise_power_density_numpy[chan]) ** 0.5
-            )
-            noise_strains[chan] = noise.T
+            noise_chan = (re + 1j * im)[
+                self.data_info.frequency_mask_array
+            ] * self.frequency_domain_noise_power_density_numpy[chan] ** 0.5
+            noise[chan] = noise_chan
 
         if output_type == "taichi":
             ret = ti.Struct.field(
                 dict.fromkeys(self.data_info.channels, ComplexNumber),
                 shape=(self.data_info.frequency_series_length,),
             )
-            ret.from_numpy(noise_strains)
+            complex_numpy_array_dict_to_taichi_field(noise, ret)
         elif output_type == "numpy":
-            ret = {}
-            for chan, data in noise_strains.items():
-                ret[chan] = data[:, 0] + 1j * data[:, 1]
+            ret = noise
 
         return ret
 
@@ -779,6 +772,7 @@ class SpaceborneInterferometer:
 
     @ti.kernel
     def _compute_TDI_prefactor_for_FD_response(self):
+        # maybe better moving this func into TDI generation class, since the 1-z^2 or z^2-1 depending on the calculation of tdi combination
         for i in self.TDI_data.frequency_samples:
             z = tm.cexp(
                 -2.0
