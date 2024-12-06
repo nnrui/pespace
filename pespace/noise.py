@@ -41,6 +41,21 @@ class AnalyticPowerSpectralDensity(FrequencyDomainNoiseModel):
     acc_noise_level: float
     arm_length_sec: float
 
+    def _S_oms(self, frequencies: NDArray[np.float64]) -> NDArray[np.float64]:
+        return (
+            self.OMS_noise_level
+            * (1.0 + (2.0e-3 / frequencies) ** 4)
+            * (2.0 * PI * frequencies / C_SI) ** 2
+        )
+
+    def _S_acc(self, frequencies: NDArray[np.float64]) -> NDArray[np.float64]:
+        return (
+            self.acc_noise_level
+            * (1.0 + (0.4e-3 / frequencies) ** 2)
+            * (1.0 + (frequencies / 8e-3) ** 4)
+            / (2 * PI * frequencies * C_SI) ** 2
+        )
+
     def power_spectral_density_array(
         self,
         frequencies: NDArray[np.float64],
@@ -50,17 +65,8 @@ class AnalyticPowerSpectralDensity(FrequencyDomainNoiseModel):
         """Generate psd array for given frequency array"""
 
         # Convert displacement noise and acceleration noise to the same dimension of relative frequency
-        S_oms = (
-            self.OMS_noise_level
-            * (1.0 + (2.0e-3 / frequencies) ** 4)
-            * (2.0 * PI * frequencies / C_SI) ** 2
-        )
-        S_acc = (
-            self.acc_noise_level
-            * (1.0 + (0.4e-3 / frequencies) ** 2)
-            * (1.0 + (frequencies / 8e-3) ** 4)
-            / (2 * PI * frequencies * C_SI) ** 2
-        )
+        S_oms = self._S_oms(frequencies)
+        S_acc = self._S_acc(frequencies)
 
         if TDI_generation == "1.5":
             prefactor = 1.0
@@ -110,6 +116,23 @@ class AnalyticPowerSpectralDensity(FrequencyDomainNoiseModel):
         return psd_dict
 
 
+class TianQinAnalyticPowerSpectralDensity(AnalyticPowerSpectralDensity):
+    """
+    S_oms and S_acc for TianQin detector have the difference of frequency dependency.
+    https://arxiv.org/abs/2309.15020
+    """
+
+    def _S_oms(self, frequencies: NDArray[np.float64]) -> NDArray[np.float64]:
+        return self.OMS_noise_level * (2.0 * PI * frequencies / C_SI) ** 2
+
+    def _S_acc(self, frequencies: NDArray[np.float64]) -> NDArray[np.float64]:
+        return (
+            self.acc_noise_level
+            * (1.0 + 0.1e-3 / frequencies)
+            / (2 * PI * frequencies * C_SI) ** 2
+        )
+
+
 available_noise_models = {
     "LISA_SciRDv1": AnalyticPowerSpectralDensity(
         OMS_noise_level=(15.0e-12) ** 2,
@@ -121,9 +144,9 @@ available_noise_models = {
         acc_noise_level=(3.0e-15) ** 2,
         arm_length_sec=3.0e9 / C_SI,
     ),  # https://doi.org/10.1038/s41550-019-1008-4
-    "Tianqin_Luo2016": AnalyticPowerSpectralDensity(
+    "Tianqin_GWSpace": TianQinAnalyticPowerSpectralDensity(
         OMS_noise_level=(1.0e-12) ** 2,
         acc_noise_level=(1.0e-15) ** 2,
-        arm_length_sec=1.0e8 / C_SI,
-    ),  # https://iopscience.iop.org/article/10.1088/0264-9381/33/3/035010
+        arm_length_sec=1.7e8 / C_SI,
+    ),  # https://arxiv.org/abs/2309.15020
 }
