@@ -6,8 +6,8 @@ import numpy as np
 from bilby.core.likelihood import Likelihood
 from tiwave.waveforms import BaseWaveform
 
-from .constants import *
-from .detector.interferometer import SpaceborneInterferometer
+from ..constants import *
+from ..detector.antenna import SpaceborneInterferometer
 
 
 @ti.kernel
@@ -35,6 +35,7 @@ def _compute_frequency_domain_likelihood(
 class FrequencyDomainLikelihood(Likelihood):
     # TODO:
     # - add support for multiple, share or check the same frequency samples, different obs duration or cadance
+    # - phase time distance marginalization
 
     def __init__(
         self,
@@ -96,6 +97,26 @@ class FrequencyDomainLikelihood(Likelihood):
             )
 
         return logl
+
+
+class FisherMatrixLikelihood(Likelihood):
+    def __init__(self, fiducial_parameters, fixed_parameters, parameters=None):
+        super().__init__(parameters)
+
+    def Fisher_matrix(
+        self,
+    ):
+        pass
+
+    def covariance_matrix(
+        self,
+    ):
+        pass
+
+    def generate_posterior_samples(
+        self,
+    ):
+        pass
 
 
 class WaveletDomainLikelihood(Likelihood):

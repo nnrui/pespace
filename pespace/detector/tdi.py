@@ -1,6 +1,8 @@
 from __future__ import annotations
 import warnings
 from dataclasses import dataclass, field, asdict
+import weakref
+from abc import ABC, abstractmethod
 
 import numpy as np
 from numpy.typing import NDArray
@@ -10,6 +12,7 @@ import taichi as ti
 import taichi.math as tm
 
 from .noise import FrequencyDomainNoiseModel, available_noise_models
+from .antenna import InterferometerAntenna
 from ..utils.utils import (
     ComplexNumber,
     complex_numpy_array_dict_to_taichi_field,
@@ -18,201 +21,101 @@ from ..utils.utils import (
 from ..utils.constants import *
 
 
-SingleLinksStruct = ti.types.struct(
-    link12=ComplexNumber,
-    link21=ComplexNumber,
-    link23=ComplexNumber,
-    link32=ComplexNumber,
-    link31=ComplexNumber,
-    link13=ComplexNumber,
-)
+# @ti.func
+# def _TDI_A_FD(
+#     z: ComplexNumber, singlelink_responses: SingleLinksStruct
+# ) -> ComplexNumber:
+#     """
+#     Function for computing A channel of TDI combination in frequency domain.
+
+#     Parameters:
+#     ===========
+#     z:
+#         Delay factor, exp(-1j*2*PI*f*arm_length_sec).
+#     singlelink_responses:
+#         Responses of each link.
+
+#     Returns:
+#     ========
+#     A channel without the generation prefactor.
+#     """
+#     return (
+#         singlelink_responses["link23"]
+#         + tm.cmul(z, singlelink_responses["link32"])
+#         + singlelink_responses["link21"]
+#         + tm.cmul(z, singlelink_responses["link12"])
+#         - tm.cmul(
+#             (ComplexNumber(1, 0) + z),
+#             (singlelink_responses["link13"]) + singlelink_responses["link31"],
+#         )
+#     ) / tm.sqrt(2)
 
 
-@ti.func
-def _TDI_X_FD(
-    z: ComplexNumber, singlelink_responses: SingleLinksStruct
-) -> ComplexNumber:
-    """
-    Function for computing X channel of TDI combination in frequency domain.
+# @ti.func
+# def _TDI_E_FD(
+#     z: ComplexNumber, singlelink_responses: SingleLinksStruct
+# ) -> ComplexNumber:
+#     """
+#     Function for computing E channel of TDI combination in frequency domain.
 
-    Parameters:
-    ===========
-    z:
-        Delay factor, exp(-1j*2*PI*f*arm_length_sec).
-    singlelink_responses:
-        Responses of each link.
+#     Parameters:
+#     ===========
+#     z:
+#         Delay factor, exp(-1j*2*PI*f*arm_length_sec).
+#     singlelink_responses:
+#         Responses of each link.
 
-    Returns:
-    ========
-    X channel without the generation prefactor.
-    """
-    return (
-        singlelink_responses["link31"]
-        + tm.cmul(z, singlelink_responses["link13"])
-        - singlelink_responses["link21"]
-        - tm.cmul(z, singlelink_responses["link12"])
-    )
-
-
-@ti.func
-def _TDI_Y_FD(
-    z: ComplexNumber, singlelink_responses: SingleLinksStruct
-) -> ComplexNumber:
-    """
-    Function for computing Y channel of TDI combination in frequency domain.
-
-    Parameters:
-    ===========
-    z:
-        Delay factor, exp(-1j*2*PI*f*arm_length_sec).
-    singlelink_responses:
-        Responses of each link.
-
-    Returns:
-    ========
-    Y channel without the generation prefactor.
-    """
-    return (
-        singlelink_responses["link12"]
-        + tm.cmul(z, singlelink_responses["link21"])
-        - singlelink_responses["link32"]
-        - tm.cmul(z, singlelink_responses["link23"])
-    )
+#     Returns:
+#     ========
+#     E channel without the generation prefactor.
+#     """
+#     return (
+#         tm.cmul(
+#             (ComplexNumber(1, 0) - z),
+#             (singlelink_responses["link31"] - singlelink_responses["link13"]),
+#         )
+#         + tm.cmul(
+#             (z + ComplexNumber(2, 0)),
+#             (singlelink_responses["link32"] - singlelink_responses["link12"]),
+#         )
+#         + tm.cmul(
+#             (ComplexNumber(1, 0) + 2 * z),
+#             (singlelink_responses["link23"] - singlelink_responses["link21"]),
+#         )
+#     ) / tm.sqrt(6)
 
 
-@ti.func
-def _TDI_Z_FD(
-    z: ComplexNumber, singlelink_responses: SingleLinksStruct
-) -> ComplexNumber:
-    """
-    Function for computing Z channel of TDI combination in frequency domain.
+# @ti.func
+# def _TDI_T_FD(
+#     z: ComplexNumber, singlelink_responses: SingleLinksStruct
+# ) -> ComplexNumber:
+#     """
+#     Function for computing T channel of TDI combination in frequency domain.
 
-    Parameters:
-    ===========
-    z:
-        Delay factor, exp(-1j*2*PI*f*arm_length_sec).
-    singlelink_responses:
-        Responses of each link.
+#     Parameters:
+#     ===========
+#     z:
+#         Delay factor, exp(-1j*2*PI*f*arm_length_sec).
+#     singlelink_responses:
+#         Responses of each link.
 
-    Returns:
-    ========
-    Z channel without the generation prefactor.
-    """
-    return (
-        singlelink_responses["link23"]
-        + tm.cmul(z, singlelink_responses["link32"])
-        - singlelink_responses["link13"]
-        - tm.cmul(z, singlelink_responses["link31"])
-    )
-
-
-@ti.func
-def _TDI_A_FD(
-    z: ComplexNumber, singlelink_responses: SingleLinksStruct
-) -> ComplexNumber:
-    """
-    Function for computing A channel of TDI combination in frequency domain.
-
-    Parameters:
-    ===========
-    z:
-        Delay factor, exp(-1j*2*PI*f*arm_length_sec).
-    singlelink_responses:
-        Responses of each link.
-
-    Returns:
-    ========
-    A channel without the generation prefactor.
-    """
-    return (
-        singlelink_responses["link23"]
-        + tm.cmul(z, singlelink_responses["link32"])
-        + singlelink_responses["link21"]
-        + tm.cmul(z, singlelink_responses["link12"])
-        - tm.cmul(
-            (ComplexNumber(1, 0) + z),
-            (singlelink_responses["link13"]) + singlelink_responses["link31"],
-        )
-    ) / tm.sqrt(2)
-
-
-@ti.func
-def _TDI_E_FD(
-    z: ComplexNumber, singlelink_responses: SingleLinksStruct
-) -> ComplexNumber:
-    """
-    Function for computing E channel of TDI combination in frequency domain.
-
-    Parameters:
-    ===========
-    z:
-        Delay factor, exp(-1j*2*PI*f*arm_length_sec).
-    singlelink_responses:
-        Responses of each link.
-
-    Returns:
-    ========
-    E channel without the generation prefactor.
-    """
-    return (
-        tm.cmul(
-            (ComplexNumber(1, 0) - z),
-            (singlelink_responses["link31"] - singlelink_responses["link13"]),
-        )
-        + tm.cmul(
-            (z + ComplexNumber(2, 0)),
-            (singlelink_responses["link32"] - singlelink_responses["link12"]),
-        )
-        + tm.cmul(
-            (ComplexNumber(1, 0) + 2 * z),
-            (singlelink_responses["link23"] - singlelink_responses["link21"]),
-        )
-    ) / tm.sqrt(6)
-
-
-@ti.func
-def _TDI_T_FD(
-    z: ComplexNumber, singlelink_responses: SingleLinksStruct
-) -> ComplexNumber:
-    """
-    Function for computing T channel of TDI combination in frequency domain.
-
-    Parameters:
-    ===========
-    z:
-        Delay factor, exp(-1j*2*PI*f*arm_length_sec).
-    singlelink_responses:
-        Responses of each link.
-
-    Returns:
-    ========
-    T channel without the generation prefactor.
-    """
-    return (
-        tm.cmul(
-            (
-                singlelink_responses["link12"]
-                - singlelink_responses["link21"]
-                + singlelink_responses["link23"]
-                - singlelink_responses["link32"]
-                + singlelink_responses["link31"]
-                - singlelink_responses["link13"]
-            ),
-            (ComplexNumber(1, 0) - z),
-        )
-    ) / tm.sqrt(3)
-
-
-TDI_combine_function_FD = {
-    "X": _TDI_X_FD,
-    "Y": _TDI_Y_FD,
-    "Z": _TDI_Z_FD,
-    "A": _TDI_A_FD,
-    "E": _TDI_E_FD,
-    "T": _TDI_T_FD,
-}
-implemented_TDI_generations = ("1.5", "2.0")
-implemented_TDI_channels = ("X", "Y", "Z", "A", "E", "T")
+#     Returns:
+#     ========
+#     T channel without the generation prefactor.
+#     """
+#     return (
+#         tm.cmul(
+#             (
+#                 singlelink_responses["link12"]
+#                 - singlelink_responses["link21"]
+#                 + singlelink_responses["link23"]
+#                 - singlelink_responses["link32"]
+#                 + singlelink_responses["link31"]
+#                 - singlelink_responses["link13"]
+#             ),
+#             (ComplexNumber(1, 0) - z),
+#         )
+#     ) / tm.sqrt(3)
 
 
 @ti.kernel
@@ -519,7 +422,7 @@ class TDIChannelData:
                 "You are setting `td_data` with zero value, whereas you have probably "
                 "set TDI data of current instance previously. Please check whether this "
                 "is intertional. \n"
-                "In order to avoid potential errors, current instance is reset. Please " 
+                "In order to avoid potential errors, current instance is reset. Please "
                 "regenerate TDI data of other domian or noise behavior data if needed. "
             )
             self._reset()
@@ -552,7 +455,7 @@ class TDIChannelData:
                 "You are setting `fd_data` with zero value, whereas you have probably "
                 "set TDI data of current instance previously. Please check whether this "
                 "is intertional. \n"
-                "In order to avoid potential errors, current instance is reset. Please " 
+                "In order to avoid potential errors, current instance is reset. Please "
                 "regenerate TDI data of other domian or noise behavior data if needed. "
             )
             self._reset()
@@ -763,7 +666,7 @@ class TDIChannelData:
             ):
                 raise ValueError(
                     "Cannot add the input dict of array into the `fd_data`, since there "
-                    "is at least one array in the input dict having different length with " 
+                    "is at least one array in the input dict having different length with "
                     "the TDI data."
                 )
             if not set(input.keys()) == set(self.data_info.channels):
@@ -776,7 +679,7 @@ class TDIChannelData:
                 shape=(self.data_info.frequency_series_length,),
             )
             complex_numpy_array_dict_to_taichi_field(input, input_field)
-        
+
         else:
             raise TypeError("Unsupported type, expect ti.StructField or dict[NDArray]")
 
@@ -829,7 +732,7 @@ class TDIChannelData:
         from input array according to the domain of the data, like `set_td_data_from_input`, etc.
         """
         ret_cls = TDIChannelData()
-        
+
         with h5py.File(filename, "r") as file:
             channels = tuple(file["data_info/channels"][()].astype(str))
             duration = float(file["data_info/duration"][()])
@@ -970,5 +873,157 @@ class TDIChannelData:
         return self.fd_noise_power_density.to_numpy()
 
 
-class TDIResponseGenerator:
+class TDICombinationModel(ABC):
+
+    @abstractmethod
+    def update_tdi_response(self) -> None:
+        pass
+
+
+@ti.data_oriented
+class TDMichelsonConstantEqualArm(TDICombinationModel):
+    pass
+
+
+@ti.data_oriented
+class FDMichelsonConstantEqualArm(TDICombinationModel):
+
+    def __init__(self, generation="1.5", orthogonal=True):
+        self.generation = str(generation)
+        if not (self.generation == "1.5" or self.generation == "2.0"):
+            raise ValueError(f"Unsupported generation {self.generation}.")
+
+        self.orthogonal = bool(orthogonal)
+        if self.orthogonal:
+            self.labels = ("A", "E", "T")
+        else:
+            self.labels = ("X", "Y", "Z")
+
+        self._cached_field = None
+
+    def init_tdi_combination_model(self, detector: InterferometerAntenna) -> None:
+        self.detector = weakref.proxy(detector)
+        self.detector.tdi_response = ti.Struct.field(
+            dict.fromkeys(self.labels, ComplexNumber),
+            shape=(self.detector.tdi_data.data_info.frequency_series_lengths,),
+        )
+        self._set_cached_field()
+
+    @ti.kernel
+    def _set_cached_field(self) -> None:
+        self._cached_field = ti.Struct.field(
+            {"prefactor": ComplexNumber, "delay_factor": ComplexNumber},
+            shape=(self.detector.tdi_data.data_info.frequency_series_lengths,),
+        )
+        for i in self._cached_field:
+            z = tm.cexp(
+                -2.0
+                * PI
+                * self.detector.tdi_data.frequency_samples[i]
+                * self.detector.orbit.arm_length_sec
+                * ComplexNumber([0.0, 1.0])
+            )
+            if ti.static(self.generation == "1.5"):
+                prefactor = ComplexNumber([1.0, 0.0]) - tm.cpow(z, 2)
+            elif ti.static(self.generation == "2.0"):
+                prefactor = (
+                    ComplexNumber([1.0, 0.0])
+                    - tm.cpow(z, 2)
+                    - tm.cpow(z, 4)
+                    + tm.cpow(z, 6)
+                )
+            self._cached_field[i]["prefactor"] = prefactor
+            self._cached_field[i]["delay_factor"] = z
+
+    @staticmethod
+    @ti.func
+    def _get_X_channel_response(
+        delay_factor: ti.template(), singlelink_response: ti.template()
+    ) -> ComplexNumber:
+        """
+        Function for computing X channel of TDI combination in frequency domain.
+
+        Parameters:
+        ===========
+        z:
+            Delay factor, exp(-1j*2*PI*f*arm_length_sec).
+        singlelink_responses:
+            Responses of each link.
+
+        Returns:
+        ========
+        X channel without the generation prefactor.
+        """
+        return (
+            singlelink_response["link13"]
+            - singlelink_response["link12"]
+            + tm.cmul(
+                delay_factor,
+                (singlelink_response["link31"] - singlelink_response["link21"]),
+            )
+        )
+
+    @staticmethod
+    @ti.func
+    def _get_Y_channel_response(
+        delay_factor: ti.template(), singlelink_response: ti.template()
+    ) -> ComplexNumber:
+        """ """
+        return (
+            singlelink_response["link21"]
+            - singlelink_response["link23"]
+            + tm.cmul(
+                delay_factor,
+                (singlelink_response["link12"] - singlelink_response["link32"]),
+            )
+        )
+
+    @staticmethod
+    @ti.func
+    def _get_Z_channel_response(
+        delay_factor: ti.template(), singlelink_response: ti.template()
+    ) -> ComplexNumber:
+        """ """
+        return (
+            singlelink_response["link32"]
+            - singlelink_response["link31"]
+            + tm.cmul(
+                delay_factor,
+                (singlelink_response["link23"] - singlelink_response["link13"]),
+            )
+        )
+
+    @ti.kernel
+    def update_tdi_response(self):
+        for i in self.detector.tdi_response:
+            prefactor = self._cached_field[i].prefactor
+            delay_factor = self._cached_field[i].delay_factor
+            singlelink_response = self.detector.signle_link_response[i]
+            X = tm.cmul(
+                prefactor,
+                self._get_X_channel_response(delay_factor, singlelink_response),
+            )
+            Y = tm.cmul(
+                prefactor,
+                self._get_Y_channel_response(delay_factor, singlelink_response),
+            )
+            Z = tm.cmul(
+                prefactor,
+                self._get_Z_channel_response(delay_factor, singlelink_response),
+            )
+            if ti.static(self.orthogonal):
+                A = (Z - X) / tm.sqrt(2.0)
+                E = (X - 2.0 * Y + Z) / tm.sqrt(6.0)
+                T = (X + Y + Z) / tm.sqrt(3.0)
+                self.detector.tdi_response[i].A = A
+                self.detector.tdi_response[i].E = E
+                self.detector.tdi_response[i].T = T
+            else:
+                self.detector.tdi_response[i].X = X
+                self.detector.tdi_response[i].Y = Y
+                self.detector.tdi_response[i].Z = Z
+
+
+@ti.data_oriented
+class FDMichelsonConstantEqualArmFFT(TDICombinationModel):
     pass

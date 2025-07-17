@@ -25,7 +25,7 @@ def sinc(x: ti.f64) -> ti.f64:
 
 
 @ti.func
-def polarization_tensor_SSB(
+def get_polarization_tensor_ssb(
     lam: ti.f64, beta: ti.f64, psi: ti.f64
 ) -> PolarizationStruct:  #
     """
@@ -66,36 +66,52 @@ def polarization_tensor_SSB(
 
 
 @ti.func
-def GW_propagation_unit_vector(
-    lam: ti.f64, beta: ti.f64
-) -> vec3:  # note that beta is (-pi/2, pi/2)
+def get_gw_propagation_unit_vector(lam: ti.f64, beta: ti.f64) -> vec3:
+    # note that beta is (-pi/2, pi/2)
     return vec3(
         [-tm.cos(beta) * tm.cos(lam), -tm.cos(beta) * tm.sin(lam), -tm.sin(beta)]
     )
 
 
-def complex_taichi_field_to_numpy_array_dict(
-    input_field: ti.Field,
+def taichi_field_to_complex_numpy_array_dict(
+    field_container: ti.Field,
 ) -> dict[str, NDArray[np.complex128]]:
-    array_dict = input_field.to_numpy()
-    ret = {}
-    for key, data in array_dict.items():
-        ret[key] = data[:, 0] + 1j * data[:, 1]
-    return ret
+    """
+    Convert a taichi field to a dictionary of complex numpy arrays.
+
+    Args:
+        field_container: Taichi field with shape (N, 2)
+
+    Returns:
+        Dictionary of complex arrays with shape (N,)
+    """
+    return dict(
+        [
+            (key, data[:, 0] + 1j * data[:, 1])
+            for key, data in field_container.to_numpy()
+        ]
+    )
 
 
 def complex_numpy_array_dict_to_taichi_field(
-    input_array_dict: dict[str, NDArray[np.complex128]], field_container: ti.Field
+    array_dict: dict[str, NDArray[np.complex128]],
+    field_container: ti.Field,
 ) -> None:
+    """
+    Convert a dictionary of complex numpy arrays to a taichi field.
+
+    Args:
+        array_dict: Dictionary of 1D complex-valued arrays;
+        field_container: Target taichi field container;
+    """
     field_container.from_numpy(
         dict(
             [
-                (key, np.vstack([data.real, data.imag]).T)
-                for key, data in input_array_dict.items()
+                (key, np.column_stack([data.real, data.imag]))
+                for key, data in array_dict.items()
             ]
         )
     )
-    return None
 
 
 # def cutoff_frequency_PhenomD(mass_1, mass_2):

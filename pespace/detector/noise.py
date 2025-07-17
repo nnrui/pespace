@@ -5,7 +5,7 @@ import numpy as np
 from numpy import sin, cos
 from numpy.typing import NDArray
 
-from .constants import *
+from ..utils.constants import *
 
 
 class FrequencyDomainNoiseModel(ABC):

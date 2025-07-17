@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=61.0", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pespace"
+authors = [
+    {name = "Rui Niu", email = "nrui@mail.ustc.edu.cn"},
+]
+description = "A tool for parameter estimation with space-borne gravitational-wave detectors."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha", 
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Astronomy",
+]
+dependencies = [
+    "taichi != 1.7.1", 
+    "numpy",
+    "scipy",
+    "matplotlib",
+    "tiwave", # TODO: add repo link if not uploaded to pypi
+    "bilby",
+    "pycbc",
+]
+keywords = ["gravitational-wave", "taichi-lang", "parameter estimation"]
+dynamic = ["version"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "black",
+    "mypy",
+    "sphinx",
+]
+
+[project.urls]
+Documentation = "https://github.com/niuiniuin/pespace"
+Repository = "https://github.com/niuiniuin/pespace"
+
+[tool.setuptools.packages.find]
+where = ["pespace"]
+
+# [tool.setuptools.package-data]
+# "tiwave.waveforms.data" = [
+#     "QNMData_a.txt",
+#     "QNMData_fdamp.txt",
+#     "QNMData_fring.txt",
+# ]
