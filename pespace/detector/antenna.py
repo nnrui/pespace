@@ -1,4 +1,6 @@
-from __future__ import annotations
+# from __future__ import annotations
+# since the type hint in current taichi-lang does not support to parse types from strings,
+# use string literal types for foward reference in python scope.
 import weakref
 from abc import ABC, abstractmethod
 
@@ -8,10 +10,6 @@ import taichi as ti
 import taichi.math as tm
 
 from .orbit import OrbitModelBase, available_orbit_models
-from .tdi import (
-    TDIChannelData,
-    TDICombinationModel,
-)
 from ..utils.utils import (
     taichi_field_to_complex_numpy_array_dict,
     complex_numpy_array_dict_to_taichi_field,
@@ -33,10 +31,10 @@ class InterferometerAntenna:
     def __init__(
         self,
         name: str,
-        tdi_data: TDIChannelData,
+        tdi_data: "TDIChannelData",
         orbit_model: str | OrbitModelBase,
-        response_model: SingleLinkResponseModel,
-        tdi_combination: TDICombinationModel,
+        response_model: "SingleLinkResponseModel",
+        tdi_combination: "TDICombinationModel",
     ) -> None:
         """ """
         self.name = name
@@ -66,7 +64,7 @@ class InterferometerAntenna:
 
     def update_detector_response(
         self,
-        waveform: ti.Field,
+        waveform: ti.StructField,
         lam: float,
         beta: float,
         psi: float,
@@ -145,31 +143,31 @@ class InterferometerAntenna:
     #             constellation_vectors.n1
     #             @ pol_tensor.plus
     #             @ constellation_vectors.n1
-    #             * waveform[i].hplus
+    #             * waveform[i].plus
     #             + constellation_vectors.n1
     #             @ pol_tensor.cross
     #             @ constellation_vectors.n1
-    #             * waveform[i].hcross
+    #             * waveform[i].cross
     #         )  # complex number
     #         n2_h_n2 = (
     #             constellation_vectors.n2
     #             @ pol_tensor.plus
     #             @ constellation_vectors.n2
-    #             * waveform[i].hplus
+    #             * waveform[i].plus
     #             + constellation_vectors.n2
     #             @ pol_tensor.cross
     #             @ constellation_vectors.n2
-    #             * waveform[i].hcross
+    #             * waveform[i].cross
     #         )  # complex number
     #         n3_h_n3 = (
     #             constellation_vectors.n3
     #             @ pol_tensor.plus
     #             @ constellation_vectors.n3
-    #             * waveform[i].hplus
+    #             * waveform[i].plus
     #             + constellation_vectors.n3
     #             @ pol_tensor.cross
     #             @ constellation_vectors.n3
-    #             * waveform[i].hcross
+    #             * waveform[i].cross
     #         )  # complex number
 
     #         k_n1 = k @ constellation_vectors.n1  # scalar
@@ -330,13 +328,17 @@ class FDResponseModelMarset2018(SingleLinkResponseModel):
 
     @ti.kernel
     def update_single_link_response(
-        self, waveform: ti.template(), lam: ti.f64, beta: ti.f64, psi: ti.f64
+        self,
+        waveform: ti.template(),
+        lam: ti.f64,
+        beta: ti.f64,
+        psi: ti.f64,
     ):
         pol_tensor = get_polarization_tensor_ssb(lam, beta, psi)  # matrix: 3*3
         k = get_gw_propagation_unit_vector(lam, beta)  # vector: 3
 
         for i in self.detector.single_link_response:
-            constellation_vectors = self.detector.orbit.get_constellation_vectors(
+            constellation_vectors = self.detector.orbit_model.get_constellation_vectors(
                 waveform[i].tf
             )
             # n1: unit vector of 2 -> 3
@@ -344,33 +346,33 @@ class FDResponseModelMarset2018(SingleLinkResponseModel):
                 constellation_vectors.n1
                 @ pol_tensor.plus
                 @ constellation_vectors.n1
-                * waveform[i].hplus
+                * waveform[i].plus
                 + constellation_vectors.n1
                 @ pol_tensor.cross
                 @ constellation_vectors.n1
-                * waveform[i].hcross
+                * waveform[i].cross
             )  # complex number
             # n2: unit vector of 3 -> 1
             n2_h_n2 = (
                 constellation_vectors.n2
                 @ pol_tensor.plus
                 @ constellation_vectors.n2
-                * waveform[i].hplus
+                * waveform[i].plus
                 + constellation_vectors.n2
                 @ pol_tensor.cross
                 @ constellation_vectors.n2
-                * waveform[i].hcross
+                * waveform[i].cross
             )  # complex number
             # n3: unit vector of 1 -> 2
             n3_h_n3 = (
                 constellation_vectors.n3
                 @ pol_tensor.plus
                 @ constellation_vectors.n3
-                * waveform[i].hplus
+                * waveform[i].plus
                 + constellation_vectors.n3
                 @ pol_tensor.cross
                 @ constellation_vectors.n3
-                * waveform[i].hcross
+                * waveform[i].cross
             )  # complex number
 
             k_n1 = k @ constellation_vectors.n1  # scalar
@@ -388,7 +390,9 @@ class FDResponseModelMarset2018(SingleLinkResponseModel):
             )  # scalar
 
             pi_f_L = (
-                PI * self.tdi_data.frequency_samples[i] * self.orbit.arm_length_sec
+                PI
+                * self.detector.tdi_data.frequency_samples[i]
+                * self.detector.orbit_model.arm_length_sec
             )  # scalar
             sinc32 = sinc(pi_f_L * (1.0 - k_n1))  # scalar
             sinc23 = sinc(pi_f_L * (1.0 + k_n1))  # scalar
@@ -398,16 +402,18 @@ class FDResponseModelMarset2018(SingleLinkResponseModel):
             sinc12 = sinc(pi_f_L * (1.0 + k_n3))  # scalar
 
             common_exp = (
-                -PI * self.tdi_data.frequency_samples[i] * ComplexNumber([0.0, 1.0])
+                -PI
+                * self.detector.tdi_data.frequency_samples[i]
+                * ComplexNumber([0.0, 1.0])
             )  # ComplexNumber
             exp12 = tm.cexp(
-                common_exp * (self.orbit.arm_length_sec + k_x1_x2)
+                common_exp * (self.detector.orbit_model.arm_length_sec + k_x1_x2)
             )  # ComplexNumber
             exp23 = tm.cexp(
-                common_exp * (self.orbit.arm_length_sec + k_x2_x3)
+                common_exp * (self.detector.orbit_model.arm_length_sec + k_x2_x3)
             )  # ComplexNumber
             exp31 = tm.cexp(
-                common_exp * (self.orbit.arm_length_sec + k_x3_x1)
+                common_exp * (self.detector.orbit_model.arm_length_sec + k_x3_x1)
             )  # ComplexNumber
 
             prefactor = -pi_f_L * ComplexNumber([0.0, 1.0])  # ComplexNumber
@@ -484,8 +490,8 @@ class TDResponseModelCornish2003(SingleLinkResponseModel):
 
 
 #     def initialize_waveform_container(self):
-#         waveform_field = ti.Struct.field({'hplus': ComplexNumber,
-#                                           'hcross': ComplexNumber,
+#         waveform_field = ti.Struct.field({'plus': ComplexNumber,
+#                                           'cross': ComplexNumber,
 #                                           'tf': ti.f64})
 #         ti.root.dense(ti.i, self.data_length).place(waveform_field)
 #         self.waveform_container = waveform_field
@@ -730,3 +736,8 @@ class TDResponseModelCornish2003(SingleLinkResponseModel):
 #     self.signals = list(data['signals'].values())
 
 #     return None
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .tdi import TDIChannelData, TDICombinationModel

@@ -1,4 +1,6 @@
-from __future__ import annotations
+# from __future__ import annotations
+# since the type hint in current taichi-lang does not support to parse types from strings,
+# use string literal types for foward reference in python scope.
 import warnings
 from dataclasses import dataclass, field, asdict
 import weakref
@@ -12,7 +14,6 @@ import taichi as ti
 import taichi.math as tm
 
 from .noise import FrequencyDomainNoiseModel, available_noise_models
-from .antenna import InterferometerAntenna
 from ..utils.utils import (
     ComplexNumber,
     complex_numpy_array_dict_to_taichi_field,
@@ -725,7 +726,7 @@ class TDIChannelData:
                         file.create_dataset(f"noise_data/{key}/{chan}", data=chan_array)
 
     @staticmethod
-    def recover_from_file(filename: str) -> TDIChannelData:
+    def recover_from_file(filename: str) -> "TDIChannelData":
         """
         Recovering `TDIChannelData` instance from the file saved by the
         `save_to_file` method. For other data format, please using methods for setting
@@ -901,39 +902,41 @@ class FDMichelsonConstantEqualArm(TDICombinationModel):
 
         self._cached_field = None
 
-    def init_tdi_combination_model(self, detector: InterferometerAntenna) -> None:
+    def init_tdi_combination_model(self, detector: "InterferometerAntenna") -> None:
         self.detector = weakref.proxy(detector)
         self.detector.tdi_response = ti.Struct.field(
             dict.fromkeys(self.labels, ComplexNumber),
-            shape=(self.detector.tdi_data.data_info.frequency_series_lengths,),
+            shape=(self.detector.tdi_data.data_info.frequency_series_length,),
+        )
+        self._cached_field = ti.Struct.field(
+            {"prefactor": ComplexNumber, "delay_factor": ComplexNumber},
+            shape=(self.detector.tdi_data.data_info.frequency_series_length,),
         )
         self._set_cached_field()
 
     @ti.kernel
-    def _set_cached_field(self) -> None:
-        self._cached_field = ti.Struct.field(
-            {"prefactor": ComplexNumber, "delay_factor": ComplexNumber},
-            shape=(self.detector.tdi_data.data_info.frequency_series_lengths,),
-        )
+    def _set_cached_field(self):
         for i in self._cached_field:
-            z = tm.cexp(
+            delay_factor = tm.cexp(
                 -2.0
                 * PI
                 * self.detector.tdi_data.frequency_samples[i]
-                * self.detector.orbit.arm_length_sec
+                * self.detector.orbit_model.arm_length_sec
                 * ComplexNumber([0.0, 1.0])
             )
+
+            prefactor = ComplexNumber([0.0, 0.0])
             if ti.static(self.generation == "1.5"):
-                prefactor = ComplexNumber([1.0, 0.0]) - tm.cpow(z, 2)
+                prefactor = ComplexNumber([1.0, 0.0]) - tm.cpow(delay_factor, 2)
             elif ti.static(self.generation == "2.0"):
                 prefactor = (
                     ComplexNumber([1.0, 0.0])
-                    - tm.cpow(z, 2)
-                    - tm.cpow(z, 4)
-                    + tm.cpow(z, 6)
+                    - tm.cpow(delay_factor, 2)
+                    - tm.cpow(delay_factor, 4)
+                    + tm.cpow(delay_factor, 6)
                 )
             self._cached_field[i]["prefactor"] = prefactor
-            self._cached_field[i]["delay_factor"] = z
+            self._cached_field[i]["delay_factor"] = delay_factor
 
     @staticmethod
     @ti.func
@@ -998,7 +1001,7 @@ class FDMichelsonConstantEqualArm(TDICombinationModel):
         for i in self.detector.tdi_response:
             prefactor = self._cached_field[i].prefactor
             delay_factor = self._cached_field[i].delay_factor
-            singlelink_response = self.detector.signle_link_response[i]
+            singlelink_response = self.detector.single_link_response[i]
             X = tm.cmul(
                 prefactor,
                 self._get_X_channel_response(delay_factor, singlelink_response),
@@ -1027,3 +1030,9 @@ class FDMichelsonConstantEqualArm(TDICombinationModel):
 @ti.data_oriented
 class FDMichelsonConstantEqualArmFFT(TDICombinationModel):
     pass
+
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .antenna import InterferometerAntenna
