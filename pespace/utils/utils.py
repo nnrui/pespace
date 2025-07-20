@@ -88,7 +88,7 @@ def taichi_field_to_complex_numpy_array_dict(
     return dict(
         [
             (key, data[:, 0] + 1j * data[:, 1])
-            for key, data in field_container.to_numpy()
+            for key, data in field_container.to_numpy().items()
         ]
     )
 

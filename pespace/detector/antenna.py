@@ -68,12 +68,28 @@ class InterferometerAntenna:
         lam: float,
         beta: float,
         psi: float,
+        tc: float,
     ) -> None:
-        self.response_model.update_single_link_response(waveform, lam, beta, psi)
+        self.response_model.update_single_link_response(waveform, lam, beta, psi, tc)
         self.tdi_combination.update_tdi_response()
 
-    def inject_signal(self, waveform, lam, beta, psi) -> None:
+    def inject_signal(
+        self,
+        waveform: ti.StructField,
+        lam: float,
+        beta: float,
+        psi: float,
+        tc: float,
+    ) -> None:
         pass
+
+    @property
+    def tdi_response_numpy(self) -> dict[str, NDArray[np.complex128]]:
+        return taichi_field_to_complex_numpy_array_dict(self.tdi_response)
+
+    @property
+    def single_link_response_numpy(self) -> dict[str, NDArray[np.complex128]]:
+        return taichi_field_to_complex_numpy_array_dict(self.single_link_response)
 
     # def _init_fd_response_container(self) -> None:
     #     if self.TDI_data.data_info is None:
@@ -143,31 +159,31 @@ class InterferometerAntenna:
     #             constellation_vectors.n1
     #             @ pol_tensor.plus
     #             @ constellation_vectors.n1
-    #             * waveform[i].plus
+    #             * hp
     #             + constellation_vectors.n1
     #             @ pol_tensor.cross
     #             @ constellation_vectors.n1
-    #             * waveform[i].cross
+    #             * hc
     #         )  # complex number
     #         n2_h_n2 = (
     #             constellation_vectors.n2
     #             @ pol_tensor.plus
     #             @ constellation_vectors.n2
-    #             * waveform[i].plus
+    #             * hp
     #             + constellation_vectors.n2
     #             @ pol_tensor.cross
     #             @ constellation_vectors.n2
-    #             * waveform[i].cross
+    #             * hc
     #         )  # complex number
     #         n3_h_n3 = (
     #             constellation_vectors.n3
     #             @ pol_tensor.plus
     #             @ constellation_vectors.n3
-    #             * waveform[i].plus
+    #             * hp
     #             + constellation_vectors.n3
     #             @ pol_tensor.cross
     #             @ constellation_vectors.n3
-    #             * waveform[i].cross
+    #             * hc
     #         )  # complex number
 
     #         k_n1 = k @ constellation_vectors.n1  # scalar
@@ -333,46 +349,52 @@ class FDResponseModelMarset2018(SingleLinkResponseModel):
         lam: ti.f64,
         beta: ti.f64,
         psi: ti.f64,
+        tc: ti.f64,
     ):
         pol_tensor = get_polarization_tensor_ssb(lam, beta, psi)  # matrix: 3*3
         k = get_gw_propagation_unit_vector(lam, beta)  # vector: 3
+        time_shift = tc - self.detector.tdi_data.data_info.start_time
 
         for i in self.detector.single_link_response:
-            constellation_vectors = self.detector.orbit_model.get_constellation_vectors(
-                waveform[i].tf
-            )
+            fi = self.detector.tdi_data.frequency_samples[i]
+            cexp_tshift = tm.cexp(ComplexNumber([0.0, -2.0 * PI * fi * time_shift]))
+            hp = tm.cmul(waveform[i].plus, cexp_tshift)
+            hc = tm.cmul(waveform[i].cross, cexp_tshift)
+            tf = waveform[i].tf + tc
+            constellation_vectors = self.detector.orbit_model.get_constellation_vectors(tf)  # fmt: skip
+
             # n1: unit vector of 2 -> 3
             n1_h_n1 = (
                 constellation_vectors.n1
                 @ pol_tensor.plus
                 @ constellation_vectors.n1
-                * waveform[i].plus
+                * hp
                 + constellation_vectors.n1
                 @ pol_tensor.cross
                 @ constellation_vectors.n1
-                * waveform[i].cross
+                * hc
             )  # complex number
             # n2: unit vector of 3 -> 1
             n2_h_n2 = (
                 constellation_vectors.n2
                 @ pol_tensor.plus
                 @ constellation_vectors.n2
-                * waveform[i].plus
+                * hp
                 + constellation_vectors.n2
                 @ pol_tensor.cross
                 @ constellation_vectors.n2
-                * waveform[i].cross
+                * hc
             )  # complex number
             # n3: unit vector of 1 -> 2
             n3_h_n3 = (
                 constellation_vectors.n3
                 @ pol_tensor.plus
                 @ constellation_vectors.n3
-                * waveform[i].plus
+                * hp
                 + constellation_vectors.n3
                 @ pol_tensor.cross
                 @ constellation_vectors.n3
-                * waveform[i].cross
+                * hc
             )  # complex number
 
             k_n1 = k @ constellation_vectors.n1  # scalar
@@ -389,11 +411,7 @@ class FDResponseModelMarset2018(SingleLinkResponseModel):
                 constellation_vectors.x3 + constellation_vectors.x1
             )  # scalar
 
-            pi_f_L = (
-                PI
-                * self.detector.tdi_data.frequency_samples[i]
-                * self.detector.orbit_model.arm_length_sec
-            )  # scalar
+            pi_f_L = PI * fi * self.detector.orbit_model.arm_length_sec  # scalar
             sinc32 = sinc(pi_f_L * (1.0 - k_n1))  # scalar
             sinc23 = sinc(pi_f_L * (1.0 + k_n1))  # scalar
             sinc13 = sinc(pi_f_L * (1.0 - k_n2))  # scalar
@@ -401,11 +419,7 @@ class FDResponseModelMarset2018(SingleLinkResponseModel):
             sinc21 = sinc(pi_f_L * (1.0 - k_n3))  # scalar
             sinc12 = sinc(pi_f_L * (1.0 + k_n3))  # scalar
 
-            common_exp = (
-                -PI
-                * self.detector.tdi_data.frequency_samples[i]
-                * ComplexNumber([0.0, 1.0])
-            )  # ComplexNumber
+            common_exp = -PI * fi * ComplexNumber([0.0, 1.0])  # ComplexNumber
             exp12 = tm.cexp(
                 common_exp * (self.detector.orbit_model.arm_length_sec + k_x1_x2)
             )  # ComplexNumber
