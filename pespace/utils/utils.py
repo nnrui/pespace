@@ -12,6 +12,38 @@ PolarizationStruct = ti.types.struct(
 )
 ComplexNumber = ti.types.vector(2, ti.f64)
 vec3 = ti.types.vector(3, ti.f64)
+SingleLinkStructComplex = ti.types.struct(
+    link12=ComplexNumber,
+    link21=ComplexNumber,
+    link23=ComplexNumber,
+    link32=ComplexNumber,
+    link31=ComplexNumber,
+    link13=ComplexNumber,
+)
+SingleLinkStructReal = ti.types.struct(
+    link12=ti.f64,
+    link21=ti.f64,
+    link23=ti.f64,
+    link32=ti.f64,
+    link31=ti.f64,
+    link13=ti.f64,
+)
+
+
+@ti.func
+def next_power_of_2(n: ti.u32) -> ti.u32:
+    ret = ti.u32(0)
+    if n <= ti.u32(1):
+        ret = ti.u32(1)
+    else:
+        n -= ti.u32(1)
+        n |= ti.bit_shr(n, ti.u8(1))
+        n |= ti.bit_shr(n, ti.u8(2))
+        n |= ti.bit_shr(n, ti.u8(4))
+        n |= ti.bit_shr(n, ti.u8(8))
+        n |= ti.bit_shr(n, ti.u8(16))
+        ret = n + ti.u32(1)
+    return ret
 
 
 @ti.func
