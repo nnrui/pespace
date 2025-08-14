@@ -13,8 +13,8 @@ class FrequencyDomainNoiseModel(ABC):
     def power_spectral_density_array(
         self,
         frequencies: NDArray[np.float64],
-        TDI_channel: tuple[str, ...],
-        TDI_generation: str,
+        tdi_channels: tuple[str, ...],
+        tdi_generation: str,
     ) -> dict[str, NDArray[np.float64]]:
         pass
 
@@ -59,24 +59,24 @@ class AnalyticPowerSpectralDensity(FrequencyDomainNoiseModel):
     def power_spectral_density_array(
         self,
         frequencies: NDArray[np.float64],
-        TDI_channel: tuple[str, ...],
-        TDI_generation: str,
-    ):
+        tdi_channels: tuple[str, ...],
+        tdi_generation: str,
+    ) -> dict[str, NDArray[np.float64]]:
         """Generate psd array for given frequency array"""
 
         # Convert displacement noise and acceleration noise to the same dimension of relative frequency
         S_oms = self._S_oms(frequencies)
         S_acc = self._S_acc(frequencies)
 
-        if TDI_generation == "1.5":
+        if tdi_generation == "1.5":
             prefactor = 1.0
-        elif TDI_generation == "2.0":
+        elif tdi_generation == "2.0":
             prefactor = 4.0 * sin(4 * PI * frequencies * self.arm_length_sec) ** 2
         else:
-            raise Exception("The TDI generation {} is unknown".format(TDI_generation))
+            raise Exception("The TDI generation {} is unknown".format(tdi_generation))
 
         psd_dict = {}
-        for chan in TDI_channel:
+        for chan in tdi_channels:
             if chan in ["X", "Y", "Z"]:
                 psd = (
                     16
@@ -110,6 +110,8 @@ class AnalyticPowerSpectralDensity(FrequencyDomainNoiseModel):
                         + 4 * sin(PI * frequencies * self.arm_length_sec) ** 2 * S_acc
                     )
                 )
+            else:
+                raise ValueError(f"Unknown TDI channel {chan}.")
             psd *= prefactor
             psd_dict[chan] = psd
 
