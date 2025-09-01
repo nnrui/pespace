@@ -15,9 +15,11 @@ import taichi.math as tm
 
 from .noise import FrequencyDomainNoiseModel, available_noise_models
 from ..utils.utils import (
-    ComplexNumber,
+    linear_interpolate,
     complex_numpy_array_dict_to_taichi_field,
     taichi_field_to_complex_numpy_array_dict,
+    ComplexNumber,
+    SingleLinkStructReal,
 )
 from ..utils.constants import *
 
@@ -543,6 +545,7 @@ class TDIChannelData:
     def set_fd_noise_power_density_from_model(
         self,
         noise_model: str | FrequencyDomainNoiseModel,
+        **model_kwards: dict,
     ) -> None:
         if isinstance(noise_model, str):
             if noise_model in available_noise_models.keys():
@@ -573,8 +576,9 @@ class TDIChannelData:
         )
         self.fd_noise_power_density.from_numpy(
             psd(
-                self.data_info.channels,
                 self.data_info.frequency_samples_array,
+                self.data_info.channels,
+                **model_kwards,
             )
         )
 
@@ -883,7 +887,182 @@ class TDICombinationModel(ABC):
 
 @ti.data_oriented
 class TDMichelsonConstantEqualArm(TDICombinationModel):
-    pass
+
+    def __init__(self, generation="1.5", orthogonal=True):
+        self.generation = str(generation)
+        if self.generation == "1.5":  # TODO: improve for unconstant armlength
+            self.max_num_delay = 3
+        elif self.generation == "2.0":
+            self.max_num_delay = 7
+        else:
+            raise ValueError(f"Unsupported generation {self.generation}.")
+
+        self.orthogonal = bool(orthogonal)
+        if self.orthogonal:
+            self.labels = ("A", "E", "T")
+        else:
+            self.labels = ("X", "Y", "Z")
+
+        self.added_time_samples_number = None
+        self.extended_time_series_length = None
+
+    def init_tdi_combination_model(self, detector: "InterferometerAntenna") -> None:
+        self.detector = weakref.proxy(detector)
+        self.detector.tdi_response = ti.Struct.field(
+            dict.fromkeys(self.labels, ti.f64),
+            shape=(self.detector.tdi_data.data_info.time_series_length,),
+        )
+        self.added_time_samples_number = int(
+            self.max_num_delay
+            * self.detector.orbit_model.armlength_sec
+            // self.detector.tdi_data.data_info.delta_time
+            + 1
+        )
+        self.extended_time_series_length = int(
+            self.detector.tdi_data.data_info.time_series_length
+            + self.added_time_samples_number
+        )
+
+    @ti.kernel
+    def update_tdi_response(self):
+        # temporarily store the single link response with delays in the loop
+        delayed_response = ti.field(SingleLinkStructReal, shape=(self.max_num_delay,))
+
+        # displeasement of time samples after delays, in the range of [0, 1].
+        # constant for each delay in the case of equal-arm, can be computed and cached before the loop.
+        # note the num_delay = idx + 1
+        t_frac = ti.field(ti.f64, shape=(self.max_num_delay,))
+        for i in ti.static(range(self.max_num_delay)):
+            num_delay = i + 1
+            t_frac[i] = (
+                1.0
+                - (
+                    num_delay
+                    * self.detector.orbit_model.armlength_sec
+                    % self.detector.tdi_data.data_info.delta_time
+                )
+                / self.detector.tdi_data.data_info.delta_time
+            )
+
+        for i in self.detector.tdi_response:
+            # compute delayed single-link responses
+            for num_delay in ti.static(range(self.max_num_delay, 0, -1)):  # using reverse order here for more continuously accessing single_link_response field. # fmt: skip
+                i_shift = (
+                    (self.max_num_delay - num_delay)
+                    * self.detector.orbit_model.armlength_sec
+                    // self.detector.tdi_data.data_info.delta_time
+                )
+                links_left = self.detector.single_link_response[i + i_shift]
+                links_right = self.detector.single_link_response[i + i_shift + 1]
+
+                for label in ti.static(
+                    ["link12", "link21", "link23", "link32", "link31", "link13"]
+                ):
+                    delayed_response[num_delay - 1][label] = linear_interpolate(
+                        links_left[label],
+                        links_right[label],
+                        t_frac[num_delay - 1],
+                    )
+
+            links_response = self.detector.single_link_response[i + self.added_time_samples_number]  # fmt: skip
+            X = 0.0
+            Y = 0.0
+            Z = 0.0
+            if ti.static(self.generation == "1.5"):
+                X = (
+                    links_response.link13
+                    + delayed_response.link31[0]
+                    + delayed_response.link12[1]
+                    + delayed_response.link21[2]
+                    - links_response.link12
+                    - delayed_response.link21[0]
+                    - delayed_response.link13[1]
+                    - delayed_response.link31[2]
+                )
+                Y = (
+                    links_response.link21
+                    + delayed_response.link12[0]
+                    + delayed_response.link23[1]
+                    + delayed_response.link32[2]
+                    - links_response.link23
+                    - delayed_response.link32[0]
+                    - delayed_response.link21[1]
+                    - delayed_response.link12[2]
+                )
+                Z = (
+                    links_response.link32
+                    + delayed_response.link23[0]
+                    + delayed_response.link31[1]
+                    + delayed_response.link13[2]
+                    - links_response.link31
+                    - delayed_response.link13[0]
+                    - delayed_response.link32[1]
+                    - delayed_response.link23[2]
+                )
+            elif ti.static(self.generation == "2.0"):
+                X = (
+                    links_response.link13
+                    + delayed_response.link31[0]
+                    + delayed_response.link12[1]
+                    + delayed_response.link21[2]
+                    + delayed_response.link12[3]
+                    + delayed_response.link21[4]
+                    + delayed_response.link13[5]
+                    + delayed_response.link31[6]
+                    - links_response.link12
+                    - delayed_response.link21[0]
+                    - delayed_response.link13[1]
+                    - delayed_response.link31[2]
+                    - delayed_response.link13[3]
+                    - delayed_response.link31[4]
+                    - delayed_response.link12[5]
+                    - delayed_response.link21[6]
+                )
+                Y = (
+                    links_response.link21
+                    + delayed_response.link12[0]
+                    + delayed_response.link23[1]
+                    + delayed_response.link32[2]
+                    + delayed_response.link23[3]
+                    + delayed_response.link32[4]
+                    + delayed_response.link21[5]
+                    + delayed_response.link12[6]
+                    - links_response.link23
+                    - delayed_response.link32[0]
+                    - delayed_response.link21[1]
+                    - delayed_response.link12[2]
+                    - delayed_response.link21[3]
+                    - delayed_response.link12[4]
+                    - delayed_response.link23[5]
+                    - delayed_response.link32[6]
+                )
+                Z = (
+                    links_response.link32
+                    + delayed_response.link23[0]
+                    + delayed_response.link31[1]
+                    + delayed_response.link13[2]
+                    + delayed_response.link31[3]
+                    + delayed_response.link13[4]
+                    + delayed_response.link32[5]
+                    + delayed_response.link23[6]
+                    - links_response.link31
+                    - delayed_response.link13[0]
+                    - delayed_response.link32[1]
+                    - delayed_response.link23[2]
+                    - delayed_response.link32[3]
+                    - delayed_response.link23[4]
+                    - delayed_response.link31[5]
+                    - delayed_response.link13[6]
+                )
+
+            if ti.static(self.orthogonal):
+                self.detector.tdi_response[i].A = (Z - X) / tm.sqrt(2.0)
+                self.detector.tdi_response[i].E = (X - 2.0 * Y + Z) / tm.sqrt(6.0)
+                self.detector.tdi_response[i].T = (X + Y + Z) / tm.sqrt(3.0)
+            else:
+                self.detector.tdi_response[i].X = X
+                self.detector.tdi_response[i].Y = Y
+                self.detector.tdi_response[i].Z = Z
 
 
 @ti.data_oriented
@@ -900,6 +1079,7 @@ class FDMichelsonConstantEqualArm(TDICombinationModel):
         else:
             self.labels = ("X", "Y", "Z")
 
+        self.detector = None
         self._cached_field = None
 
     def init_tdi_combination_model(self, detector: "InterferometerAntenna") -> None:

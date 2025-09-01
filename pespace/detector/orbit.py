@@ -83,7 +83,6 @@ class KeplerianGeocentric(OrbitModelBase):
         self.sbeta_ref = tm.sin(beta_ref)
         self.cbeta_ref = tm.cos(beta_ref)
 
-    # avoiding the performance cost induced by normal property()
     @cached_property
     def arm_length_sec(self) -> float:
         return self.arm_length / C_SI
@@ -178,7 +177,6 @@ class KaplerianHeliocentric(OrbitModelBase):
         self.ck3 = tm.cos(kappa_3)
         self.sk3 = tm.sin(kappa_3)
 
-    # avoiding the performance cost induced by normal property()
     @cached_property
     def arm_length_sec(self) -> float:
         return self.arm_length / C_SI

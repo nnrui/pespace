@@ -18,6 +18,8 @@ from ..utils.utils import (
     sinc,
     noise_weighted_inner_product,
     ComplexNumber,
+    SingleLinkStructComplex,
+    SingleLinkStructReal,
 )
 from ..utils.constants import *
 
@@ -56,11 +58,12 @@ class InterferometerAntenna:
         self.response_model = response_model
         self.tdi_combination = tdi_combination
 
-        self.single_link_response = None
         self.tdi_response = None
+        self.single_link_response = None
 
-        self.response_model.init_single_link_response_model(self)
+        # note the length of single_link_response in TD depending on tdi combination model, init the response_model after the tdi_combination
         self.tdi_combination.init_tdi_combination_model(self)
+        self.response_model.init_single_link_response_model(self)
 
     def update_detector_response(
         self,
@@ -307,28 +310,7 @@ class InterferometerAntenna:
     #     self.TDI_data.add_into_frequency_domian_data(self.response_container)
 
 
-SingleLinkStruct = ti.types.struct(
-    link12=ComplexNumber,
-    link21=ComplexNumber,
-    link23=ComplexNumber,
-    link32=ComplexNumber,
-    link31=ComplexNumber,
-    link13=ComplexNumber,
-)
-
-
 class SingleLinkResponseModel(ABC):
-
-    def __init__(self):
-        self.detector = None
-
-    def _init_response_container_td(self) -> None:
-        pass
-
-    def _init_response_container_fd(self) -> None:
-        self.detector.single_link_response = SingleLinkStruct.field(
-            shape=(self.detector.tdi_data.data_info.frequency_series_length,),
-        )
 
     @abstractmethod
     def update_single_link_response(self) -> None:
@@ -340,7 +322,9 @@ class FDResponseModelMarset2018(SingleLinkResponseModel):
 
     def init_single_link_response_model(self, detector: InterferometerAntenna) -> None:
         self.detector = weakref.proxy(detector)
-        self._init_response_container_fd()
+        self.detector.single_link_response = SingleLinkStructComplex.field(
+            shape=(self.detector.tdi_data.data_info.frequency_series_length,),
+        )
 
     @ti.kernel
     def update_single_link_response(
@@ -353,11 +337,10 @@ class FDResponseModelMarset2018(SingleLinkResponseModel):
     ):
         pol_tensor = get_polarization_tensor_ssb(lam, beta, psi)  # matrix: 3*3
         k = get_gw_propagation_unit_vector(lam, beta)  # vector: 3
-        time_shift = tc - self.detector.tdi_data.data_info.start_time
 
         for i in self.detector.single_link_response:
             fi = self.detector.tdi_data.frequency_samples[i]
-            cexp_tshift = tm.cexp(ComplexNumber([0.0, -2.0 * PI * fi * time_shift]))
+            cexp_tshift = tm.cexp(ComplexNumber([0.0, -2.0 * PI * fi * tc]))
             hp = tm.cmul(waveform[i].plus, cexp_tshift)
             hc = tm.cmul(waveform[i].cross, cexp_tshift)
             tf = waveform[i].tf + tc
@@ -460,8 +443,231 @@ class FDResponseModelStaticLongWavelength(SingleLinkResponseModel):
     pass
 
 
-class TDResponseModelCornish2003(SingleLinkResponseModel):
-    pass
+# @ti.data_oriented
+# class TDResponseModelConstantEqualArmCornish2003(SingleLinkResponseModel):
+
+#     def __init__(self, interpolate_kernel: str | tuple[str, int]):
+#         if isinstance(interpolate_kernel, str) and (interpolate_kernel == "linear"):
+#             self.interpolate_kernel = linear_interpolate
+#             self.interpolate_kernle_length = 3
+#         elif isinstance(interpolate_kernel, tuple):
+#             self.interpolate_kernel = None
+#             self.interpolate_kernel_length = interpolate_kernel[1]
+
+#     def init_single_link_response_model(self, detector: InterferometerAntenna) -> None:
+#         self.detector = weakref.proxy(detector)
+#         self.detector.single_link_response = SingleLinkStructReal.field(
+#             shape=(self.detector.tdi_combination.extended_time_series_length,),
+#         )
+
+#         self.extended_time_samples = ti.field(
+#             ti.f64, shape=(self.detector.tdi_combination.extended_time_series_length,)
+#         )
+#         added_time_samples = (
+#             np.arange(self.detector.tdi_combination.added_time_samples_number)[::-1]
+#             * self.detector.tdi_data.data_info.delta_time
+#             + self.detector.tdi_data.data_info.start_time
+#         )
+#         self.extended_time_samples.from_numpy(
+#             np.concatenate(
+#                 added_time_samples,
+#                 self.detector.tdi_data.data_info.time_samples_array,
+#             )
+#         )
+
+#     @ti.func
+#     def _get_shifted_waveform(
+#         self, waveform: ti.types.ndarray(dtype=ti.f64, ndim=2), time: ti.f64
+#     ):
+#         dt = self.detector.tdi_data.data_info.delta_time
+#         idx = time // dt
+#         frac = time % dt
+#         hp_left, hc_left = waveform[idx, 0], waveform[idx, 1]
+#         hp_right, hc_right = waveform[idx + 1, 0], waveform[idx + 1, 1]
+#         hp = linear_interpolate(hp_left, hp_right, frac)
+#         hc = linear_interpolate(hc_left, hc_right, frac)
+#         return hp, hc
+
+#     def _ensure_waveform_length(self, waveform_container:dict[str, NDArray[np.float64] | float],
+#                                 tc:ti.f64):
+#         dt = self.detector.tdi_data.data_info.delta_time
+#         ###
+#         x_max = self._get_x_max()
+#         t_min = self.extended_time_samples[0] - self.detector.orbit_model.armlength_sec - x_max
+#         t_max = self.extended_time_samples[-1] + x_max
+#         ###
+#         wf_t0 = waveform_container['t0']
+#         wf_tend = waveform_container["t0"] + waveform_container["data"].shape[0]*dt
+#         prepend_length = 0
+#         append_length = 0
+#         if int((t_min - wf_t0) // dt) < int(self.interpolate_kernel_length//2):
+#             padding_
+
+
+#     def update_single_link_response(
+#         self,
+#         waveform_container: dict[str, NDArray[np.float64] | float],
+#         lam: ti.f64,
+#         beta: ti.f64,
+#         psi: ti.f64,
+#         tc: ti.f64,
+#     ):
+#         waveform, t0 = self._ensure_waveform_length(waveform_container, tc)
+#         self.update_single_link_response_kernel(
+#             waveform,
+#             t0,
+#             lam,
+#             beta,
+#             psi,
+#         )
+
+#     @ti.kernel
+#     def update_single_link_response_kernel(
+#         self,
+#         waveform: ti.types.ndarray(dtype=ti.f64, ndim=2),
+#         t0: ti.f64,  # time of the first data point in waveform
+#         lam: ti.f64,
+#         beta: ti.f64,
+#         psi: ti.f64,
+#     ):
+#         pol_tensor = get_polarization_tensor_ssb(lam, beta, psi)  # matrix: 3*3
+#         k = get_gw_propagation_unit_vector(lam, beta)  # vector: 3
+
+#         for i in self.detector.single_link_response:
+#             t = self.extended_time_samples[i]
+
+#             constellation_vectors = self.detector.orbit_model.get_constellation_vectors(t)  # fmt: skip
+
+#             k_x1 = k @ constellation_vectors.x1
+#             k_x2 = k @ constellation_vectors.x2
+#             k_x3 = k @ constellation_vectors.x3
+
+#             L_arm = self.detector.orbit_model.armlength_sec
+#             # TODO: handle the case when out of the boundaies of waveform
+#             hp_send_x1, hc_send_x1 = self._get_shifted_waveform(
+#                 waveform, (t - L_arm - k_x1 - t0)
+#             )
+#             hp_send_x2, hc_send_x2 = self._get_shifted_waveform(
+#                 waveform, (t - L_arm - k_x2 - t0)
+#             )
+#             hp_send_x3, hc_send_x3 = self._get_shifted_waveform(
+#                 waveform, (t - L_arm - k_x3 - t0)
+#             )
+#             hp_rece_x1, hc_rece_x1 = self._get_shifted_waveform(
+#                 waveform, (t - k_x1 - t0)
+#             )
+#             hp_rece_x2, hc_rece_x2 = self._get_shifted_waveform(
+#                 waveform, (t - k_x2 - t0)
+#             )
+#             hp_rece_x3, hc_rece_x3 = self._get_shifted_waveform(
+#                 waveform, (t - k_x3 - t0)
+#             )
+
+#             n1_plus_tensor_n1 = (
+#                 constellation_vectors.n1 @ pol_tensor.plus @ constellation_vectors.n1
+#             )
+#             n1_cross_tensor_n1 = (
+#                 constellation_vectors.n1 @ pol_tensor.cross @ constellation_vectors.n1
+#             )
+#             n2_plus_tensor_n2 = (
+#                 constellation_vectors.n2 @ pol_tensor.plus @ constellation_vectors.n2
+#             )
+#             n2_cross_tensor_n2 = (
+#                 constellation_vectors.n2 @ pol_tensor.cross @ constellation_vectors.n2
+#             )
+#             n3_plus_tensor_n3 = (
+#                 constellation_vectors.n3 @ pol_tensor.plus @ constellation_vectors.n3
+#             )
+#             n3_cross_tensor_n3 = (
+#                 constellation_vectors.n3 @ pol_tensor.cross @ constellation_vectors.n3
+#             )
+
+#             # # n1: unit vector of 2 -> 3
+#             # n1_plus_tensor_n1 = (
+#             #     constellation_vectors.n1
+#             #     @ pol_tensor.plus
+#             #     @ constellation_vectors.n1
+#             #     * ()
+#             #     + constellation_vectors.n1
+#             #     @ pol_tensor.cross
+#             #     @ constellation_vectors.n1
+#             #     * ()
+#             # )
+#             # # n2: unit vector of 3 -> 1
+#             # n2_h_n2 = (
+#             #     constellation_vectors.n2
+#             #     @ pol_tensor.plus
+#             #     @ constellation_vectors.n2
+#             #     * hp
+#             #     + constellation_vectors.n2
+#             #     @ pol_tensor.cross
+#             #     @ constellation_vectors.n2
+#             #     * hc
+#             # )
+#             # # n3: unit vector of 1 -> 2
+#             # n3_h_n3 = (
+#             #     constellation_vectors.n3
+#             #     @ pol_tensor.plus
+#             #     @ constellation_vectors.n3
+#             #     * hp
+#             #     + constellation_vectors.n3
+#             #     @ pol_tensor.cross
+#             #     @ constellation_vectors.n3
+#             #     * hc
+#             # )
+
+#             k_n1 = k @ constellation_vectors.n1
+#             k_n2 = k @ constellation_vectors.n2
+#             k_n3 = k @ constellation_vectors.n3
+
+#             self.detector.single_link_response[i].link12 = (
+#                 0.5
+#                 * (
+#                     n3_plus_tensor_n3 * (h_send_x2.plus - h_rece_x1.plus)
+#                     + n3_cross_tensor_n3 * (hc_send_x2 - hc_rece_x1)
+#                 )
+#                 / (1.0 + k_n3)
+#             )
+#             self.detector.single_link_response[i].link21 = (
+#                 0.5
+#                 * (
+#                     n3_plus_tensor_n3 * (hp_send_x1 - hp_rece_x2)
+#                     + n3_cross_tensor_n3 * (hc_send_x1 - hc_rece_x2)
+#                 )
+#                 / (1.0 - k_n3)
+#             )
+#             self.detector.single_link_response[i].link23 = (
+#                 0.5
+#                 * (
+#                     n1_plus_tensor_n1 * (hp_send_x3 - hp_rece_x2)
+#                     + n1_cross_tensor_n1 * (hc_send_x3 - hc_rece_x2)
+#                 )
+#                 / (1.0 + k_n1)
+#             )
+#             self.detector.single_link_response[i].link32 = (
+#                 0.5
+#                 * (
+#                     n1_plus_tensor_n1 * (hp_send_x2 - hp_rece_x3)
+#                     + n1_cross_tensor_n1 * (hc_send_x2 - hc_rece_x3)
+#                 )
+#                 / (1.0 - k_n1)
+#             )
+#             self.detector.single_link_response[i].link31 = (
+#                 0.5
+#                 * (
+#                     n2_plus_tensor_n2 * (hp_send_x1 - hp_rece_x3)
+#                     + n2_cross_tensor_n2 * (hc_send_x1 - hc_rece_x3)
+#                 )
+#                 / (1.0 + k_n2)
+#             )
+#             self.detector.single_link_response[i].link13 = (
+#                 0.5
+#                 * (
+#                     n2_plus_tensor_n2 * (hp_send_x3 - hp_rece_x1)
+#                     + n2_cross_tensor_n2 * (hc_send_x3 - hc_rece_x1)
+#                 )
+#                 / (1.0 - k_n2)
+#             )
 
 
 ########################################################################################

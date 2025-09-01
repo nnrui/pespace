@@ -57,37 +57,59 @@ def sinc(x: ti.f64) -> ti.f64:
 
 
 @ti.func
+def linear_interpolate(left, right, frac) -> ti.f64:
+    """
+    frac: [0, 1]
+    """
+    return left + (right - left) * frac
+
+
+@ti.func
+def lagrange_interpolate():
+    pass
+
+
+@ti.func
+def sinc_interpolate():
+    pass
+
+
+@ti.func
 def get_polarization_tensor_ssb(
     lam: ti.f64, beta: ti.f64, psi: ti.f64
 ) -> PolarizationStruct:  #
     """
-    return the polarization tensor in SSB, symbols follow the convention in LDC Manual:
-    https://lisa-ldc.lal.in2p3.fr/static/data/pdf/LDC-manual-002.pdf
+    return the polarization tensor in SSB
 
     Parameters
     ==========
     ecliptic_longitude: lambda,
     ecliptic_latitude: beta, note that beta is (-pi/2, pi/2)
     polarizatione: psi,
-    mode: one of 'plus', 'cross', 'x', 'y', 'breathing', 'longitudinal'
 
     Returns:
     ========
-    array: 3*3 array
+    matrix: 3*3 matrix
     """
     # TODO: the constant should compute only once to reduce compution burden.
+    sin_lam = tm.sin(lam)
+    cos_lam = tm.cos(lam)
+    sin_beta = tm.sin(beta)
+    cos_beta = tm.cos(beta)
+    sin_psi = tm.sin(psi)
+    cos_psi = tm.cos(psi)
     p = vec3(
         [
-            tm.sin(lam) * tm.cos(psi) - tm.sin(beta) * tm.cos(lam) * tm.sin(psi),
-            -(tm.sin(beta) * tm.sin(lam) * tm.sin(psi)) - tm.cos(lam) * tm.cos(psi),
-            tm.cos(beta) * tm.sin(psi),
+            sin_lam * cos_psi - cos_lam * sin_beta * sin_psi,
+            -cos_lam * cos_psi - sin_lam * sin_beta * sin_psi,
+            cos_beta * sin_psi,
         ]
     )
     q = vec3(
         [
-            -tm.cos(lam) * tm.sin(beta) * tm.cos(psi) - tm.sin(lam) * tm.sin(psi),
-            -tm.sin(beta) * tm.sin(lam) * tm.cos(psi) + tm.cos(lam) * tm.sin(psi),
-            tm.cos(beta) * tm.cos(psi),
+            -sin_lam * sin_psi - cos_lam * sin_beta * cos_psi,
+            cos_lam * sin_psi - sin_lam * sin_beta * cos_psi,
+            cos_beta * cos_psi,
         ]
     )
 
