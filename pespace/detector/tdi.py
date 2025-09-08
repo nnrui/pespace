@@ -295,7 +295,7 @@ class TDIChannelData:
         )
 
     def _init_wd_data(self) -> None:
-        pass
+        raise NotImplementedError()
 
     def set_td_data_from_input(
         self,
@@ -478,7 +478,7 @@ class TDIChannelData:
         self._reset_flag = True
 
     def set_wd_data_from_zero(self) -> None:
-        pass
+        raise NotImplementedError()
 
     def set_fd_data_from_td(
         self,
@@ -531,16 +531,16 @@ class TDIChannelData:
         """By default, irfft assumes an even output length which puts the last entry at the Nyquist frequency;
         To avoid losing information, the correct length of the real input must be given.
         """
-        pass
+        raise NotImplementedError()
 
     def set_wd_data_from_td(self) -> None:
-        pass
+        raise NotImplementedError()
 
     def set_wd_data_from_fd(self) -> None:
-        pass
+        raise NotImplementedError()
 
     def set_fd_noise_power_density_from_td_data(self) -> None:
-        pass
+        raise NotImplementedError()
 
     def set_fd_noise_power_density_from_model(
         self,
@@ -583,7 +583,7 @@ class TDIChannelData:
         )
 
     def get_td_noise_realization(self):
-        pass
+        raise NotImplementedError()
 
     def get_fd_noise_realization(
         self, seed=None, output_type: str = "taichi"
@@ -644,7 +644,7 @@ class TDIChannelData:
         return ret
 
     def add_into_td_data(self) -> None:
-        pass
+        raise NotImplementedError()
 
     def add_into_fd_data(
         self, input: ti.StructField | dict[str, NDArray[np.complex128]]
@@ -691,7 +691,7 @@ class TDIChannelData:
         _add_input_field_into_tdi_data(self.fd_data, input_field)
 
     def add_into_wd_data(self) -> None:
-        pass
+        raise NotImplementedError()
 
     def save_to_file(self, filename: str) -> None:
         """
@@ -855,7 +855,7 @@ class TDIChannelData:
                     }
                 )
             if "wd_noise_power_density" in noise_data_group:
-                pass
+                raise NotImplementedError()
 
         ret_cls._reset_flag = True  # remember to mark the update state
 
@@ -880,6 +880,11 @@ class TDIChannelData:
 
 class TDICombinationModel(ABC):
 
+    @property
+    @abstractmethod
+    def domain(self) -> str:
+        pass
+
     @abstractmethod
     def update_tdi_response(self) -> None:
         pass
@@ -887,6 +892,8 @@ class TDICombinationModel(ABC):
 
 @ti.data_oriented
 class TDMichelsonConstantEqualArm(TDICombinationModel):
+
+    domain = "td"
 
     def __init__(self, generation="1.5", orthogonal=True):
         self.generation = str(generation)
@@ -1067,6 +1074,8 @@ class TDMichelsonConstantEqualArm(TDICombinationModel):
 
 @ti.data_oriented
 class FDMichelsonConstantEqualArm(TDICombinationModel):
+
+    domain = "fd"
 
     def __init__(self, generation="1.5", orthogonal=True):
         self.generation = str(generation)
