@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Callable
 import logging
 
 import taichi as ti
@@ -50,6 +50,7 @@ class WaveformLALSimulationInterface:
         minimum_frequency: float,
         maximum_frequency: float,
         skip_invalid_params: bool = True,
+        parameter_conversion: Callable | None = None,
         **waveform_parameters: dict[str, Any],
     ):
         """ """
@@ -65,6 +66,11 @@ class WaveformLALSimulationInterface:
         self.minimum_frequency = minimum_frequency
         self.maximum_frequency = maximum_frequency
         self.skip_invalid_params = skip_invalid_params
+
+        if parameter_conversion is None:
+            self.parameter_conversion = self._default_parameter_conversion
+        else:
+            self.parameter_conversion = parameter_conversion
 
         self.waveform_parameters = lal.CreateDict()
         for key, value in waveform_parameters.items():
@@ -82,12 +88,12 @@ class WaveformLALSimulationInterface:
         self.parameters = {
             "mass_1": 0.0,
             "mass_2": 0.0,
-            "chi1_x": 0.0,
-            "chi1_y": 0.0,
-            "chi1_z": 0.0,
-            "chi2_x": 0.0,
-            "chi2_y": 0.0,
-            "chi2_z": 0.0,
+            "spin_1x": 0.0,
+            "spin_1y": 0.0,
+            "spin_1z": 0.0,
+            "spin_2x": 0.0,
+            "spin_2y": 0.0,
+            "spin_2z": 0.0,
             "luminosity_distance": 0.0,
             "inclination": 0.0,
             "reference_phase": 0.0,
@@ -118,18 +124,21 @@ class WaveformLALSimulationInterface:
         else:
             raise ValueError("domain for waveform can only be one of td or fd.")
 
+    def _default_parameter_conversion(self, input_params: dict[str, float]):
+        return input_params
+
     def _update_waveform_td(self, parameters: dict[str, float]):
-        self.parameters.update(parameters)
+        self.parameters.update(self.parameter_conversion(parameters))
         try:
             hp, hc = lalsim.SimInspiralChooseTDWaveform(
                 float(self.parameters["mass_1"] * lal.MSUN_SI),
                 float(self.parameters["mass_2"] * lal.MSUN_SI),
-                float(self.parameters["chi1_x"]),
-                float(self.parameters["chi1_y"]),
-                float(self.parameters["chi1_z"]),
-                float(self.parameters["chi2_x"]),
-                float(self.parameters["chi2_y"]),
-                float(self.parameters["chi2_z"]),
+                float(self.parameters["spin_1x"]),
+                float(self.parameters["spin_1y"]),
+                float(self.parameters["spin_1z"]),
+                float(self.parameters["spin_2x"]),
+                float(self.parameters["spin_2y"]),
+                float(self.parameters["spin_2z"]),
                 float(self.parameters["luminosity_distance"] * 1e6 * lal.PC_SI),
                 float(self.parameters["inclination"]),
                 float(self.parameters["reference_phase"]),
@@ -155,17 +164,17 @@ class WaveformLALSimulationInterface:
         self.waveform_container["t0"] = float(hp.epoch)
 
     def _update_waveform_fd(self, parameters: dict[str, float]):
-        self.parameters.update(parameters)
+        self.parameters.update(self.parameter_conversion(parameters))
         try:
             hp, hc = lalsim.SimInspiralChooseFDWaveform(
                 float(self.parameters["mass_1"] * lal.MSUN_SI),
                 float(self.parameters["mass_2"] * lal.MSUN_SI),
-                float(self.parameters["chi1_x"]),
-                float(self.parameters["chi1_y"]),
-                float(self.parameters["chi1_z"]),
-                float(self.parameters["chi2_x"]),
-                float(self.parameters["chi2_y"]),
-                float(self.parameters["chi2_z"]),
+                float(self.parameters["spin_1x"]),
+                float(self.parameters["spin_1y"]),
+                float(self.parameters["spin_1z"]),
+                float(self.parameters["spin_2x"]),
+                float(self.parameters["spin_2y"]),
+                float(self.parameters["spin_2z"]),
                 float(self.parameters["luminosity_distance"] * 1e6 * lal.PC_SI),
                 float(self.parameters["inclination"]),
                 float(self.parameters["reference_phase"]),
@@ -190,7 +199,7 @@ class WaveformLALSimulationInterface:
 
         plus = hp.data.data[self._frequency_mask_array].view(np.float64).reshape(-1, 2)
         cross = hc.data.data[self._frequency_mask_array].view(np.float64).reshape(-1, 2)
-        tf = get_PN_d_phase(parameters, self._frequency_samples)
+        tf = get_PN_d_phase(self.parameters, self._frequency_samples)
 
         self.waveform_container.from_numpy({"plus": plus, "cross": cross, "tf": tf})
 
@@ -219,10 +228,10 @@ def get_PN_d_phase(
 
     delta = np.sqrt(1.0 - 4.0 * eta)
 
-    chi_a = (parameters["chi1_z"] - parameters["chi2_z"]) * 0.5
+    chi_a = (parameters["spin_1z"] - parameters["spin_2z"]) * 0.5
     chi_a_pow2 = chi_a * chi_a
     chi_a_pow3 = chi_a_pow2 * chi_a
-    chi_s = (parameters["chi1_z"] + parameters["chi2_z"]) * 0.5
+    chi_s = (parameters["spin_1z"] + parameters["spin_2z"]) * 0.5
     chi_s_pow2 = chi_s * chi_s
     chi_s_pow3 = chi_s_pow2 * chi_s
 
