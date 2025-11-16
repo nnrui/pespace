@@ -4,7 +4,7 @@ import logging
 import taichi as ti
 import numpy as np
 
-from ..utils.utils import ComplexNumber
+from ..utils.utils import ti_complex
 from ..utils.constants import *
 
 try:
@@ -117,7 +117,7 @@ class WaveformLALSimulationInterface:
             self._frequency_mask_array = frequency_mask_array
 
             self.waveform_container = ti.Struct.field(
-                {"plus": ComplexNumber, "cross": ComplexNumber, "tf": ti.f64},
+                {"plus": ti_complex, "cross": ti_complex, "tf": float},
                 shape=self._frequency_samples.shape,
             )
             self.update_waveform = self._update_waveform_fd

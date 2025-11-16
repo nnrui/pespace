@@ -4,25 +4,24 @@ from functools import cached_property
 import taichi as ti
 import taichi.math as tm
 
-from ..utils.utils import vec3
 from ..utils.constants import *
 
 
 # orbit vectors of detector constellation in ecliptic coordinate
 # fellowing the convention of 2108.01167
 ConstellationVectorStruct = ti.types.struct(
-    n1=vec3,  # unit vector of link2->3 (n32) in SSB
-    n2=vec3,  # unit vector of link3->1 (n13) in SSB
-    n3=vec3,  # unit vector of link1->2 (n21) in SSB
-    x1=vec3,  # vector of the node 1 in SSB, in unit of sec, x1 = x0 + x1_det
-    x2=vec3,  # vector of the node 2 in SSB, in unit of sec, x2 = x0 + x2_det
-    x3=vec3,  # vector of the node 3 in SSB, in unit of sec, x3 = x0 + x3_det
+    n1=ti.types.vector(3, float),  # unit vector of link2->3 (n32) in SSB
+    n2=ti.types.vector(3, float),  # unit vector of link3->1 (n13) in SSB
+    n3=ti.types.vector(3, float),  # unit vector of link1->2 (n21) in SSB
+    x1=ti.types.vector(3, float),  # vector of the node 1 in SSB, in unit of sec, x1 = x0 + x1_det # fmt: skip
+    x2=ti.types.vector(3, float),  # vector of the node 2 in SSB, in unit of sec, x2 = x0 + x2_det # fmt: skip
+    x3=ti.types.vector(3, float),  # vector of the node 3 in SSB, in unit of sec, x3 = x0 + x3_det # fmt: skip
 )
 
 
 class OrbitModelBase(ABC):
     @abstractmethod
-    def get_constellation_vectors(self, time: ti.f64) -> ConstellationVectorStruct:
+    def get_constellation_vectors(self, time: float) -> ConstellationVectorStruct:
         pass
 
     # Since currently only analystic Keplerian orbit models where the armlength is a
@@ -88,7 +87,7 @@ class KeplerianGeocentric(OrbitModelBase):
         return self.arm_length / C_SI
 
     @ti.func
-    def get_constellation_vectors(self, time: ti.f64) -> ConstellationVectorStruct:
+    def get_constellation_vectors(self, time: float) -> ConstellationVectorStruct:
         # alpha: revolution ortial phase
         alpha = self.omega_revolution * time + self.revolution_initial
         # kappa_n: rotaion phase for each node
@@ -103,28 +102,28 @@ class KeplerianGeocentric(OrbitModelBase):
         sk3 = tm.sin(kappa_3)
         # vectors of each node in the detector-center-ecliptic coordinate
         # xn_det = xn - x0
-        node1_det = self.r_det_sec * vec3(
+        node1_det = self.r_det_sec * ti.Vector(
             [
                 self.sbeta_ref * self.clam_ref * sk1 + self.slam_ref * ck1,
                 self.sbeta_ref * self.slam_ref * sk1 - self.clam_ref * ck1,
                 -self.cbeta_ref * sk1,
             ]
         )
-        node2_det = self.r_det_sec * vec3(
+        node2_det = self.r_det_sec * ti.Vector(
             [
                 self.sbeta_ref * self.clam_ref * sk2 + self.slam_ref * ck2,
                 self.sbeta_ref * self.slam_ref * sk2 - self.clam_ref * ck2,
                 -self.cbeta_ref * sk2,
             ]
         )
-        node3_det = self.r_det_sec * vec3(
+        node3_det = self.r_det_sec * ti.Vector(
             [
                 self.sbeta_ref * self.clam_ref * sk3 + self.slam_ref * ck3,
                 self.sbeta_ref * self.slam_ref * sk3 - self.clam_ref * ck3,
                 -self.cbeta_ref * sk3,
             ]
         )
-        x0 = vec3([tm.cos(alpha), tm.sin(alpha), 0.0]) * self.AU_sec
+        x0 = ti.Vector([tm.cos(alpha), tm.sin(alpha), 0.0]) * self.AU_sec
 
         return ConstellationVectorStruct(
             n1=(node3_det - node2_det) / self.arm_length_sec,
@@ -182,7 +181,7 @@ class KaplerianHeliocentric(OrbitModelBase):
         return self.arm_length / C_SI
 
     @ti.func
-    def get_constellation_vectors(self, time: ti.f64) -> ConstellationVectorStruct:
+    def get_constellation_vectors(self, time: float) -> ConstellationVectorStruct:
         # alpha: revolution ortial phase
         alpha = self.omega * time + self.revolution_initial
         ca = tm.cos(alpha)
@@ -191,28 +190,28 @@ class KaplerianHeliocentric(OrbitModelBase):
         sa_pow2 = sa * sa
         # vectors of each spacecraft in the solar system barycentric coordinate
         # xn_ssb = xn_det_ssb + x0_ssb
-        x1_det = self.r_prime * vec3(
+        x1_det = self.r_prime * ti.Vector(
             [
                 sa * ca * self.sk1 - (1 + sa_pow2) * self.ck1,
                 sa * ca * self.ck1 - (1 + ca_pow2) * self.sk1,
                 -self.sqrt3 * (ca * self.ck1 + sa * self.sk1),
             ]
         )
-        x2_det = self.r_prime * vec3(
+        x2_det = self.r_prime * ti.Vector(
             [
                 sa * ca * self.sk2 - (1 + sa_pow2) * self.ck2,
                 sa * ca * self.ck2 - (1 + ca_pow2) * self.sk2,
                 -self.sqrt3 * (ca * self.ck2 + sa * self.sk2),
             ]
         )
-        x3_det = self.r_prime * vec3(
+        x3_det = self.r_prime * ti.Vector(
             [
                 sa * ca * self.sk3 - (1 + sa_pow2) * self.ck3,
                 sa * ca * self.ck3 - (1 + ca_pow2) * self.sk3,
                 -self.sqrt3 * (ca * self.ck3 + sa * self.sk3),
             ]
         )
-        x0 = vec3([ca, sa, 0.0]) * self.AU_sec
+        x0 = ti.Vector([ca, sa, 0.0]) * self.AU_sec
 
         return ConstellationVectorStruct(
             n1=(x3_det - x2_det) / self.arm_length_sec,

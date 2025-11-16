@@ -6,27 +6,25 @@ from numpy.typing import NDArray
 
 from .constants import *
 
-# Avoid using tm.vec3, tm.mat3, ..., since their dtype depend on the global set for precision of float.
 PolarizationStruct = ti.types.struct(
-    plus=ti.types.matrix(3, 3, ti.f64), cross=ti.types.matrix(3, 3, ti.f64)
+    plus=ti.types.matrix(3, 3, float), cross=ti.types.matrix(3, 3, float)
 )
-ComplexNumber = ti.types.vector(2, ti.f64)
-vec3 = ti.types.vector(3, ti.f64)
+ti_complex = ti.types.vector(2, float)
 SingleLinkStructComplex = ti.types.struct(
-    link12=ComplexNumber,
-    link21=ComplexNumber,
-    link23=ComplexNumber,
-    link32=ComplexNumber,
-    link31=ComplexNumber,
-    link13=ComplexNumber,
+    link12=ti_complex,
+    link21=ti_complex,
+    link23=ti_complex,
+    link32=ti_complex,
+    link31=ti_complex,
+    link13=ti_complex,
 )
 SingleLinkStructReal = ti.types.struct(
-    link12=ti.f64,
-    link21=ti.f64,
-    link23=ti.f64,
-    link32=ti.f64,
-    link31=ti.f64,
-    link13=ti.f64,
+    link12=float,
+    link21=float,
+    link23=float,
+    link32=float,
+    link31=float,
+    link13=float,
 )
 
 
@@ -47,7 +45,7 @@ def next_power_of_2(n: ti.u32) -> ti.u32:
 
 
 @ti.func
-def sinc(x: ti.f64) -> ti.f64:
+def sinc(x: float) -> float:
     ret = 0.0
     if x == 0.0:
         ret = 1.0
@@ -57,7 +55,7 @@ def sinc(x: ti.f64) -> ti.f64:
 
 
 @ti.func
-def linear_interpolate(left, right, frac) -> ti.f64:
+def linear_interpolate_kernel(left, right, frac) -> float:
     """
     frac: [0, 1]
     """
@@ -65,18 +63,25 @@ def linear_interpolate(left, right, frac) -> ti.f64:
 
 
 @ti.func
-def lagrange_interpolate():
+def lagrange_interpolate_kernel():
     pass
 
 
 @ti.func
-def sinc_interpolate():
+def sinc_interpolate_kernel():
     pass
+
+
+INTERPOLATE_KERNELS = {
+    "linear": linear_interpolate_kernel,
+    "sinc": sinc_interpolate_kernel,
+    "lagrange": lagrange_interpolate_kernel,
+}
 
 
 @ti.func
 def get_polarization_tensor_ssb(
-    lam: ti.f64, beta: ti.f64, psi: ti.f64
+    lam: float, beta: float, psi: float
 ) -> PolarizationStruct:  #
     """
     return the polarization tensor in SSB
@@ -98,14 +103,14 @@ def get_polarization_tensor_ssb(
     cos_beta = tm.cos(beta)
     sin_psi = tm.sin(psi)
     cos_psi = tm.cos(psi)
-    p = vec3(
+    p = ti.Vector(
         [
             sin_lam * cos_psi - cos_lam * sin_beta * sin_psi,
             -cos_lam * cos_psi - sin_lam * sin_beta * sin_psi,
             cos_beta * sin_psi,
         ]
     )
-    q = vec3(
+    q = ti.Vector(
         [
             -sin_lam * sin_psi - cos_lam * sin_beta * cos_psi,
             cos_lam * sin_psi - sin_lam * sin_beta * cos_psi,
@@ -120,9 +125,11 @@ def get_polarization_tensor_ssb(
 
 
 @ti.func
-def get_gw_propagation_unit_vector(lam: ti.f64, beta: ti.f64) -> vec3:
+def get_gw_propagation_unit_vector(
+    lam: float, beta: float
+) -> ti.types.vector(3, float):
     # note that beta is (-pi/2, pi/2)
-    return vec3(
+    return ti.Vector(
         [-tm.cos(beta) * tm.cos(lam), -tm.cos(beta) * tm.sin(lam), -tm.sin(beta)]
     )
 

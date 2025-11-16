@@ -17,9 +17,11 @@ from ..utils.utils import (
     get_gw_propagation_unit_vector,
     sinc,
     noise_weighted_inner_product,
-    ComplexNumber,
+    ti_complex,
+    PolarizationStruct,
     SingleLinkStructComplex,
     SingleLinkStructReal,
+    INTERPOLATE_KERNELS,
 )
 from ..utils.constants import *
 
@@ -107,7 +109,6 @@ class InterferometerAntenna:
     ) -> dict[str, float]:
         pass
 
-
     @property
     def tdi_response_numpy(self) -> dict[str, NDArray[np.complex128]]:
         return taichi_field_to_complex_numpy_array_dict(self.tdi_response)
@@ -137,109 +138,107 @@ class FDResponseModelMarset2018(SingleLinkResponseModel):
     def update_single_link_response(
         self,
         waveform: ti.template(),
-        lam: ti.f64,
-        beta: ti.f64,
-        psi: ti.f64,
-        tc: ti.f64,
+        lam: float,
+        beta: float,
+        psi: float,
+        tc: float,
     ):
         pol_tensor = get_polarization_tensor_ssb(lam, beta, psi)  # matrix: 3*3
-        k = get_gw_propagation_unit_vector(lam, beta)  # vector: 3
+        prop_direc = get_gw_propagation_unit_vector(lam, beta)  # vector: 3
 
+        # the waveform_container uses the AOS layout, operating modes in the inner loop
         for i in self.detector.single_link_response:
             fi = self.detector.tdi_data.frequency_samples[i]
-            cexp_tshift = tm.cexp(ComplexNumber([0.0, -2.0 * PI * fi * tc]))
-            hp = tm.cmul(waveform[i].plus, cexp_tshift)
-            hc = tm.cmul(waveform[i].cross, cexp_tshift)
-            tf = waveform[i].tf + tc
-            constellation_vectors = self.detector.orbit_model.get_constellation_vectors(tf)  # fmt: skip
+            cexp_tshift = tm.cexp(ti_complex([0.0, -2.0 * PI * fi * tc]))
+            links = SingleLinkStructComplex()
 
-            # n1: unit vector of 2 -> 3
-            n1_h_n1 = (
-                constellation_vectors.n1
-                @ pol_tensor.plus
-                @ constellation_vectors.n1
-                * hp
-                + constellation_vectors.n1
-                @ pol_tensor.cross
-                @ constellation_vectors.n1
-                * hc
-            )  # complex number
-            # n2: unit vector of 3 -> 1
-            n2_h_n2 = (
-                constellation_vectors.n2
-                @ pol_tensor.plus
-                @ constellation_vectors.n2
-                * hp
-                + constellation_vectors.n2
-                @ pol_tensor.cross
-                @ constellation_vectors.n2
-                * hc
-            )  # complex number
-            # n3: unit vector of 1 -> 2
-            n3_h_n3 = (
-                constellation_vectors.n3
-                @ pol_tensor.plus
-                @ constellation_vectors.n3
-                * hp
-                + constellation_vectors.n3
-                @ pol_tensor.cross
-                @ constellation_vectors.n3
-                * hc
-            )  # complex number
+            if ti.static(sorted(waveform.keys) == sorted(["cross", "plus", "tf"])):
+                hp = tm.cmul(waveform[i].plus, cexp_tshift)
+                hc = tm.cmul(waveform[i].cross, cexp_tshift)
+                tf = waveform[i].tf + tc
+                links = self._get_responses_at_fi(
+                    hp, hc, tf, fi, pol_tensor, prop_direc
+                )
+            else:
+                for mode in ti.static(waveform.keys):
+                    hp_mode = tm.cmul(waveform[i][mode].plus, cexp_tshift)
+                    hc_mode = tm.cmul(waveform[i][mode].cross, cexp_tshift)
+                    tf_mode = waveform[i][mode].tf + tc
+                    links_mode = self._get_responses_at_fi(
+                        hp_mode, hc_mode, tf_mode, fi, pol_tensor, prop_direc
+                    )
+                    links.link12 += links_mode.link12
+                    links.link21 += links_mode.link21
+                    links.link23 += links_mode.link23
+                    links.link32 += links_mode.link32
+                    links.link31 += links_mode.link31
+                    links.link13 += links_mode.link13
 
-            k_n1 = k @ constellation_vectors.n1  # scalar
-            k_n2 = k @ constellation_vectors.n2  # scalar
-            k_n3 = k @ constellation_vectors.n3  # scalar
+            self.detector.single_link_response[i] = links
 
-            k_x1_x2 = k @ (
-                constellation_vectors.x1 + constellation_vectors.x2
-            )  # scalar
-            k_x2_x3 = k @ (
-                constellation_vectors.x2 + constellation_vectors.x3
-            )  # scalar
-            k_x3_x1 = k @ (
-                constellation_vectors.x3 + constellation_vectors.x1
-            )  # scalar
+    @ti.func
+    def _get_responses_at_fi(
+        self,
+        hp: ti_complex,
+        hc: ti_complex,
+        tf: float,
+        fi: float,
+        pol_tensor: PolarizationStruct,
+        k: ti.types.vector(3, float),
+    ) -> SingleLinkStructComplex:
+        det_vectors = self.detector.orbit_model.get_constellation_vectors(tf)
+        # n1: unit vector of 2 -> 3
+        n1_h_n1 = (
+            det_vectors.n1 @ pol_tensor.plus @ det_vectors.n1 * hp
+            + det_vectors.n1 @ pol_tensor.cross @ det_vectors.n1 * hc
+        )  # ti_complex
+        # n2: unit vector of 3 -> 1
+        n2_h_n2 = (
+            det_vectors.n2 @ pol_tensor.plus @ det_vectors.n2 * hp
+            + det_vectors.n2 @ pol_tensor.cross @ det_vectors.n2 * hc
+        )  # ti_complex
+        # n3: unit vector of 1 -> 2
+        n3_h_n3 = (
+            det_vectors.n3 @ pol_tensor.plus @ det_vectors.n3 * hp
+            + det_vectors.n3 @ pol_tensor.cross @ det_vectors.n3 * hc
+        )  # ti_complex
 
-            pi_f_L = PI * fi * self.detector.orbit_model.arm_length_sec  # scalar
-            sinc32 = sinc(pi_f_L * (1.0 - k_n1))  # scalar
-            sinc23 = sinc(pi_f_L * (1.0 + k_n1))  # scalar
-            sinc13 = sinc(pi_f_L * (1.0 - k_n2))  # scalar
-            sinc31 = sinc(pi_f_L * (1.0 + k_n2))  # scalar
-            sinc21 = sinc(pi_f_L * (1.0 - k_n3))  # scalar
-            sinc12 = sinc(pi_f_L * (1.0 + k_n3))  # scalar
+        k_n1 = k @ det_vectors.n1  # scalar
+        k_n2 = k @ det_vectors.n2  # scalar
+        k_n3 = k @ det_vectors.n3  # scalar
 
-            common_exp = -PI * fi * ComplexNumber([0.0, 1.0])  # ComplexNumber
-            exp12 = tm.cexp(
-                common_exp * (self.detector.orbit_model.arm_length_sec + k_x1_x2)
-            )  # ComplexNumber
-            exp23 = tm.cexp(
-                common_exp * (self.detector.orbit_model.arm_length_sec + k_x2_x3)
-            )  # ComplexNumber
-            exp31 = tm.cexp(
-                common_exp * (self.detector.orbit_model.arm_length_sec + k_x3_x1)
-            )  # ComplexNumber
+        k_x1_x2 = k @ (det_vectors.x1 + det_vectors.x2)  # scalar
+        k_x2_x3 = k @ (det_vectors.x2 + det_vectors.x3)  # scalar
+        k_x3_x1 = k @ (det_vectors.x3 + det_vectors.x1)  # scalar
 
-            prefactor = -pi_f_L * ComplexNumber([0.0, 1.0])  # ComplexNumber
+        pi_f_L = PI * fi * self.detector.orbit_model.arm_length_sec  # scalar
+        sinc32 = sinc(pi_f_L * (1.0 - k_n1))  # scalar
+        sinc23 = sinc(pi_f_L * (1.0 + k_n1))  # scalar
+        sinc13 = sinc(pi_f_L * (1.0 - k_n2))  # scalar
+        sinc31 = sinc(pi_f_L * (1.0 + k_n2))  # scalar
+        sinc21 = sinc(pi_f_L * (1.0 - k_n3))  # scalar
+        sinc12 = sinc(pi_f_L * (1.0 + k_n3))  # scalar
 
-            self.detector.single_link_response[i].link12 = sinc12 * tm.cmul(
-                tm.cmul(prefactor, n3_h_n3), exp12
-            )  # ComplexNumber
-            self.detector.single_link_response[i].link21 = sinc21 * tm.cmul(
-                tm.cmul(prefactor, n3_h_n3), exp12
-            )  # ComplexNumber
-            self.detector.single_link_response[i].link23 = sinc23 * tm.cmul(
-                tm.cmul(prefactor, n1_h_n1), exp23
-            )  # ComplexNumber
-            self.detector.single_link_response[i].link32 = sinc32 * tm.cmul(
-                tm.cmul(prefactor, n1_h_n1), exp23
-            )  # ComplexNumber
-            self.detector.single_link_response[i].link31 = sinc31 * tm.cmul(
-                tm.cmul(prefactor, n2_h_n2), exp31
-            )  # ComplexNumber
-            self.detector.single_link_response[i].link13 = sinc13 * tm.cmul(
-                tm.cmul(prefactor, n2_h_n2), exp31
-            )  # ComplexNumber
+        common_exp = -PI * fi * ti_complex([0.0, 1.0])  # ti_complex
+        exp12 = tm.cexp(
+            common_exp * (self.detector.orbit_model.arm_length_sec + k_x1_x2)
+        )  # ti_complex
+        exp23 = tm.cexp(
+            common_exp * (self.detector.orbit_model.arm_length_sec + k_x2_x3)
+        )  # ti_complex
+        exp31 = tm.cexp(
+            common_exp * (self.detector.orbit_model.arm_length_sec + k_x3_x1)
+        )  # ti_complex
+
+        prefactor = -pi_f_L * ti_complex([0.0, 1.0])  # ti_complex
+        link12 = sinc12 * tm.cmul(tm.cmul(prefactor, n3_h_n3), exp12)  # ti_complex
+        link21 = sinc21 * tm.cmul(tm.cmul(prefactor, n3_h_n3), exp12)  # ti_complex
+        link23 = sinc23 * tm.cmul(tm.cmul(prefactor, n1_h_n1), exp23)  # ti_complex
+        link32 = sinc32 * tm.cmul(tm.cmul(prefactor, n1_h_n1), exp23)  # ti_complex
+        link31 = sinc31 * tm.cmul(tm.cmul(prefactor, n2_h_n2), exp31)  # ti_complex
+        link13 = sinc13 * tm.cmul(tm.cmul(prefactor, n2_h_n2), exp31)  # ti_complex
+
+        return SingleLinkStructComplex(link12, link21, link23, link32, link31, link13)
 
 
 class FDResponseModelLongWavelength(SingleLinkResponseModel):
@@ -251,15 +250,20 @@ class FDResponseModelStaticLongWavelength(SingleLinkResponseModel):
 
 
 # @ti.data_oriented
-# class TDResponseModelConstantEqualArmCornish2003(SingleLinkResponseModel):
+# class TDResponseModelCornish2003(SingleLinkResponseModel):
 
 #     def __init__(self, interpolate_kernel: str | tuple[str, int]):
+#         """
+#         interpolate_kernel:
+#         """
 #         if isinstance(interpolate_kernel, str) and (interpolate_kernel == "linear"):
-#             self.interpolate_kernel = linear_interpolate
-#             self.interpolate_kernle_length = 3
+#             self.interpolate_kernel = linear_interpolate_kernel
+#             self.interpolate_kernel_length = 3
 #         elif isinstance(interpolate_kernel, tuple):
 #             self.interpolate_kernel = None
 #             self.interpolate_kernel_length = interpolate_kernel[1]
+#         else:
+#             raise
 
 #     def init_single_link_response_model(self, detector: InterferometerAntenna) -> None:
 #         self.detector = weakref.proxy(detector)
@@ -268,7 +272,7 @@ class FDResponseModelStaticLongWavelength(SingleLinkResponseModel):
 #         )
 
 #         self.extended_time_samples = ti.field(
-#             ti.f64, shape=(self.detector.tdi_combination.extended_time_series_length,)
+#             float, shape=(self.detector.tdi_combination.extended_time_series_length,)
 #         )
 #         added_time_samples = (
 #             np.arange(self.detector.tdi_combination.added_time_samples_number)[::-1]
@@ -282,9 +286,10 @@ class FDResponseModelStaticLongWavelength(SingleLinkResponseModel):
 #             )
 #         )
 
+
 #     @ti.func
 #     def _get_shifted_waveform(
-#         self, waveform: ti.types.ndarray(dtype=ti.f64, ndim=2), time: ti.f64
+#         self, waveform: ti.types.ndarray(dtype=float, ndim=2), time: float
 #     ):
 #         dt = self.detector.tdi_data.data_info.delta_time
 #         idx = time // dt
@@ -296,7 +301,7 @@ class FDResponseModelStaticLongWavelength(SingleLinkResponseModel):
 #         return hp, hc
 
 #     def _ensure_waveform_length(self, waveform_container:dict[str, NDArray[np.float64] | float],
-#                                 tc:ti.f64):
+#                                 tc:float):
 #         dt = self.detector.tdi_data.data_info.delta_time
 #         ###
 #         x_max = self._get_x_max()
@@ -314,10 +319,10 @@ class FDResponseModelStaticLongWavelength(SingleLinkResponseModel):
 #     def update_single_link_response(
 #         self,
 #         waveform_container: dict[str, NDArray[np.float64] | float],
-#         lam: ti.f64,
-#         beta: ti.f64,
-#         psi: ti.f64,
-#         tc: ti.f64,
+#         lam: float,
+#         beta: float,
+#         psi: float,
+#         tc: float,
 #     ):
 #         waveform, t0 = self._ensure_waveform_length(waveform_container, tc)
 #         self.update_single_link_response_kernel(
@@ -331,11 +336,11 @@ class FDResponseModelStaticLongWavelength(SingleLinkResponseModel):
 #     @ti.kernel
 #     def update_single_link_response_kernel(
 #         self,
-#         waveform: ti.types.ndarray(dtype=ti.f64, ndim=2),
-#         t0: ti.f64,  # time of the first data point in waveform
-#         lam: ti.f64,
-#         beta: ti.f64,
-#         psi: ti.f64,
+#         waveform: ti.types.ndarray(dtype=float, ndim=2),
+#         t0: float,  # time of the first data point in waveform
+#         lam: float,
+#         beta: float,
+#         psi: float,
 #     ):
 #         pol_tensor = get_polarization_tensor_ssb(lam, beta, psi)  # matrix: 3*3
 #         k = get_gw_propagation_unit_vector(lam, beta)  # vector: 3

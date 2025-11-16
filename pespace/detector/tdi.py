@@ -15,10 +15,10 @@ import taichi.math as tm
 
 from .noise import FrequencyDomainNoiseModel, available_noise_models
 from ..utils.utils import (
-    linear_interpolate,
+    linear_interpolate_kernel,
     complex_numpy_array_dict_to_taichi_field,
     taichi_field_to_complex_numpy_array_dict,
-    ComplexNumber,
+    ti_complex,
     SingleLinkStructReal,
 )
 from ..utils.constants import *
@@ -26,8 +26,8 @@ from ..utils.constants import *
 
 # @ti.func
 # def _TDI_A_FD(
-#     z: ComplexNumber, singlelink_responses: SingleLinksStruct
-# ) -> ComplexNumber:
+#     z: ti_complex, singlelink_responses: SingleLinksStruct
+# ) -> ti_complex:
 #     """
 #     Function for computing A channel of TDI combination in frequency domain.
 
@@ -48,7 +48,7 @@ from ..utils.constants import *
 #         + singlelink_responses["link21"]
 #         + tm.cmul(z, singlelink_responses["link12"])
 #         - tm.cmul(
-#             (ComplexNumber(1, 0) + z),
+#             (ti_complex(1, 0) + z),
 #             (singlelink_responses["link13"]) + singlelink_responses["link31"],
 #         )
 #     ) / tm.sqrt(2)
@@ -56,8 +56,8 @@ from ..utils.constants import *
 
 # @ti.func
 # def _TDI_E_FD(
-#     z: ComplexNumber, singlelink_responses: SingleLinksStruct
-# ) -> ComplexNumber:
+#     z: ti_complex, singlelink_responses: SingleLinksStruct
+# ) -> ti_complex:
 #     """
 #     Function for computing E channel of TDI combination in frequency domain.
 
@@ -74,15 +74,15 @@ from ..utils.constants import *
 #     """
 #     return (
 #         tm.cmul(
-#             (ComplexNumber(1, 0) - z),
+#             (ti_complex(1, 0) - z),
 #             (singlelink_responses["link31"] - singlelink_responses["link13"]),
 #         )
 #         + tm.cmul(
-#             (z + ComplexNumber(2, 0)),
+#             (z + ti_complex(2, 0)),
 #             (singlelink_responses["link32"] - singlelink_responses["link12"]),
 #         )
 #         + tm.cmul(
-#             (ComplexNumber(1, 0) + 2 * z),
+#             (ti_complex(1, 0) + 2 * z),
 #             (singlelink_responses["link23"] - singlelink_responses["link21"]),
 #         )
 #     ) / tm.sqrt(6)
@@ -90,8 +90,8 @@ from ..utils.constants import *
 
 # @ti.func
 # def _TDI_T_FD(
-#     z: ComplexNumber, singlelink_responses: SingleLinksStruct
-# ) -> ComplexNumber:
+#     z: ti_complex, singlelink_responses: SingleLinksStruct
+# ) -> ti_complex:
 #     """
 #     Function for computing T channel of TDI combination in frequency domain.
 
@@ -116,7 +116,7 @@ from ..utils.constants import *
 #                 + singlelink_responses["link31"]
 #                 - singlelink_responses["link13"]
 #             ),
-#             (ComplexNumber(1, 0) - z),
+#             (ti_complex(1, 0) - z),
 #         )
 #     ) / tm.sqrt(3)
 
@@ -273,7 +273,7 @@ class TDIChannelData:
         Initializing `ti.field` for `time_samples` and `td_data`, only for internel calls.
         Call after setting `data_info`. Setting time domain data externally using `set_td_data_from_zero`.
         """
-        self.time_samples = ti.field(ti.f64, (self.data_info.time_series_length,))
+        self.time_samples = ti.field(float, (self.data_info.time_series_length,))
         self.time_samples.from_numpy(self.data_info.time_samples_array)
         self.td_data = ti.Struct.field(
             dict.fromkeys(self.data_info.channels, ti.float64),
@@ -286,11 +286,11 @@ class TDIChannelData:
         Call after setting `data_info`. Setting frequency domain data externally using `set_fd_data_from_zero`.
         """
         self.frequency_samples = ti.field(
-            ti.f64, (self.data_info.frequency_series_length,)
+            float, (self.data_info.frequency_series_length,)
         )
         self.frequency_samples.from_numpy(self.data_info.frequency_samples_array)
         self.fd_data = ti.Struct.field(
-            dict.fromkeys(self.data_info.channels, ComplexNumber),
+            dict.fromkeys(self.data_info.channels, ti_complex),
             shape=(self.data_info.frequency_series_length,),
         )
 
@@ -506,19 +506,20 @@ class TDIChannelData:
             fd_data_numpy = dict.fromkeys(self.data_info.channels)
             td_data_numpy = self.td_data.to_numpy()
 
-            start_time_shift = np.exp(
-                -1j
-                * 2
-                * PI
-                * self.data_info.time_samples_array[0]
-                * self.data_info.full_frequency_samples_array
-            )
+            # start_time_shift = np.exp(
+            #     -1j
+            #     * 2
+            #     * PI
+            #     * self.data_info.time_samples_array[0]
+            #     * self.data_info.full_frequency_samples_array
+            # )
 
             for chan in self.data_info.channels:
                 td_data_chan = td_data_numpy[chan]
                 windowed_data = td_data_chan * weight
                 fd_data_chan = np.fft.rfft(windowed_data)
-                fd_data_chan *= start_time_shift / self.data_info.sampling_frequency
+                # fd_data_chan *= start_time_shift / self.data_info.sampling_frequency
+                fd_data_chan /= self.data_info.sampling_frequency
                 fd_data_chan = fd_data_chan[self.data_info.frequency_mask_array]
                 fd_data_numpy[chan] = fd_data_chan
 
@@ -571,7 +572,7 @@ class TDIChannelData:
                 "sure the updated noise power density is consistent with the stored TDI data."
             )
         self.fd_noise_power_density = ti.Struct.field(
-            dict.fromkeys(self.data_info.channels, ti.f64),
+            dict.fromkeys(self.data_info.channels, float),
             shape=(self.data_info.frequency_series_length,),
         )
         self.fd_noise_power_density.from_numpy(
@@ -632,7 +633,7 @@ class TDIChannelData:
 
         if output_type == "taichi":
             ret = ti.Struct.field(
-                dict.fromkeys(self.data_info.channels, ComplexNumber),
+                dict.fromkeys(self.data_info.channels, ti_complex),
                 shape=(self.data_info.frequency_series_length,),
             )
             complex_numpy_array_dict_to_taichi_field(noise, ret)
@@ -680,7 +681,7 @@ class TDIChannelData:
                     "contained by input is different with the TDI data"
                 )
             input_field = ti.Struct.field(
-                dict.fromkeys(self.data_info.channels, ComplexNumber),
+                dict.fromkeys(self.data_info.channels, ti_complex),
                 shape=(self.data_info.frequency_series_length,),
             )
             complex_numpy_array_dict_to_taichi_field(input, input_field)
@@ -843,7 +844,7 @@ class TDIChannelData:
             noise_data_group = file["noise_data"]
             if "fd_noise_power_density" in noise_data_group:
                 ret_cls.fd_noise_power_density = ti.Struct.field(
-                    dict.fromkeys(ret_cls.data_info.channels, ti.f64),
+                    dict.fromkeys(ret_cls.data_info.channels, float),
                     shape=(ret_cls.data_info.frequency_series_length,),
                 )
                 ret_cls.fd_noise_power_density.from_numpy(
@@ -916,7 +917,7 @@ class TDMichelsonConstantEqualArm(TDICombinationModel):
     def init_tdi_combination_model(self, detector: "InterferometerAntenna") -> None:
         self.detector = weakref.proxy(detector)
         self.detector.tdi_response = ti.Struct.field(
-            dict.fromkeys(self.labels, ti.f64),
+            dict.fromkeys(self.labels, float),
             shape=(self.detector.tdi_data.data_info.time_series_length,),
         )
         self.added_time_samples_number = int(
@@ -938,7 +939,7 @@ class TDMichelsonConstantEqualArm(TDICombinationModel):
         # displeasement of time samples after delays, in the range of [0, 1].
         # constant for each delay in the case of equal-arm, can be computed and cached before the loop.
         # note the num_delay = idx + 1
-        t_frac = ti.field(ti.f64, shape=(self.max_num_delay,))
+        t_frac = ti.field(float, shape=(self.max_num_delay,))
         for i in ti.static(range(self.max_num_delay)):
             num_delay = i + 1
             t_frac[i] = (
@@ -965,7 +966,7 @@ class TDMichelsonConstantEqualArm(TDICombinationModel):
                 for label in ti.static(
                     ["link12", "link21", "link23", "link32", "link31", "link13"]
                 ):
-                    delayed_response[num_delay - 1][label] = linear_interpolate(
+                    delayed_response[num_delay - 1][label] = linear_interpolate_kernel(
                         links_left[label],
                         links_right[label],
                         t_frac[num_delay - 1],
@@ -1094,11 +1095,11 @@ class FDMichelsonConstantEqualArm(TDICombinationModel):
     def init_tdi_combination_model(self, detector: "InterferometerAntenna") -> None:
         self.detector = weakref.proxy(detector)
         self.detector.tdi_response = ti.Struct.field(
-            dict.fromkeys(self.labels, ComplexNumber),
+            dict.fromkeys(self.labels, ti_complex),
             shape=(self.detector.tdi_data.data_info.frequency_series_length,),
         )
         self._cached_field = ti.Struct.field(
-            {"prefactor": ComplexNumber, "delay_factor": ComplexNumber},
+            {"prefactor": ti_complex, "delay_factor": ti_complex},
             shape=(self.detector.tdi_data.data_info.frequency_series_length,),
         )
         self._set_cached_field()
@@ -1111,15 +1112,15 @@ class FDMichelsonConstantEqualArm(TDICombinationModel):
                 * PI
                 * self.detector.tdi_data.frequency_samples[i]
                 * self.detector.orbit_model.arm_length_sec
-                * ComplexNumber([0.0, 1.0])
+                * ti_complex([0.0, 1.0])
             )
 
-            prefactor = ComplexNumber([0.0, 0.0])
+            prefactor = ti_complex([0.0, 0.0])
             if ti.static(self.generation == "1.5"):
-                prefactor = ComplexNumber([1.0, 0.0]) - tm.cpow(delay_factor, 2)
+                prefactor = ti_complex([1.0, 0.0]) - tm.cpow(delay_factor, 2)
             elif ti.static(self.generation == "2.0"):
                 prefactor = (
-                    ComplexNumber([1.0, 0.0])
+                    ti_complex([1.0, 0.0])
                     - tm.cpow(delay_factor, 2)
                     - tm.cpow(delay_factor, 4)
                     + tm.cpow(delay_factor, 6)
@@ -1131,7 +1132,7 @@ class FDMichelsonConstantEqualArm(TDICombinationModel):
     @ti.func
     def _get_X_channel_response(
         delay_factor: ti.template(), singlelink_response: ti.template()
-    ) -> ComplexNumber:
+    ) -> ti_complex:
         """
         Function for computing X channel of TDI combination in frequency domain.
 
@@ -1159,7 +1160,7 @@ class FDMichelsonConstantEqualArm(TDICombinationModel):
     @ti.func
     def _get_Y_channel_response(
         delay_factor: ti.template(), singlelink_response: ti.template()
-    ) -> ComplexNumber:
+    ) -> ti_complex:
         """ """
         return (
             singlelink_response["link21"]
@@ -1174,7 +1175,7 @@ class FDMichelsonConstantEqualArm(TDICombinationModel):
     @ti.func
     def _get_Z_channel_response(
         delay_factor: ti.template(), singlelink_response: ti.template()
-    ) -> ComplexNumber:
+    ) -> ti_complex:
         """ """
         return (
             singlelink_response["link32"]

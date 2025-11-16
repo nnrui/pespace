@@ -7,8 +7,8 @@ def _compute_whittle_likelihood(
     observed_data: ti.template(),
     response_data: ti.template(),
     psd: ti.template(),
-    df: ti.f64,
-) -> ti.f64:
+    df: float,
+) -> float:
     log_l = 0.0
     for i in observed_data:
         inner_product = 0.0
