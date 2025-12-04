@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
 
+import taichi as ti
 import numpy as np
 from numpy import sin, cos
 from numpy.typing import NDArray
@@ -60,6 +61,7 @@ class AnalyticPowerSpectralDensity(FrequencyDomainNoiseModel):
         self,
         frequencies: NDArray,
         tdi_channels: tuple[str, ...],
+        scaling: bool,
         tdi_generation: str,
     ) -> dict[str, NDArray]:
         """Generate psd array for given frequency array"""
@@ -67,6 +69,11 @@ class AnalyticPowerSpectralDensity(FrequencyDomainNoiseModel):
         # Convert displacement noise and acceleration noise to the same dimension of relative frequency
         S_oms = self._S_oms(frequencies)
         S_acc = self._S_acc(frequencies)
+
+        if scaling:
+            scaling_factor = (PC_SI / (MRSUN_SI * MTSUN_SI)) ** 2
+            S_oms *= scaling_factor
+            S_acc *= scaling_factor
 
         if tdi_generation == "1.5":
             prefactor = 1.0
@@ -113,7 +120,12 @@ class AnalyticPowerSpectralDensity(FrequencyDomainNoiseModel):
             else:
                 raise ValueError(f"Unknown TDI channel {chan}.")
             psd *= prefactor
-            psd_dict[chan] = psd
+
+            if ti.lang.impl.current_cfg().default_fp.to_string() == "f32":
+                data_type = np.float32
+            else:
+                data_type = np.float64
+            psd_dict[chan] = np.astype(psd, data_type)
 
         return psd_dict
 

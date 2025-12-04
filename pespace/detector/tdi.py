@@ -218,7 +218,23 @@ class TDIChannelData:
 
     """Storing and manipulating TDI data."""
 
-    def __init__(self) -> None:
+    def __init__(self, scaling: bool = False) -> None:
+        self.scaling = scaling
+        if (not scaling) and (
+            ti.lang.impl.current_cfg().default_fp.to_string() == "f32"
+        ):
+            warnings.warn(
+                "The current default float precision is f32, but no scaling has been applied. "
+                "Please be aware of potential numerical errors or underflow issues. "
+            )
+
+        if ti.lang.impl.current_cfg().default_fp.to_string() == "f32":
+            self._np_fp = np.float32
+            self._np_cp = np.complex64
+        else:
+            self._np_fp = np.float64
+            self._np_cp = np.complex128
+
         self._initialize_state()
 
     def _reset(self) -> None:
@@ -274,7 +290,9 @@ class TDIChannelData:
         Call after setting `data_info`. Setting time domain data externally using `set_td_data_from_zero`.
         """
         self.time_samples = ti.field(float, (self.data_info.time_series_length,))
-        self.time_samples.from_numpy(self.data_info.time_samples_array)
+        self.time_samples.from_numpy(
+            np.astype(self.data_info.time_samples_array, self._np_fp)
+        )
         self.td_data = ti.Struct.field(
             dict.fromkeys(self.data_info.channels, float),
             shape=(self.data_info.time_series_length,),
@@ -288,7 +306,9 @@ class TDIChannelData:
         self.frequency_samples = ti.field(
             float, (self.data_info.frequency_series_length,)
         )
-        self.frequency_samples.from_numpy(self.data_info.frequency_samples_array)
+        self.frequency_samples.from_numpy(
+            np.astype(self.data_info.frequency_samples_array, self._np_fp)
+        )
         self.fd_data = ti.Struct.field(
             dict.fromkeys(self.data_info.channels, ti_complex),
             shape=(self.data_info.frequency_series_length,),
@@ -349,7 +369,9 @@ class TDIChannelData:
             )
 
         self._init_td_data()
-        self.td_data.from_numpy(dict(zip(channels, tdi_data_array)))
+        self.td_data.from_numpy(
+            dict(zip(channels, np.astype(tdi_data_array, self._np_fp)))
+        )
 
         self._reset_flag = True
 
@@ -404,7 +426,13 @@ class TDIChannelData:
             dict(
                 zip(
                     channels,
-                    np.stack((tdi_data_array.real, tdi_data_array.imag), axis=-1),
+                    np.stack(
+                        (
+                            np.astype(tdi_data_array.real, self._np_fp),
+                            np.astype(tdi_data_array.imag, self._np_fp),
+                        ),
+                        axis=-1,
+                    ),
                 )
             )
         )
@@ -521,7 +549,7 @@ class TDIChannelData:
                 # fd_data_chan *= start_time_shift / self.data_info.sampling_frequency
                 fd_data_chan /= self.data_info.sampling_frequency
                 fd_data_chan = fd_data_chan[self.data_info.frequency_mask_array]
-                fd_data_numpy[chan] = fd_data_chan
+                fd_data_numpy[chan] = np.astype(fd_data_chan, self._np_fp)
 
             complex_numpy_array_dict_to_taichi_field(fd_data_numpy, self.fd_data)
 
@@ -579,6 +607,7 @@ class TDIChannelData:
             psd(
                 self.data_info.frequency_samples_array,
                 self.data_info.channels,
+                self.scaling,
                 **model_kwards,
             )
         )
@@ -629,7 +658,7 @@ class TDIChannelData:
             noise_chan = (re + 1j * im)[
                 self.data_info.frequency_mask_array
             ] * self.fd_noise_power_density_numpy[chan] ** 0.5
-            noise[chan] = noise_chan
+            noise[chan] = np.astype(noise_chan, self._np_cp)
 
         if output_type == "taichi":
             ret = ti.Struct.field(
@@ -647,9 +676,7 @@ class TDIChannelData:
     def add_into_td_data(self) -> None:
         raise NotImplementedError()
 
-    def add_into_fd_data(
-        self, input: ti.StructField | dict[str, NDArray]
-    ) -> None:
+    def add_into_fd_data(self, input: ti.StructField | dict[str, NDArray]) -> None:
         if isinstance(input, ti.StructField):
             if not input.shape == (self.data_info.frequency_series_length,):
                 raise ValueError(
