@@ -136,7 +136,7 @@ def get_gw_propagation_unit_vector(
 
 def taichi_field_to_complex_numpy_array_dict(
     field_container: ti.Field,
-) -> dict[str, NDArray[np.complex128]]:
+) -> dict[str, NDArray]:
     """
     Convert a taichi field to a dictionary of complex numpy arrays.
 
@@ -155,7 +155,7 @@ def taichi_field_to_complex_numpy_array_dict(
 
 
 def complex_numpy_array_dict_to_taichi_field(
-    array_dict: dict[str, NDArray[np.complex128]],
+    array_dict: dict[str, NDArray],
     field_container: ti.Field,
 ) -> None:
     """

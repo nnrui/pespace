@@ -16,8 +16,8 @@ def _compute_frequency_domain_likelihood(
     observed: ti.template(),
     response: ti.template(),
     psd: ti.template(),
-    df: ti.f64,
-) -> ti.f64:
+    df: float,
+) -> float:
     log_l = 0.0
     for i in observed:
         inner_product = 0.0

@@ -110,11 +110,11 @@ class InterferometerAntenna:
         pass
 
     @property
-    def tdi_response_numpy(self) -> dict[str, NDArray[np.complex128]]:
+    def tdi_response_numpy(self) -> dict[str, NDArray]:
         return taichi_field_to_complex_numpy_array_dict(self.tdi_response)
 
     @property
-    def single_link_response_numpy(self) -> dict[str, NDArray[np.complex128]]:
+    def single_link_response_numpy(self) -> dict[str, NDArray]:
         return taichi_field_to_complex_numpy_array_dict(self.single_link_response)
 
 
@@ -300,7 +300,7 @@ class FDResponseModelStaticLongWavelength(SingleLinkResponseModel):
 #         hc = linear_interpolate(hc_left, hc_right, frac)
 #         return hp, hc
 
-#     def _ensure_waveform_length(self, waveform_container:dict[str, NDArray[np.float64] | float],
+#     def _ensure_waveform_length(self, waveform_container:dict[str, NDArray | float],
 #                                 tc:float):
 #         dt = self.detector.tdi_data.data_info.delta_time
 #         ###
@@ -318,7 +318,7 @@ class FDResponseModelStaticLongWavelength(SingleLinkResponseModel):
 
 #     def update_single_link_response(
 #         self,
-#         waveform_container: dict[str, NDArray[np.float64] | float],
+#         waveform_container: dict[str, NDArray | float],
 #         lam: float,
 #         beta: float,
 #         psi: float,

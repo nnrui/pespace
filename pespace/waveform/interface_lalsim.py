@@ -215,7 +215,7 @@ Mf_ISCO = 1.0 / (6.0 ** (3 / 2) * PI)
 
 def get_PN_d_phase(
     parameters: dict[str, float],
-    frequency_samples: "NDArray[np.float64]",
+    frequency_samples: "NDArray",
 ):
     """ """
     M_total = parameters["mass_1"] + parameters["mass_2"]

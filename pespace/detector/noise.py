@@ -12,10 +12,10 @@ class FrequencyDomainNoiseModel(ABC):
     @abstractmethod
     def power_spectral_density_array(
         self,
-        frequencies: NDArray[np.float64],
+        frequencies: NDArray,
         tdi_channels: tuple[str, ...],
         tdi_generation: str,
-    ) -> dict[str, NDArray[np.float64]]:
+    ) -> dict[str, NDArray]:
         pass
 
     def __init_subclass__(cls) -> None:
@@ -41,14 +41,14 @@ class AnalyticPowerSpectralDensity(FrequencyDomainNoiseModel):
     acc_noise_level: float
     arm_length_sec: float
 
-    def _S_oms(self, frequencies: NDArray[np.float64]) -> NDArray[np.float64]:
+    def _S_oms(self, frequencies: NDArray) -> NDArray:
         return (
             self.OMS_noise_level
             * (1.0 + (2.0e-3 / frequencies) ** 4)
             * (2.0 * PI * frequencies / C_SI) ** 2
         )
 
-    def _S_acc(self, frequencies: NDArray[np.float64]) -> NDArray[np.float64]:
+    def _S_acc(self, frequencies: NDArray) -> NDArray:
         return (
             self.acc_noise_level
             * (1.0 + (0.4e-3 / frequencies) ** 2)
@@ -58,10 +58,10 @@ class AnalyticPowerSpectralDensity(FrequencyDomainNoiseModel):
 
     def power_spectral_density_array(
         self,
-        frequencies: NDArray[np.float64],
+        frequencies: NDArray,
         tdi_channels: tuple[str, ...],
         tdi_generation: str,
-    ) -> dict[str, NDArray[np.float64]]:
+    ) -> dict[str, NDArray]:
         """Generate psd array for given frequency array"""
 
         # Convert displacement noise and acceleration noise to the same dimension of relative frequency
@@ -124,10 +124,10 @@ class TianQinAnalyticPowerSpectralDensity(AnalyticPowerSpectralDensity):
     https://arxiv.org/abs/2309.15020
     """
 
-    def _S_oms(self, frequencies: NDArray[np.float64]) -> NDArray[np.float64]:
+    def _S_oms(self, frequencies: NDArray) -> NDArray:
         return self.OMS_noise_level * (2.0 * PI * frequencies / C_SI) ** 2
 
-    def _S_acc(self, frequencies: NDArray[np.float64]) -> NDArray[np.float64]:
+    def _S_acc(self, frequencies: NDArray) -> NDArray:
         return (
             self.acc_noise_level
             * (1.0 + 0.1e-3 / frequencies)

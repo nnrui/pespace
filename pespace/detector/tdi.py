@@ -166,11 +166,11 @@ class DataInformation:
     sampling_frequency: float = field(init=False)
     delta_frequency: float = field(init=False)
     time_series_length: int = field(init=False)
-    time_samples_array: NDArray[np.float64] = field(init=False)
+    time_samples_array: NDArray = field(init=False)
     full_frequency_series_length: int = field(init=False)
-    full_frequency_samples_array: NDArray[np.float64] = field(init=False)
+    full_frequency_samples_array: NDArray = field(init=False)
     frequency_mask_array: NDArray[np.bool_] = field(init=False)
-    frequency_samples_array: NDArray[np.float64] = field(init=False)
+    frequency_samples_array: NDArray = field(init=False)
     frequency_series_length: int = field(init=False)
 
     def __post_init__(self) -> None:
@@ -276,7 +276,7 @@ class TDIChannelData:
         self.time_samples = ti.field(float, (self.data_info.time_series_length,))
         self.time_samples.from_numpy(self.data_info.time_samples_array)
         self.td_data = ti.Struct.field(
-            dict.fromkeys(self.data_info.channels, ti.float64),
+            dict.fromkeys(self.data_info.channels, float),
             shape=(self.data_info.time_series_length,),
         )
 
@@ -302,7 +302,7 @@ class TDIChannelData:
         channels: tuple[str, ...],
         duration: float,
         delta_time: float,
-        tdi_data_array: NDArray[np.float64],
+        tdi_data_array: NDArray,
         start_time: float = 0.0,
         minimum_frequency: float = 1e-5,
         maximum_frequency: float = 0.1,
@@ -358,7 +358,7 @@ class TDIChannelData:
         channels: tuple[str, ...],
         duration: float,
         delta_time: float,
-        tdi_data_array: NDArray[np.complex128],
+        tdi_data_array: NDArray,
         start_time: float = 0.0,
         minimum_frequency: float = 1e-5,
         maximum_frequency: float = 0.1,
@@ -482,7 +482,7 @@ class TDIChannelData:
 
     def set_fd_data_from_td(
         self,
-        window: None | float | str | tuple[str | float] | NDArray[np.float64] = None,
+        window: None | float | str | tuple[str | float] | NDArray = None,
     ) -> None:
         """see scipy.signal.get_window for more details about window parameter
         TODO: check the normalizing factor
@@ -527,7 +527,7 @@ class TDIChannelData:
 
     def set_td_data_from_fd(
         self,
-        window: None | float | str | tuple[str | float] | NDArray[np.float64] = None,
+        window: None | float | str | tuple[str | float] | NDArray = None,
     ) -> None:
         """By default, irfft assumes an even output length which puts the last entry at the Nyquist frequency;
         To avoid losing information, the correct length of the real input must be given.
@@ -588,7 +588,7 @@ class TDIChannelData:
 
     def get_fd_noise_realization(
         self, seed=None, output_type: str = "taichi"
-    ) -> ti.StructField | dict[str, NDArray[np.complex128]]:
+    ) -> ti.StructField | dict[str, NDArray]:
         """
         Generating a noise realization in frequency domian.
         there is no sanity check
@@ -648,7 +648,7 @@ class TDIChannelData:
         raise NotImplementedError()
 
     def add_into_fd_data(
-        self, input: ti.StructField | dict[str, NDArray[np.complex128]]
+        self, input: ti.StructField | dict[str, NDArray]
     ) -> None:
         if isinstance(input, ti.StructField):
             if not input.shape == (self.data_info.frequency_series_length,):
@@ -863,19 +863,19 @@ class TDIChannelData:
         return ret_cls
 
     @property
-    def td_data_numpy(self) -> dict[str, NDArray[np.float64]]:
+    def td_data_numpy(self) -> dict[str, NDArray]:
         return self.td_data.to_numpy()
 
     @property
-    def fd_data_numpy(self) -> dict[str, NDArray[np.complex128]]:
+    def fd_data_numpy(self) -> dict[str, NDArray]:
         return taichi_field_to_complex_numpy_array_dict(self.fd_data)
 
     @property
-    def wd_data_numpy(self) -> dict[str, NDArray[np.complex128]]:
+    def wd_data_numpy(self) -> dict[str, NDArray]:
         return self.wd_data.to_numpy()
 
     @property
-    def fd_noise_power_density_numpy(self) -> dict[str, NDArray[np.float64]]:
+    def fd_noise_power_density_numpy(self) -> dict[str, NDArray]:
         return self.fd_noise_power_density.to_numpy()
 
 
