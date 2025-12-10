@@ -1124,6 +1124,8 @@ class FDMichelsonConstantEqualArm(TDICombinationModel):
         self.detector.tdi_response = ti.Struct.field(
             dict.fromkeys(self.labels, ti_complex),
             shape=(self.detector.tdi_data.data_info.frequency_series_length,),
+            needs_grad=self.detector.needs_grad,
+            needs_dual=self.detector.needs_dual,
         )
         self._cached_field = ti.Struct.field(
             {"prefactor": ti_complex, "delay_factor": ti_complex},

@@ -15,6 +15,7 @@ from ..utils.utils import (
     complex_numpy_array_dict_to_taichi_field,
     get_polarization_tensor_ssb,
     get_gw_propagation_unit_vector,
+    get_pattern_function,
     sinc,
     noise_weighted_inner_product,
     ti_complex,
@@ -39,6 +40,8 @@ class InterferometerAntenna:
         orbit_model: str | OrbitModelBase,
         response_model: "SingleLinkResponseModel",
         tdi_combination: "TDICombinationModel",
+        needs_grad: bool = False,
+        needs_dual: bool = False,
     ) -> None:
         """ """
         self.name = name
@@ -60,12 +63,27 @@ class InterferometerAntenna:
         self.response_model = response_model
         self.tdi_combination = tdi_combination
 
+        self.needs_grad = needs_grad
+        self.needs_dual = needs_dual
+
+        self.params = ti.Struct.field(
+            dict(lam=float, beta=float, psi=float, tc=float),
+            shape=(),
+            needs_grad=self.needs_grad,
+            needs_dual=self.needs_dual,
+        )
         self.tdi_response = None
         self.single_link_response = None
 
         # note the length of single_link_response in TD depending on tdi combination model, init the response_model after the tdi_combination
         self.tdi_combination.init_tdi_combination_model(self)
         self.response_model.init_single_link_response_model(self)
+
+    def update_input_params(self, lam, beta, psi, tc) -> None:
+        self.params[None].lam = lam
+        self.params[None].beta = beta
+        self.params[None].psi = psi
+        self.params[None].tc = tc
 
     def update_detector_response(
         self,
@@ -75,7 +93,9 @@ class InterferometerAntenna:
         psi: float,
         tc: float,
     ) -> None:
-        self.response_model.update_single_link_response(waveform, lam, beta, psi, tc)
+        # for auto-diff, reading params field must be done in ti scope
+        self.update_input_params(lam, beta, psi, tc)
+        self.response_model.update_single_link_response(waveform)
         self.tdi_combination.update_tdi_response()
 
     def inject_signal(
@@ -132,40 +152,68 @@ class FDResponseModelMarset2018(SingleLinkResponseModel):
         self.detector = weakref.proxy(detector)
         self.detector.single_link_response = SingleLinkStructComplex.field(
             shape=(self.detector.tdi_data.data_info.frequency_series_length,),
+            needs_grad=self.detector.needs_grad,
+            needs_dual=self.detector.needs_dual,
+        )
+
+        self._geometry_terms = ti.Struct.field(
+            dict(pol_tensor=PolarizationStruct, prop_direc=ti.types.vector(3, float)),
+            shape=(),
+            needs_grad=self.detector.needs_grad,
+            needs_dual=self.detector.needs_dual,
+        )
+
+    def update_single_link_response(self, waveform: ti.StructField):
+        self._update_geometry_terms()
+        self._loop_frequencies(waveform)
+
+    @ti.kernel
+    def _update_geometry_terms(self):
+        self._geometry_terms[None].pol_tensor = get_polarization_tensor_ssb(
+            self.detector.params[None].lam,
+            self.detector.params[None].beta,
+            self.detector.params[None].psi,
+        )
+        self._geometry_terms[None].prop_direc = get_gw_propagation_unit_vector(
+            self.detector.params[None].lam,
+            self.detector.params[None].beta,
         )
 
     @ti.kernel
-    def update_single_link_response(
-        self,
-        waveform: ti.template(),
-        lam: float,
-        beta: float,
-        psi: float,
-        tc: float,
-    ):
-        pol_tensor = get_polarization_tensor_ssb(lam, beta, psi)  # matrix: 3*3
-        prop_direc = get_gw_propagation_unit_vector(lam, beta)  # vector: 3
-
+    def _loop_frequencies(self, waveform: ti.template()):
+        # put the loop in a seperated kernel for the rule required by auto-diff
         # the waveform_container uses the AOS layout, operating modes in the inner loop
         for i in self.detector.single_link_response:
             fi = self.detector.tdi_data.frequency_samples[i]
-            cexp_tshift = tm.cexp(ti_complex([0.0, -2.0 * PI * fi * tc]))
+            cexp_tshift = tm.cexp(
+                ti_complex([0.0, -2.0 * PI * fi * self.detector.params[None].tc])
+            )
             links = SingleLinkStructComplex()
 
             if ti.static(sorted(waveform.keys) == sorted(["cross", "plus", "tf"])):
                 hp = tm.cmul(waveform[i].plus, cexp_tshift)
                 hc = tm.cmul(waveform[i].cross, cexp_tshift)
-                tf = waveform[i].tf + tc
+                tf = waveform[i].tf + self.detector.params[None].tc
                 links = self._get_responses_at_fi(
-                    hp, hc, tf, fi, pol_tensor, prop_direc
+                    self._geometry_terms[None].pol_tensor,
+                    self._geometry_terms[None].prop_direc,
+                    hp,
+                    hc,
+                    tf,
+                    fi,
                 )
             else:
                 for mode in ti.static(waveform.keys):
                     hp_mode = tm.cmul(waveform[i][mode].plus, cexp_tshift)
                     hc_mode = tm.cmul(waveform[i][mode].cross, cexp_tshift)
-                    tf_mode = waveform[i][mode].tf + tc
+                    tf_mode = waveform[i][mode].tf + self.detector.params[None].tc
                     links_mode = self._get_responses_at_fi(
-                        hp_mode, hc_mode, tf_mode, fi, pol_tensor, prop_direc
+                        self._geometry_terms[None].pol_tensor,
+                        self._geometry_terms[None].prop_direc,
+                        hp_mode,
+                        hc_mode,
+                        tf_mode,
+                        fi,
                     )
                     links.link12 += links_mode.link12
                     links.link21 += links_mode.link21
@@ -179,37 +227,31 @@ class FDResponseModelMarset2018(SingleLinkResponseModel):
     @ti.func
     def _get_responses_at_fi(
         self,
+        pol_tensor: PolarizationStruct,
+        k: ti.types.vector(3, float),
         hp: ti_complex,
         hc: ti_complex,
         tf: float,
         fi: float,
-        pol_tensor: PolarizationStruct,
-        k: ti.types.vector(3, float),
     ) -> SingleLinkStructComplex:
         det_vectors = self.detector.orbit_model.get_constellation_vectors(tf)
         # n1: unit vector of 2 -> 3
-        n1_h_n1 = (
-            det_vectors.n1 @ pol_tensor.plus @ det_vectors.n1 * hp
-            + det_vectors.n1 @ pol_tensor.cross @ det_vectors.n1 * hc
-        )  # ti_complex
+        pattern_p_n1, pattern_c_n1 = get_pattern_function(pol_tensor, det_vectors.n1)
+        n1_h_n1 = pattern_p_n1 * hp + pattern_c_n1 * hc  # ti_complex
         # n2: unit vector of 3 -> 1
-        n2_h_n2 = (
-            det_vectors.n2 @ pol_tensor.plus @ det_vectors.n2 * hp
-            + det_vectors.n2 @ pol_tensor.cross @ det_vectors.n2 * hc
-        )  # ti_complex
+        pattern_p_n2, pattern_c_n2 = get_pattern_function(pol_tensor, det_vectors.n2)
+        n2_h_n2 = pattern_p_n2 * hp + pattern_c_n2 * hc  # ti_complex
         # n3: unit vector of 1 -> 2
-        n3_h_n3 = (
-            det_vectors.n3 @ pol_tensor.plus @ det_vectors.n3 * hp
-            + det_vectors.n3 @ pol_tensor.cross @ det_vectors.n3 * hc
-        )  # ti_complex
+        pattern_p_n3, pattern_c_n3 = get_pattern_function(pol_tensor, det_vectors.n3)
+        n3_h_n3 = pattern_p_n3 * hp + pattern_c_n3 * hc  # ti_complex
 
-        k_n1 = k @ det_vectors.n1  # scalar
-        k_n2 = k @ det_vectors.n2  # scalar
-        k_n3 = k @ det_vectors.n3  # scalar
+        k_n1 = k.dot(det_vectors.n1)  # scalar
+        k_n2 = k.dot(det_vectors.n2)  # scalar
+        k_n3 = k.dot(det_vectors.n3)  # scalar
 
-        k_x1_x2 = k @ (det_vectors.x1 + det_vectors.x2)  # scalar
-        k_x2_x3 = k @ (det_vectors.x2 + det_vectors.x3)  # scalar
-        k_x3_x1 = k @ (det_vectors.x3 + det_vectors.x1)  # scalar
+        k_x1_x2 = k.dot(det_vectors.x1 + det_vectors.x2)  # scalar
+        k_x2_x3 = k.dot(det_vectors.x2 + det_vectors.x3)  # scalar
+        k_x3_x1 = k.dot(det_vectors.x3 + det_vectors.x1)  # scalar
 
         pi_f_L = PI * fi * self.detector.orbit_model.arm_length_sec  # scalar
         sinc32 = sinc(pi_f_L * (1.0 - k_n1))  # scalar
@@ -239,6 +281,112 @@ class FDResponseModelMarset2018(SingleLinkResponseModel):
         link13 = sinc13 * tm.cmul(tm.cmul(prefactor, n2_h_n2), exp31)  # ti_complex
 
         return SingleLinkStructComplex(link12, link21, link23, link32, link31, link13)
+
+    # @ti.func
+    # def _get_responses_at_fi(
+    #     self,
+    #     hp: ti_complex,
+    #     hc: ti_complex,
+    #     tf: float,
+    #     fi: float,
+    #     pol_tensor: PolarizationStruct,
+    #     k: ti.types.vector(3, float),
+    # ) -> SingleLinkStructComplex:
+    #     det_vectors = self.detector.orbit_model.get_constellation_vectors(tf)
+    #     # n1: unit vector of 2 -> 3
+    #     n1_h_n1 = (
+    #         det_vectors.n1 @ pol_tensor.plus @ det_vectors.n1 * hp
+    #         + det_vectors.n1 @ pol_tensor.cross @ det_vectors.n1 * hc
+    #     )  # ti_complex
+    #     # n2: unit vector of 3 -> 1
+    #     n2_h_n2 = (
+    #         det_vectors.n2 @ pol_tensor.plus @ det_vectors.n2 * hp
+    #         + det_vectors.n2 @ pol_tensor.cross @ det_vectors.n2 * hc
+    #     )  # ti_complex
+    #     # n3: unit vector of 1 -> 2
+    #     n3_h_n3 = (
+    #         det_vectors.n3 @ pol_tensor.plus @ det_vectors.n3 * hp
+    #         + det_vectors.n3 @ pol_tensor.cross @ det_vectors.n3 * hc
+    #     )  # ti_complex
+
+    #     k_n1 = k @ det_vectors.n1  # scalar
+    #     k_n2 = k @ det_vectors.n2  # scalar
+    #     k_n3 = k @ det_vectors.n3  # scalar
+
+    #     k_x1_x2 = k @ (det_vectors.x1 + det_vectors.x2)  # scalar
+    #     k_x2_x3 = k @ (det_vectors.x2 + det_vectors.x3)  # scalar
+    #     k_x3_x1 = k @ (det_vectors.x3 + det_vectors.x1)  # scalar
+
+    #     pi_f_L = PI * fi * self.detector.orbit_model.arm_length_sec  # scalar
+    #     sinc32 = sinc(pi_f_L * (1.0 - k_n1))  # scalar
+    #     sinc23 = sinc(pi_f_L * (1.0 + k_n1))  # scalar
+    #     sinc13 = sinc(pi_f_L * (1.0 - k_n2))  # scalar
+    #     sinc31 = sinc(pi_f_L * (1.0 + k_n2))  # scalar
+    #     sinc21 = sinc(pi_f_L * (1.0 - k_n3))  # scalar
+    #     sinc12 = sinc(pi_f_L * (1.0 + k_n3))  # scalar
+
+    #     common_exp = -PI * fi * ti_complex([0.0, 1.0])  # ti_complex
+    #     exp12 = tm.cexp(
+    #         common_exp * (self.detector.orbit_model.arm_length_sec + k_x1_x2)
+    #     )  # ti_complex
+    #     exp23 = tm.cexp(
+    #         common_exp * (self.detector.orbit_model.arm_length_sec + k_x2_x3)
+    #     )  # ti_complex
+    #     exp31 = tm.cexp(
+    #         common_exp * (self.detector.orbit_model.arm_length_sec + k_x3_x1)
+    #     )  # ti_complex
+
+    #     prefactor = -pi_f_L * ti_complex([0.0, 1.0])  # ti_complex
+    #     link12 = sinc12 * tm.cmul(tm.cmul(prefactor, n3_h_n3), exp12)  # ti_complex
+    #     link21 = sinc21 * tm.cmul(tm.cmul(prefactor, n3_h_n3), exp12)  # ti_complex
+    #     link23 = sinc23 * tm.cmul(tm.cmul(prefactor, n1_h_n1), exp23)  # ti_complex
+    #     link32 = sinc32 * tm.cmul(tm.cmul(prefactor, n1_h_n1), exp23)  # ti_complex
+    #     link31 = sinc31 * tm.cmul(tm.cmul(prefactor, n2_h_n2), exp31)  # ti_complex
+    #     link13 = sinc13 * tm.cmul(tm.cmul(prefactor, n2_h_n2), exp31)  # ti_complex
+
+    #     return SingleLinkStructComplex(link12, link21, link23, link32, link31, link13)
+
+    # @ti.kernel
+    # def update_single_link_response_old(
+    #     self,
+    #     waveform: ti.template(),
+    #     lam: float,
+    #     beta: float,
+    #     psi: float,
+    #     tc: float,
+    # ):
+    #     pol_tensor = get_polarization_tensor_ssb(lam, beta, psi)  # matrix: 3*3
+    #     prop_direc = get_gw_propagation_unit_vector(lam, beta)  # vector: 3
+
+    #     # the waveform_container uses the AOS layout, operating modes in the inner loop
+    #     for i in self.detector.single_link_response:
+    #         fi = self.detector.tdi_data.frequency_samples[i]
+    #         cexp_tshift = tm.cexp(ti_complex([0.0, -2.0 * PI * fi * tc]))
+    #         links = SingleLinkStructComplex()
+
+    #         if ti.static(sorted(waveform.keys) == sorted(["cross", "plus", "tf"])):
+    #             hp = tm.cmul(waveform[i].plus, cexp_tshift)
+    #             hc = tm.cmul(waveform[i].cross, cexp_tshift)
+    #             tf = waveform[i].tf + tc
+    #             links = self._get_responses_at_fi(
+    #                 hp, hc, tf, fi, pol_tensor, prop_direc
+    #             )
+    #         else:
+    #             for mode in ti.static(waveform.keys):
+    #                 hp_mode = tm.cmul(waveform[i][mode].plus, cexp_tshift)
+    #                 hc_mode = tm.cmul(waveform[i][mode].cross, cexp_tshift)
+    #                 tf_mode = waveform[i][mode].tf + tc
+    #                 links_mode = self._get_responses_at_fi(
+    #                     hp_mode, hc_mode, tf_mode, fi, pol_tensor, prop_direc
+    #                 )
+    #                 links.link12 += links_mode.link12
+    #                 links.link21 += links_mode.link21
+    #                 links.link23 += links_mode.link23
+    #                 links.link32 += links_mode.link32
+    #                 links.link31 += links_mode.link31
+    #                 links.link13 += links_mode.link13
+
+    #         self.detector.single_link_response[i] = links
 
 
 class FDResponseModelLongWavelength(SingleLinkResponseModel):
