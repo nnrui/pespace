@@ -21,7 +21,7 @@ ConstellationVectorStruct = ti.types.struct(
 
 class OrbitModelBase(ABC):
     @abstractmethod
-    def get_constellation_vectors(self, time: float) -> ConstellationVectorStruct:
+    def update_detector_vectors(self, out: ti.template(), time: float):
         pass
 
     # Since currently only analystic Keplerian orbit models where the armlength is a
@@ -87,7 +87,7 @@ class KeplerianGeocentric(OrbitModelBase):
         return self.arm_length / C_SI
 
     @ti.func
-    def get_constellation_vectors(self, time: float) -> ConstellationVectorStruct:
+    def update_detector_vectors(self, out: ti.template(), time: float):
         # alpha: revolution ortial phase
         alpha = self.omega_revolution * time + self.revolution_initial
         # kappa_n: rotaion phase for each node
@@ -100,39 +100,49 @@ class KeplerianGeocentric(OrbitModelBase):
         sk2 = tm.sin(kappa_2)
         ck3 = tm.cos(kappa_3)
         sk3 = tm.sin(kappa_3)
+
+        # set the elements of vectors manually to avoid the assertion failure of !operand->is<AllocaStmt>()
         # vectors of each node in the detector-center-ecliptic coordinate
         # xn_det = xn - x0
-        node1_det = self.r_det_sec * ti.Vector(
-            [
-                self.sbeta_ref * self.clam_ref * sk1 + self.slam_ref * ck1,
-                self.sbeta_ref * self.slam_ref * sk1 - self.clam_ref * ck1,
-                -self.cbeta_ref * sk1,
-            ]
+        node1_det = ti.Vector([0.0, 0.0, 0.0])
+        node1_det[0] = self.r_det_sec * (
+            self.sbeta_ref * self.clam_ref * sk1 + self.slam_ref * ck1
         )
-        node2_det = self.r_det_sec * ti.Vector(
-            [
-                self.sbeta_ref * self.clam_ref * sk2 + self.slam_ref * ck2,
-                self.sbeta_ref * self.slam_ref * sk2 - self.clam_ref * ck2,
-                -self.cbeta_ref * sk2,
-            ]
+        node1_det[1] = self.r_det_sec * (
+            self.sbeta_ref * self.slam_ref * sk1 - self.clam_ref * ck1
         )
-        node3_det = self.r_det_sec * ti.Vector(
-            [
-                self.sbeta_ref * self.clam_ref * sk3 + self.slam_ref * ck3,
-                self.sbeta_ref * self.slam_ref * sk3 - self.clam_ref * ck3,
-                -self.cbeta_ref * sk3,
-            ]
-        )
-        x0 = ti.Vector([tm.cos(alpha), tm.sin(alpha), 0.0]) * self.AU_sec
+        node1_det[2] = self.r_det_sec * (-self.cbeta_ref * sk1)
 
-        return ConstellationVectorStruct(
-            n1=(node3_det - node2_det) / self.arm_length_sec,
-            n2=(node1_det - node3_det) / self.arm_length_sec,
-            n3=(node2_det - node1_det) / self.arm_length_sec,
-            x1=node1_det + x0,
-            x2=node2_det + x0,
-            x3=node3_det + x0,
+        node2_det = ti.Vector([0.0, 0.0, 0.0])
+        node2_det[0] = self.r_det_sec * (
+            self.sbeta_ref * self.clam_ref * sk2 + self.slam_ref * ck2
         )
+        node2_det[1] = self.r_det_sec * (
+            self.sbeta_ref * self.slam_ref * sk2 - self.clam_ref * ck2
+        )
+        node2_det[2] = self.r_det_sec * (-self.cbeta_ref * sk2)
+
+        node3_det = ti.Vector([0.0, 0.0, 0.0])
+        node3_det[0] = self.r_det_sec * (
+            self.sbeta_ref * self.clam_ref * sk3 + self.slam_ref * ck3
+        )
+        node3_det[1] = self.r_det_sec * (
+            self.sbeta_ref * self.slam_ref * sk3 - self.clam_ref * ck3
+        )
+        node3_det[2] = self.r_det_sec * (-self.cbeta_ref * sk3)
+
+        x0 = ti.Vector([0.0, 0.0, 0.0])
+        x0[0] = self.AU_sec * tm.cos(alpha)
+        x0[1] = self.AU_sec * tm.sin(alpha)
+        x0[2] = 0.0
+
+        for i in ti.static(range(3)):
+            out.n1[i] = (node3_det[i] - node2_det[i]) / self.arm_length_sec
+            out.n2[i] = (node1_det[i] - node3_det[i]) / self.arm_length_sec
+            out.n3[i] = (node2_det[i] - node1_det[i]) / self.arm_length_sec
+            out.x1[i] = node1_det[i] + x0[i]
+            out.x2[i] = node2_det[i] + x0[i]
+            out.x3[i] = node3_det[i] + x0[i]
 
 
 @ti.data_oriented
@@ -181,46 +191,84 @@ class KaplerianHeliocentric(OrbitModelBase):
         return self.arm_length / C_SI
 
     @ti.func
-    def get_constellation_vectors(self, time: float) -> ConstellationVectorStruct:
+    def update_detector_vectors(self, out: ti.template(), time: float):
         # alpha: revolution ortial phase
         alpha = self.omega * time + self.revolution_initial
         ca = tm.cos(alpha)
         sa = tm.sin(alpha)
         ca_pow2 = ca * ca
         sa_pow2 = sa * sa
+
+        # set the elements of vectors manually to avoid the assertion failure of !operand->is<AllocaStmt>()
         # vectors of each spacecraft in the solar system barycentric coordinate
         # xn_ssb = xn_det_ssb + x0_ssb
-        x1_det = self.r_prime * ti.Vector(
-            [
-                sa * ca * self.sk1 - (1 + sa_pow2) * self.ck1,
-                sa * ca * self.ck1 - (1 + ca_pow2) * self.sk1,
-                -self.sqrt3 * (ca * self.ck1 + sa * self.sk1),
-            ]
-        )
-        x2_det = self.r_prime * ti.Vector(
-            [
-                sa * ca * self.sk2 - (1 + sa_pow2) * self.ck2,
-                sa * ca * self.ck2 - (1 + ca_pow2) * self.sk2,
-                -self.sqrt3 * (ca * self.ck2 + sa * self.sk2),
-            ]
-        )
-        x3_det = self.r_prime * ti.Vector(
-            [
-                sa * ca * self.sk3 - (1 + sa_pow2) * self.ck3,
-                sa * ca * self.ck3 - (1 + ca_pow2) * self.sk3,
-                -self.sqrt3 * (ca * self.ck3 + sa * self.sk3),
-            ]
-        )
-        x0 = ti.Vector([ca, sa, 0.0]) * self.AU_sec
+        x1_det = ti.Vector([0.0, 0.0, 0.0])
+        x1_det[0] = self.r_prime * (sa * ca * self.sk1 - (1 + sa_pow2) * self.ck1)
+        x1_det[1] = self.r_prime * (sa * ca * self.ck1 - (1 + ca_pow2) * self.sk1)
+        x1_det[2] = self.r_prime * (-self.sqrt3 * (ca * self.ck1 + sa * self.sk1))
 
-        return ConstellationVectorStruct(
-            n1=(x3_det - x2_det) / self.arm_length_sec,
-            n2=(x1_det - x3_det) / self.arm_length_sec,
-            n3=(x2_det - x1_det) / self.arm_length_sec,
-            x1=x1_det + x0,
-            x2=x2_det + x0,
-            x3=x3_det + x0,
-        )
+        x2_det = ti.Vector([0.0, 0.0, 0.0])
+        x2_det[0] = self.r_prime * (sa * ca * self.sk2 - (1 + sa_pow2) * self.ck2)
+        x2_det[1] = self.r_prime * (sa * ca * self.ck2 - (1 + ca_pow2) * self.sk2)
+        x2_det[2] = self.r_prime * (-self.sqrt3 * (ca * self.ck2 + sa * self.sk2))
+
+        x3_det = ti.Vector([0.0, 0.0, 0.0])
+        x3_det[0] = self.r_prime * (sa * ca * self.sk3 - (1 + sa_pow2) * self.ck3)
+        x3_det[1] = self.r_prime * (sa * ca * self.ck3 - (1 + ca_pow2) * self.sk3)
+        x3_det[2] = self.r_prime * (-self.sqrt3 * (ca * self.ck3 + sa * self.sk3))
+
+        x0 = ti.Vector([0.0, 0.0, 0.0])
+        x0[0] = self.AU_sec * ca
+        x0[1] = self.AU_sec * sa
+        x0[2] = 0.0
+
+        for i in ti.static(range(3)):
+            out.n1[i] = (x3_det[i] - x2_det[i]) / self.arm_length_sec
+            out.n2[i] = (x1_det[i] - x3_det[i]) / self.arm_length_sec
+            out.n3[i] = (x2_det[i] - x1_det[i]) / self.arm_length_sec
+            out.x1[i] = x1_det[i] + x0[i]
+            out.x2[i] = x2_det[i] + x0[i]
+            out.x3[i] = x3_det[i] + x0[i]
+
+    # @ti.func
+    # def update_detector_vectors(self, out: ti.template(), time: float):
+    #     # alpha: revolution ortial phase
+    #     alpha = self.omega * time + self.revolution_initial
+    #     ca = tm.cos(alpha)
+    #     sa = tm.sin(alpha)
+    #     ca_pow2 = ca * ca
+    #     sa_pow2 = sa * sa
+
+    #     # set the elements of vectors manually to avoid the assertion failure of !operand->is<AllocaStmt>()
+    #     # vectors of each spacecraft in the solar system barycentric coordinate
+    #     # xn_ssb = xn_det_ssb + x0_ssb
+    #     x1_det = ti.Vector([0.0, 0.0, 0.0])
+    #     x1_det[0] = self.r_prime * (sa * ca * self.sk1 - (1 + sa_pow2) * self.ck1)
+    #     x1_det[1] = self.r_prime * (sa * ca * self.ck1 - (1 + ca_pow2) * self.sk1)
+    #     x1_det[2] = self.r_prime * (-self.sqrt3 * (ca * self.ck1 + sa * self.sk1))
+
+    #     x2_det = ti.Vector([0.0, 0.0, 0.0])
+    #     x2_det[0] = self.r_prime * (sa * ca * self.sk2 - (1 + sa_pow2) * self.ck2)
+    #     x2_det[1] = self.r_prime * (sa * ca * self.ck2 - (1 + ca_pow2) * self.sk2)
+    #     x2_det[2] = self.r_prime * (-self.sqrt3 * (ca * self.ck2 + sa * self.sk2))
+
+    #     x3_det = ti.Vector([0.0, 0.0, 0.0])
+    #     x3_det[0] = self.r_prime * (sa * ca * self.sk3 - (1 + sa_pow2) * self.ck3)
+    #     x3_det[1] = self.r_prime * (sa * ca * self.ck3 - (1 + ca_pow2) * self.sk3)
+    #     x3_det[2] = self.r_prime * (-self.sqrt3 * (ca * self.ck3 + sa * self.sk3))
+
+    #     x0 = ti.Vector([0.0, 0.0, 0.0])
+    #     x0[0] = self.AU_sec * ca
+    #     x0[1] = self.AU_sec * sa
+    #     x0[2] = 0.0
+
+    #     for i in ti.static(range(3)):
+    #         out[None].n1[i] = (x3_det[i] - x2_det[i]) / self.arm_length_sec
+    #         out[None].n2[i] = (x1_det[i] - x3_det[i]) / self.arm_length_sec
+    #         out[None].n3[i] = (x2_det[i] - x1_det[i]) / self.arm_length_sec
+    #         out[None].x1[i] = x1_det[i] + x0[i]
+    #         out[None].x2[i] = x2_det[i] + x0[i]
+    #         out[None].x3[i] = x3_det[i] + x0[i]
 
 
 available_orbit_models = {

@@ -9,7 +9,7 @@ from numpy.typing import NDArray
 import taichi as ti
 import taichi.math as tm
 
-from .orbit import OrbitModelBase, available_orbit_models
+from .orbit import OrbitModelBase, available_orbit_models, ConstellationVectorStruct
 from ..utils.utils import (
     taichi_field_to_complex_numpy_array_dict,
     complex_numpy_array_dict_to_taichi_field,
@@ -79,7 +79,13 @@ class InterferometerAntenna:
         self.tdi_combination.init_tdi_combination_model(self)
         self.response_model.init_single_link_response_model(self)
 
-    def update_input_params(self, lam, beta, psi, tc) -> None:
+    def update_input_params(
+        self,
+        lam: float,
+        beta: float,
+        psi: float,
+        tc: float,
+    ) -> None:
         self.params[None].lam = lam
         self.params[None].beta = beta
         self.params[None].psi = psi
@@ -162,6 +168,24 @@ class FDResponseModelMarset2018(SingleLinkResponseModel):
             needs_grad=self.detector.needs_grad,
             needs_dual=self.detector.needs_dual,
         )
+        self._det_vectors = ConstellationVectorStruct.field(
+            shape=(self.detector.tdi_data.data_info.frequency_series_length,),
+            needs_grad=self.detector.needs_grad,
+            needs_dual=self.detector.needs_dual,
+        )
+        self._pattern_funcs = ti.Struct.field(
+            dict(
+                n1_plus=float,
+                n1_cross=float,
+                n2_plus=float,
+                n2_cross=float,
+                n3_plus=float,
+                n3_cross=float,
+            ),
+            shape=(self.detector.tdi_data.data_info.frequency_series_length,),
+            needs_grad=self.detector.needs_grad,
+            needs_dual=self.detector.needs_dual,
+        )
 
     def update_single_link_response(self, waveform: ti.StructField):
         self._update_geometry_terms()
@@ -169,15 +193,36 @@ class FDResponseModelMarset2018(SingleLinkResponseModel):
 
     @ti.kernel
     def _update_geometry_terms(self):
-        self._geometry_terms[None].pol_tensor = get_polarization_tensor_ssb(
-            self.detector.params[None].lam,
-            self.detector.params[None].beta,
-            self.detector.params[None].psi,
-        )
-        self._geometry_terms[None].prop_direc = get_gw_propagation_unit_vector(
-            self.detector.params[None].lam,
-            self.detector.params[None].beta,
-        )
+        sin_lam = tm.sin(self.detector.params[None].lam)
+        cos_lam = tm.cos(self.detector.params[None].lam)
+        sin_beta = tm.sin(self.detector.params[None].beta)
+        cos_beta = tm.cos(self.detector.params[None].beta)
+        sin_psi = tm.sin(self.detector.params[None].psi)
+        cos_psi = tm.cos(self.detector.params[None].psi)
+
+        # to avoid the assertion failure of !operand->is<AllocaStmt>(), manually unroll
+        # the loop to set each vector, may improve in future
+        # set the polarization tensor
+        p = ti.Vector([0.0] * 3)
+        p[0] = sin_lam * cos_psi - cos_lam * sin_beta * sin_psi
+        p[1] = -cos_lam * cos_psi - sin_lam * sin_beta * sin_psi
+        p[2] = cos_beta * sin_psi
+        q = ti.Vector([0.0] * 3)
+        q[0] = -sin_lam * sin_psi - cos_lam * sin_beta * cos_psi
+        q[1] = cos_lam * sin_psi - sin_lam * sin_beta * cos_psi
+        q[2] = cos_beta * cos_psi
+        for i in ti.static(range(3)):
+            for j in ti.static(range(3)):
+                self._geometry_terms[None].pol_tensor.plus[i, j] = (
+                    p[i] * p[j] - q[i] * q[j]
+                )
+                self._geometry_terms[None].pol_tensor.cross[i, j] = (
+                    p[i] * q[j] + q[i] * p[j]
+                )
+        # set the unit vector of the GW propagation direction
+        self._geometry_terms[None].prop_direc[0] = -cos_beta * cos_lam
+        self._geometry_terms[None].prop_direc[1] = -cos_beta * sin_lam
+        self._geometry_terms[None].prop_direc[2] = -sin_beta
 
     @ti.kernel
     def _loop_frequencies(self, waveform: ti.template()):
@@ -185,24 +230,156 @@ class FDResponseModelMarset2018(SingleLinkResponseModel):
         # the waveform_container uses the AOS layout, operating modes in the inner loop
         for i in self.detector.single_link_response:
             fi = self.detector.tdi_data.frequency_samples[i]
-            cexp_tshift = tm.cexp(
-                ti_complex([0.0, -2.0 * PI * fi * self.detector.params[None].tc])
-            )
-            links = SingleLinkStructComplex()
+            tshift = -2.0 * PI * fi * self.detector.params[None].tc
+            cexp_tshift_re = tm.cos(tshift)
+            cexp_tshift_im = tm.sin(tshift)
 
             if ti.static(sorted(waveform.keys) == sorted(["cross", "plus", "tf"])):
-                hp = tm.cmul(waveform[i].plus, cexp_tshift)
-                hc = tm.cmul(waveform[i].cross, cexp_tshift)
-                tf = waveform[i].tf + self.detector.params[None].tc
-                links = self._get_responses_at_fi(
-                    self._geometry_terms[None].pol_tensor,
-                    self._geometry_terms[None].prop_direc,
-                    hp,
-                    hc,
-                    tf,
-                    fi,
+                hp_re = (
+                    waveform[i].plus[0] * cexp_tshift_re
+                    - waveform[i].plus[1] * cexp_tshift_im
                 )
-            else:
+                hp_im = (
+                    waveform[i].plus[0] * cexp_tshift_im
+                    + waveform[i].plus[1] * cexp_tshift_re
+                )
+                hc_re = (
+                    waveform[i].cross[0] * cexp_tshift_re
+                    - waveform[i].cross[1] * cexp_tshift_im
+                )
+                hc_im = (
+                    waveform[i].cross[0] * cexp_tshift_im
+                    + waveform[i].cross[1] * cexp_tshift_re
+                )
+                tf = waveform[i].tf + self.detector.params[None].tc
+
+                self.detector.orbit_model.update_detector_vectors(
+                    self._det_vectors[i], tf
+                )
+                self._update_pattern_functions(
+                    self._pattern_funcs[i], self._det_vectors[i]
+                )
+
+                n1_h_n1_re = 0.0  # ti_complex
+                n1_h_n1_im = 0.0  # ti_complex
+                n2_h_n2_re = 0.0  # ti_complex
+                n2_h_n2_im = 0.0  # ti_complex
+                n3_h_n3_re = 0.0  # ti_complex
+                n3_h_n3_im = 0.0  # ti_complex
+                n1_h_n1_re = (
+                    self._pattern_funcs[i].n1_plus * hp_re
+                    + self._pattern_funcs[i].n1_cross * hc_re
+                )
+                n1_h_n1_im = (
+                    self._pattern_funcs[i].n1_plus * hp_im
+                    + self._pattern_funcs[i].n1_cross * hc_im
+                )
+                n2_h_n2_re = (
+                    self._pattern_funcs[i].n2_plus * hp_re
+                    + self._pattern_funcs[i].n2_cross * hc_re
+                )
+                n2_h_n2_im = (
+                    self._pattern_funcs[i].n2_plus * hp_im
+                    + self._pattern_funcs[i].n2_cross * hc_im
+                )
+                n3_h_n3_re = (
+                    self._pattern_funcs[i].n3_plus * hp_re
+                    + self._pattern_funcs[i].n3_cross * hc_re
+                )
+                n3_h_n3_im = (
+                    self._pattern_funcs[i].n3_plus * hp_im
+                    + self._pattern_funcs[i].n3_cross * hc_im
+                )
+
+                k_n1 = 0.0  # scalar
+                k_n2 = 0.0  # scalar
+                k_n3 = 0.0  # scalar
+                for n in ti.static(range(3)):
+                    k_n1 += (
+                        self._geometry_terms[None].prop_direc[n]
+                        * self._det_vectors[i].n1[n]
+                    )
+                    k_n2 += (
+                        self._geometry_terms[None].prop_direc[n]
+                        * self._det_vectors[i].n2[n]
+                    )
+                    k_n3 += (
+                        self._geometry_terms[None].prop_direc[n]
+                        * self._det_vectors[i].n3[n]
+                    )
+
+                pi_f_L = PI * fi * self.detector.orbit_model.arm_length_sec
+                sinc32 = sinc(pi_f_L * (1.0 - k_n1))
+                sinc23 = sinc(pi_f_L * (1.0 + k_n1))
+                sinc13 = sinc(pi_f_L * (1.0 - k_n2))
+                sinc31 = sinc(pi_f_L * (1.0 + k_n2))
+                sinc21 = sinc(pi_f_L * (1.0 - k_n3))
+                sinc12 = sinc(pi_f_L * (1.0 + k_n3))
+
+                k_x1_x2 = 0.0  # scalar
+                k_x2_x3 = 0.0  # scalar
+                k_x3_x1 = 0.0  # scalar
+                for n in ti.static(range(3)):
+                    k_x1_x2 += self._geometry_terms[None].prop_direc[n] * (
+                        self._det_vectors[i].x1[n] + self._det_vectors[i].x2[n]
+                    )
+                    k_x2_x3 += self._geometry_terms[None].prop_direc[n] * (
+                        self._det_vectors[i].x2[n] + self._det_vectors[i].x3[n]
+                    )
+                    k_x3_x1 += self._geometry_terms[None].prop_direc[n] * (
+                        self._det_vectors[i].x3[n] + self._det_vectors[i].x1[n]
+                    )
+
+                exp12_re = 0.0
+                exp12_im = 0.0
+                exp23_re = 0.0
+                exp23_im = 0.0
+                exp31_re = 0.0
+                exp31_im = 0.0
+                phi_12 = -PI * fi * (self.detector.orbit_model.arm_length_sec + k_x1_x2)
+                phi_23 = -PI * fi * (self.detector.orbit_model.arm_length_sec + k_x2_x3)
+                phi_31 = -PI * fi * (self.detector.orbit_model.arm_length_sec + k_x3_x1)
+                exp12_re = tm.cos(phi_12)
+                exp12_im = tm.sin(phi_12)
+                exp23_re = tm.cos(phi_23)
+                exp23_im = tm.sin(phi_23)
+                exp31_re = tm.cos(phi_31)
+                exp31_im = tm.sin(phi_31)
+
+                temp_12_re = -(-pi_f_L) * (
+                    n3_h_n3_re * exp12_im + n3_h_n3_im * exp12_re
+                )
+                temp_12_im = (-pi_f_L) * (n3_h_n3_re * exp12_re - n3_h_n3_im * exp12_im)
+                temp_23_re = -(-pi_f_L) * (
+                    n1_h_n1_re * exp23_im + n1_h_n1_im * exp23_re
+                )
+                temp_23_im = (-pi_f_L) * (n1_h_n1_re * exp23_re - n1_h_n1_im * exp23_im)
+                temp_31_re = -(-pi_f_L) * (
+                    n2_h_n2_re * exp31_im + n2_h_n2_im * exp31_re
+                )
+                temp_31_im = (-pi_f_L) * (n2_h_n2_re * exp31_re - n2_h_n2_im * exp31_im)
+
+                self.detector.single_link_response[i].link12[0] = sinc12 * temp_12_re
+                self.detector.single_link_response[i].link12[1] = sinc12 * temp_12_im
+
+                self.detector.single_link_response[i].link21[0] = sinc21 * temp_12_re
+                self.detector.single_link_response[i].link21[1] = sinc21 * temp_12_im
+
+                self.detector.single_link_response[i].link23[0] = sinc23 * temp_23_re
+                self.detector.single_link_response[i].link23[1] = sinc23 * temp_23_im
+
+                self.detector.single_link_response[i].link32[0] = sinc32 * temp_23_re
+                self.detector.single_link_response[i].link32[1] = sinc32 * temp_23_im
+
+                self.detector.single_link_response[i].link31[0] = sinc31 * temp_31_re
+                self.detector.single_link_response[i].link31[1] = sinc31 * temp_31_im
+
+                self.detector.single_link_response[i].link13[0] = sinc13 * temp_31_re
+                self.detector.single_link_response[i].link13[1] = sinc13 * temp_31_im
+            else:  # waveform with HM does not support FwdMode autodiff currently
+                links = SingleLinkStructComplex()
+                cexp_tshift = ti.Vector([cexp_tshift_re, cexp_tshift_im])
+
                 for mode in ti.static(waveform.keys):
                     hp_mode = tm.cmul(waveform[i][mode].plus, cexp_tshift)
                     hc_mode = tm.cmul(waveform[i][mode].cross, cexp_tshift)
@@ -222,7 +399,7 @@ class FDResponseModelMarset2018(SingleLinkResponseModel):
                     links.link31 += links_mode.link31
                     links.link13 += links_mode.link13
 
-            self.detector.single_link_response[i] = links
+                self.detector.single_link_response[i] = links
 
     @ti.func
     def _get_responses_at_fi(
@@ -234,7 +411,8 @@ class FDResponseModelMarset2018(SingleLinkResponseModel):
         tf: float,
         fi: float,
     ) -> SingleLinkStructComplex:
-        det_vectors = self.detector.orbit_model.get_constellation_vectors(tf)
+        det_vectors = ConstellationVectorStruct()
+        self.detector.orbit_model.update_detector_vectors(det_vectors, tf)
         # n1: unit vector of 2 -> 3
         pattern_p_n1, pattern_c_n1 = get_pattern_function(pol_tensor, det_vectors.n1)
         n1_h_n1 = pattern_p_n1 * hp + pattern_c_n1 * hc  # ti_complex
@@ -282,8 +460,92 @@ class FDResponseModelMarset2018(SingleLinkResponseModel):
 
         return SingleLinkStructComplex(link12, link21, link23, link32, link31, link13)
 
+    @ti.func
+    def _update_pattern_functions(
+        self, pattern_funcs: ti.template(), det_vectors: ti.template()
+    ):
+        pattern_funcs.n1_plus = 0.0
+        pattern_funcs.n1_cross = 0.0
+        pattern_funcs.n2_plus = 0.0
+        pattern_funcs.n2_cross = 0.0
+        pattern_funcs.n3_plus = 0.0
+        pattern_funcs.n3_cross = 0.0
+        for i in ti.static(range(3)):
+            for j in ti.static(range(3)):
+                pattern_funcs.n1_plus += (
+                    det_vectors.n1[i]
+                    * det_vectors.n1[j]
+                    * self._geometry_terms[None].pol_tensor.plus[i, j]
+                )
+                pattern_funcs.n1_cross += (
+                    det_vectors.n1[i]
+                    * det_vectors.n1[j]
+                    * self._geometry_terms[None].pol_tensor.cross[i, j]
+                )
+                pattern_funcs.n2_plus += (
+                    det_vectors.n2[i]
+                    * det_vectors.n2[j]
+                    * self._geometry_terms[None].pol_tensor.plus[i, j]
+                )
+                pattern_funcs.n2_cross += (
+                    det_vectors.n2[i]
+                    * det_vectors.n2[j]
+                    * self._geometry_terms[None].pol_tensor.cross[i, j]
+                )
+                pattern_funcs.n3_plus += (
+                    det_vectors.n3[i]
+                    * det_vectors.n3[j]
+                    * self._geometry_terms[None].pol_tensor.plus[i, j]
+                )
+                pattern_funcs.n3_cross += (
+                    det_vectors.n3[i]
+                    * det_vectors.n3[j]
+                    * self._geometry_terms[None].pol_tensor.cross[i, j]
+                )
+
     # @ti.func
-    # def _get_responses_at_fi(
+    # def _update_pattern_functions(self, pattern_funcs: ti.template(), det_vectors:ti.template()):
+    #     self._pattern_funcs[None].n1_plus = 0.0
+    #     self._pattern_funcs[None].n1_cross = 0.0
+    #     self._pattern_funcs[None].n2_plus = 0.0
+    #     self._pattern_funcs[None].n2_cross = 0.0
+    #     self._pattern_funcs[None].n3_plus = 0.0
+    #     self._pattern_funcs[None].n3_cross = 0.0
+    #     for i in ti.static(range(3)):
+    #         for j in ti.static(range(3)):
+    #             self._pattern_funcs[None].n1_plus += (
+    #                 self._det_vectors[None].n1[i]
+    #                 * self._det_vectors[None].n1[j]
+    #                 * self._geometry_terms[None].pol_tensor.plus[i, j]
+    #             )
+    #             self._pattern_funcs[None].n1_cross += (
+    #                 self._det_vectors[None].n1[i]
+    #                 * self._det_vectors[None].n1[j]
+    #                 * self._geometry_terms[None].pol_tensor.cross[i, j]
+    #             )
+    #             self._pattern_funcs[None].n2_plus += (
+    #                 self._det_vectors[None].n2[i]
+    #                 * self._det_vectors[None].n2[j]
+    #                 * self._geometry_terms[None].pol_tensor.plus[i, j]
+    #             )
+    #             self._pattern_funcs[None].n2_cross += (
+    #                 self._det_vectors[None].n2[i]
+    #                 * self._det_vectors[None].n2[j]
+    #                 * self._geometry_terms[None].pol_tensor.cross[i, j]
+    #             )
+    #             self._pattern_funcs[None].n3_plus += (
+    #                 self._det_vectors[None].n3[i]
+    #                 * self._det_vectors[None].n3[j]
+    #                 * self._geometry_terms[None].pol_tensor.plus[i, j]
+    #             )
+    #             self._pattern_funcs[None].n3_cross += (
+    #                 self._det_vectors[None].n3[i]
+    #                 * self._det_vectors[None].n3[j]
+    #                 * self._geometry_terms[None].pol_tensor.cross[i, j]
+    #             )
+
+    # @ti.func
+    # def _get_responses_at_fi_old(
     #     self,
     #     hp: ti_complex,
     #     hc: ti_complex,
