@@ -1,2 +1,0 @@
-rsync -avzc --no-owner --no-group --human-readable --progress --update /home/hydrogen/hh20@nrui/works/codes/gw_space/pespace/examples/output/ /home/hydrogen/workspace/Space_GW/pespace/examples/output/
-rsync -avzc --no-owner --no-group --human-readable --progress --delete --exclude=.git --exclude='*.png' --exclude='*.json' --exclude=examples/output /home/hydrogen/workspace/Space_GW/pespace/ /home/hydrogen/hh20@nrui/works/codes/gw_space/pespace/
