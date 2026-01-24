@@ -23,9 +23,7 @@ dependencies = [
     "numpy",
     "scipy",
     "matplotlib",
-    "tiwave", # TODO: add repo link if not uploaded to pypi
-    "bilby",
-    "pycbc",
+    "tiwave",
 ]
 keywords = ["gravitational-wave", "taichi-lang", "parameter estimation"]
 dynamic = ["version"]
@@ -40,11 +38,11 @@ dev = [
 ]
 
 [project.urls]
-Documentation = "https://github.com/niuiniuin/pespace"
-Repository = "https://github.com/niuiniuin/pespace"
+Documentation = "https://github.com/nnrui/pespace"
+Repository = "https://github.com/nnrui/pespace"
 
 [tool.setuptools.packages.find]
-where = ["pespace"]
+include = ["pespace*"]
 
 # [tool.setuptools.package-data]
 # "tiwave.waveforms.data" = [
