@@ -134,20 +134,6 @@ def get_gw_propagation_unit_vector(
     )
 
 
-@ti.func
-def get_pattern_function(
-    pol_tensor: PolarizationStruct,
-    link_vec: ti.types.vector(3, float),
-):
-    p = 0.0
-    c = 0.0
-    for i in ti.static(range(3)):
-        for j in ti.static(range(3)):
-            p += link_vec[i] * link_vec[j] * pol_tensor.plus[i, j]
-            c += link_vec[i] * link_vec[j] * pol_tensor.cross[i, j]
-    return p, c
-
-
 def taichi_field_to_complex_numpy_array_dict(
     field_container: ti.Field,
 ) -> dict[str, NDArray]:
