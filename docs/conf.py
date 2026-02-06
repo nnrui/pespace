@@ -7,6 +7,7 @@
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 from datetime import datetime
 from importlib.metadata import version as get_version
+from pathlib import Path
 import re
 
 # Convert GitHub-style admonitions in README.md to MyST format 
@@ -23,6 +24,7 @@ with open('../README.md', 'r', encoding='utf-8') as f:
 pattern = r'> \[!(WARNING|NOTE|TIP|IMPORTANT|CAUTION)\]\s*\n((?:> .*\n?)*)'
 converted = re.sub(pattern, replace_admonitions, content, flags=re.MULTILINE)
 
+Path('_build').mkdir(exist_ok=True)
 with open('_build/README_myst.md', 'w', encoding='utf-8') as f:
     f.write(converted)
 
