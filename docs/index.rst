@@ -11,19 +11,20 @@
    :parser: myst_parser.sphinx_
 
 .. toctree::
+   :includehidden:
    :hidden:
    :maxdepth: 2
    :caption: Examples:
 
-   _contents/examples/basic.ipynb
-   _contents/examples/conventions_difference.ipynb
-   _contents/examples/using_f32.ipynb
-   _contents/examples/autodiff_forward.ipynb
-   _contents/examples/autodiff_backward.ipynb
+   _examples/basic.ipynb
+   _examples/conventions_difference.ipynb
+   _examples/using_f32.ipynb
+   _examples/autodiff_forward.ipynb
+   _examples/autodiff_backward.ipynb
+   pe_scripts.rst
 
 .. toctree::
    :hidden:
    :maxdepth: 2
    :caption: API Reference:
-
 
