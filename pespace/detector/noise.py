@@ -1,3 +1,4 @@
+"""Module for modeling noise behavior of detectors."""
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
 
@@ -10,6 +11,8 @@ from ..utils.constants import *
 
 
 class FrequencyDomainNoiseModel(ABC):
+    """Abstract base class for noise models in frequency-domain."""
+
     @abstractmethod
     def power_spectral_density_array(
         self,
@@ -17,6 +20,23 @@ class FrequencyDomainNoiseModel(ABC):
         tdi_channels: tuple[str, ...],
         tdi_generation: str,
     ) -> dict[str, NDArray]:
+        """
+        Compute power spectral density arrays.
+
+        Parameters
+        ----------
+        frequencies : NDArray
+            Array of frequency values at which to compute the PSD.
+        tdi_channels : tuple[str, ...]
+            Tuple of TDI channel names (e.g., 'X', 'Y', 'Z', 'A', 'E', 'T').
+        tdi_generation : str
+            TDI generation version (e.g., '1.5' or '2.0').
+
+        Returns
+        -------
+        dict[str, NDArray]
+            Dictionary mapping TDI channel names to their corresponding PSD arrays.
+        """
         pass
 
     def __init_subclass__(cls) -> None:
@@ -26,16 +46,20 @@ class FrequencyDomainNoiseModel(ABC):
 @dataclass
 class AnalyticPowerSpectralDensity(FrequencyDomainNoiseModel):
     """
-    Analytic model for noise power spectral density, the formulae come from
-    https://arxiv.org/abs/2108.01167
+    Analytic model for ideal Gaussian stationary noise.
 
-    OMS_noise_level:
-        The noise level for Optical Metrology System, m^2 Hz^-1
-    acc_noise_level:
-        The noise level for acceleration, m^2 s^-4 Hz^-1
-    arm_length_sec:
-        The arm length of detector, s
+    Attributes
+    ----------
+    OMS_noise_level : float
+        Noise level for Optical Metrology System, in m^2 Hz^-1.
+    acc_noise_level : float
+        Noise level for acceleration, in m^2 s^-4 Hz^-1.
+    arm_length_sec : float
+        Arm length of the detector, in seconds.
 
+    Notes
+    -----
+    The formulae are based on the model described in https://arxiv.org/abs/2108.01167.
     """
 
     OMS_noise_level: float
@@ -43,6 +67,19 @@ class AnalyticPowerSpectralDensity(FrequencyDomainNoiseModel):
     arm_length_sec: float
 
     def _S_oms(self, frequencies: NDArray) -> NDArray:
+        """
+        Compute Optical Metrology System noise.
+
+        Parameters
+        ----------
+        frequencies : NDArray
+            Array of frequency values in Hz.
+
+        Returns
+        -------
+        NDArray
+            OMS noise array.
+        """
         return (
             self.OMS_noise_level
             * (1.0 + (2.0e-3 / frequencies) ** 4)
@@ -50,6 +87,19 @@ class AnalyticPowerSpectralDensity(FrequencyDomainNoiseModel):
         )
 
     def _S_acc(self, frequencies: NDArray) -> NDArray:
+        """
+        Compute acceleration noise.
+
+        Parameters
+        ----------
+        frequencies : NDArray
+            Array of frequency values in Hz.
+
+        Returns
+        -------
+        NDArray
+            Acceleration noise array.
+        """
         return (
             self.acc_noise_level
             * (1.0 + (0.4e-3 / frequencies) ** 2)
@@ -64,7 +114,34 @@ class AnalyticPowerSpectralDensity(FrequencyDomainNoiseModel):
         scaling: bool,
         tdi_generation: str,
     ) -> dict[str, NDArray]:
-        """Generate psd array for given frequency array"""
+        """
+        Generate power spectral density arrays.
+
+        Parameters
+        ----------
+        frequencies : NDArray
+            Array of frequency values in Hz at which to compute the PSD.
+        tdi_channels : tuple[str, ...]
+            Tuple of TDI channel names. Supported channels are 'X', 'Y', 'Z',
+            'A', 'E', and 'T'.
+        scaling : bool
+            If True, apply geometric scaling factor (PC_SI / (MRSUN_SI * MTSUN_SI))^2.
+            Using ``scaling=True`` when ``default_fp=ti.f32``.
+        tdi_generation : str
+            Supported values are '1.5' and '2.0'.
+
+        Returns
+        -------
+        dict[str, NDArray]
+            Dictionary mapping each TDI channel name to its corresponding PSD array.
+
+        Raises
+        ------
+        ValueError
+            If an unknown TDI channel is specified.
+        Exception
+            If an unknown TDI generation is specified.
+        """
 
         # Convert displacement noise and acceleration noise to the same dimension of relative frequency
         S_oms = self._S_oms(frequencies)
@@ -132,14 +209,55 @@ class AnalyticPowerSpectralDensity(FrequencyDomainNoiseModel):
 
 class TianQinAnalyticPowerSpectralDensity(AnalyticPowerSpectralDensity):
     """
-    S_oms and S_acc for TianQin detector have the difference of frequency dependency.
-    https://arxiv.org/abs/2309.15020
+    Analytic noise model for TianQin.
+
+    This class extends the base analytic PSD model with TianQin-specific
+    frequency dependencies for OMS and acceleration noise.
+
+    Attributes
+    ----------
+    OMS_noise_level : float
+        Noise level for Optical Metrology System, in m^2 Hz^-1.
+    acc_noise_level : float
+        Noise level for acceleration, in m^2 s^-4 Hz^-1.
+    arm_length_sec : float
+        Arm length of the detector, in seconds.
+
+    Notes
+    -----
+    The model is described in https://arxiv.org/abs/2309.15020.
     """
 
     def _S_oms(self, frequencies: NDArray) -> NDArray:
+        """
+        Compute Optical Metrology System noise for TianQin.
+
+        Parameters
+        ----------
+        frequencies : NDArray
+            Array of frequency values in Hz.
+
+        Returns
+        -------
+        NDArray
+            OMS noise array.
+        """
         return self.OMS_noise_level * (2.0 * PI * frequencies / C_SI) ** 2
 
     def _S_acc(self, frequencies: NDArray) -> NDArray:
+        """
+        Compute acceleration noise for TianQin.
+
+        Parameters
+        ----------
+        frequencies : NDArray
+            Array of frequency values in Hz.
+
+        Returns
+        -------
+        NDArray
+            Acceleration noise array.
+        """
         return (
             self.acc_noise_level
             * (1.0 + 0.1e-3 / frequencies)

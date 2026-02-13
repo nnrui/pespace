@@ -1,3 +1,4 @@
+"""Module for orbit models, used to define a specific detector."""
 from abc import ABC, abstractmethod
 from functools import cached_property
 
@@ -20,22 +21,54 @@ ConstellationVectorStruct = ti.types.struct(
 
 
 class OrbitModelBase(ABC):
+    """Abstract base class for orbit models of detector constellations."""
+
     @abstractmethod
     def get_constellation_vectors(self, time: float) -> ConstellationVectorStruct:
+        """
+        Compute constellation vectors used in response computation at a given time.
+
+        Parameters
+        ----------
+        time : float
+            Time in seconds at which to compute the constellation vectors.
+
+        Returns
+        -------
+        ConstellationVectorStruct
+            Structure containing unit vectors and position vectors of the three nodes.
+        """
         pass
 
-    # Since currently only analystic Keplerian orbit models where the armlength is a
-    # constant are implemented, we define the armlength as a attribute. This may change
-    # in future if the armlength is dependent on time.
     @property
     @abstractmethod
     def arm_length_sec(self) -> float:
+        """
+        Get the arm length in units of seconds.
+
+        Returns
+        -------
+        float
+            Arm length in seconds (light travel time).
+
+        Notes
+        -----
+        Since currently only analystic Keplerian orbit models where the armlength is a
+        constant are implemented, we define the armlength as a attribute. This may change
+        in future if the armlength is dependent on time.
+        """
         pass
 
 
 @ti.data_oriented
 class KeplerianGeocentric(OrbitModelBase):
-    """The analystic Keplerian geocentric orbit model, used for Tianqin."""
+    """
+    Analytical Keplerian geocentric orbit model, used for Tianqin.
+
+    References
+    ----------
+    .. [1] https://doi.org/10.1088/1361-6382/aab52f
+    """
 
     # Useful constant
     AU_sec = AU_SI / C_SI
@@ -51,20 +84,27 @@ class KeplerianGeocentric(OrbitModelBase):
         beta_ref: float = -4.7 / 180 * PI,
     ) -> None:
         """
-        https://doi.org/10.1088/1361-6382/aab52f
+        Initialize the Keplerian geocentric orbit model.
 
-        arm_length:
-            Arm length of the detector, in the unit of metter.
-        rotation_initial:
-            The initial phase of detector rotation around its center, [0, 2*pi], default: 0.
-        revolution_initial:
-            The initial phase of detector revolution around the sun, [0, 2*pi], default: 0.
-        omega_rotation:
-            Angular velocity of detector rotation, rad s^-1. For Tianqin, 2*PI/(3.65*DAY_SI).
-        lambda_ref:
-            Ecliptic longitude of the reference source in rad. For RX J0806.3+1527, 120.5/180*PI.
-        beta_ref:
-            Ecliptic latitude of the reference source in rad. For RX J0806.3+1527, -4.7/180*PI.
+        Parameters
+        ----------
+        arm_length : float
+            Arm length of the detector in meters.
+        rotation_initial : float, optional
+            Initial phase of detector rotation around its center in radians,
+            range :math:`[0, 2\\pi]`. Default is 0.0.
+        revolution_initial : float, optional
+            Initial phase of detector revolution around the Sun in radians,
+            range :math:`[0, 2\\pi]`. Default is 0.0.
+        omega_rotation : float, optional
+            Angular velocity of detector rotation in rad/s.
+            Default is :math:`2\\pi/(3.65\\text{days})` for TianQin.
+        lambda_ref : float, optional
+            Ecliptic longitude of the reference source in radians.
+            Default is :math:`120.5/180*\\pi` for RX J0806.3+1527.
+        beta_ref : float, optional
+            Ecliptic latitude of the reference source in radians.
+            Default is :math:`-4.7/180*\\pi` for RX J0806.3+1527.
         """
 
         self.arm_length = arm_length
@@ -84,10 +124,34 @@ class KeplerianGeocentric(OrbitModelBase):
 
     @cached_property
     def arm_length_sec(self) -> float:
+        """
+        Get the arm length in units of seconds.
+
+        Returns
+        -------
+        float
+            Arm length in seconds.
+        """
         return self.arm_length / C_SI
 
     @ti.func
     def get_constellation_vectors(self, time: float) -> ConstellationVectorStruct:
+        """
+        Compute constellation vectors at a given time.
+
+        Parameters
+        ----------
+        time : float
+            Time in seconds at which to compute the constellation vectors.
+
+        Returns
+        -------
+        ConstellationVectorStruct
+            Structure containing:
+            
+            - n1, n2, n3: Unit vectors along the three links
+            - x1, x2, x3: Position vectors of the three nodes in SSB frame (in seconds)
+        """
         # alpha: revolution ortial phase
         alpha = self.omega_revolution * time + self.revolution_initial
         # kappa_n: rotaion phase for each node
@@ -137,7 +201,14 @@ class KeplerianGeocentric(OrbitModelBase):
 
 @ti.data_oriented
 class KaplerianHeliocentric(OrbitModelBase):
-    """The analystic Keplerian heliocentric orbit model, used for LISA, Taiji."""
+    """
+    Analytical Keplerian heliocentric orbit model, used for LISA and Taiji.
+    
+    References
+    ----------
+    .. [1] https://arxiv.org/abs/2301.02967
+    .. [2] https://lisa-ldc.in2p3.fr/static/data/pdf/LDC-manual-Sangria.pdf
+    """
 
     # Useful constant
     AU_sec = AU_SI / C_SI
@@ -150,12 +221,18 @@ class KaplerianHeliocentric(OrbitModelBase):
         revolution_initial: float = 0.0,
     ) -> None:
         """
-        arm_length:
-            Arm length of the detector, in the unit of meter.
-        rotation_initial:
-            The initial phase of detector rotation around its center, [0, 2*pi], default: 0
-        revolution_initial:
-            The initial phase of detector revolution around the sun, [0, 2*pi], default: 0
+        Initialize the Keplerian heliocentric orbit model.
+
+        Parameters
+        ----------
+        arm_length : float
+            Arm length of the detector in meters.
+        rotation_initial : float, optional
+            Initial phase of detector rotation around its center in radians,
+            range :math:`[0, 2\\pi]`. Default is 0.0.
+        revolution_initial : float, optional
+            Initial phase of detector revolution around the Sun in radians,
+            range :math:`[0, 2\\pi]`. Default is 0.0.
         """
         self.arm_length = arm_length
         self.rotation_initial = rotation_initial
@@ -178,10 +255,34 @@ class KaplerianHeliocentric(OrbitModelBase):
 
     @cached_property
     def arm_length_sec(self) -> float:
+        """
+        Get the arm length in units of seconds.
+
+        Returns
+        -------
+        float
+            Arm length in seconds.
+        """
         return self.arm_length / C_SI
 
     @ti.func
     def get_constellation_vectors(self, time: float) -> ConstellationVectorStruct:
+        """
+        Compute constellation vectors at a given time.
+
+        Parameters
+        ----------
+        time : float
+            Time in seconds at which to compute the constellation vectors.
+
+        Returns
+        -------
+        ConstellationVectorStruct
+            Structure containing:
+
+            - n1, n2, n3: Unit vectors along the three links
+            - x1, x2, x3: Position vectors of the three nodes in SSB frame (in seconds)
+        """
         # alpha: revolution ortial phase
         alpha = self.omega * time + self.revolution_initial
         ca = tm.cos(alpha)

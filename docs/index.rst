@@ -23,8 +23,14 @@
    _examples/autodiff_backward.ipynb
    pe_scripts.rst
 
+
 .. toctree::
+   :includehidden:
    :hidden:
    :maxdepth: 2
    :caption: API Reference:
+
+   api.rst
+
+
 

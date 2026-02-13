@@ -1,3 +1,8 @@
+"""
+Interface for using pycbc to perform parameter estimation.
+
+Placeholder implementation
+"""
 import logging
 
 try:

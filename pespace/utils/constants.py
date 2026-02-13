@@ -1,30 +1,55 @@
 """
-Useful constants, copied from lalsuite
+Useful constants, copied from lalsuite.
+
+Constants
+---------
+C_SI : float
+    Speed of light in vacuum (m/s).
+MRSUN_SI : float
+    Geometrized nominal solar mass (m).
+MTSUN_SI : float
+    Geometrized nominal solar mass (s).
+MSUN_SI : float
+    Nominal solar mass (kg).
+YEAR_SI : float
+    Julian year (s).
+DAY_SI : float
+    Julian day (s).
+AU_SI : float
+    Astronomical unit (m).
+PC_SI : float
+    Parsec (m).
+PI : float
+    Mathematical constant pi.
+EULER_GAMMA : float
+    Euler-Mascheroni constant.
 """
 
-# Speed of light in vacuum, m s^-1
+# Speed of light in vacuum (m/s)
 C_SI = 299792458.0
 
-# Geometrized nominal solar mass, m
+# Geometrized nominal solar mass (m)
 # MRSUN_SI = GMSUN_SI / (C_SI * C_SI)
 MRSUN_SI = 1.476625038050124729627979840144936351e3
 
-# Geometrized nominal solar mass, s
+# Geometrized nominal solar mass (s)
 # MTSUN_SI = GMSUN_SI / (C_SI * C_SI * C_SI)
 MTSUN_SI = 4.925490947641266978197229498498379006e-6
 
-# Nominal solar mass, kg
+# Nominal solar mass (kg)
 # MSUN_SI = GMSUN_SI / G_SI
 MSUN_SI = 1.988409870698050731911960804878414216e30
 
-# Julian year, s
+# Julian year (s)
 YEAR_SI = 31557600.0
-# Julian day, s
+
+# Julian day (s)
 DAY_SI = 86400.0
 
-# Astronomical unit, m
-AU_SI = 149597870700.0  # m
-# Parsec, m
+# Astronomical unit (m)
+AU_SI = 149597870700.0
+
+# Parsec (m)
 PC_SI = 3.085677581491367e16
 
 # Math constants

@@ -10,6 +10,7 @@ from importlib.metadata import version as get_version
 from pathlib import Path
 import re
 
+
 # Convert GitHub-style admonitions in README.md to MyST format 
 def replace_admonitions(match):
     admonition_type = match.group(1).lower()
@@ -42,6 +43,9 @@ release = ".".join(version.split('.')[:3])
 extensions = [
     "myst_nb",
     "sphinx.ext.autodoc",
+    "sphinx.ext.viewcode",
+    'sphinx.ext.intersphinx',
+    "sphinx.ext.autosummary",
     "sphinx.ext.napoleon",
 ]
 source_suffix = {
@@ -49,13 +53,29 @@ source_suffix = {
     ".md": "markdown",
     '.ipynb': 'myst-nb',
 }
-autodoc_typehints = "description"
-
-templates_path = ['_templates']
-exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
 
 # Do not execute notebooks during doc build by default
 nb_execution_mode = "off"
+
+autodoc_default_options = {
+    "members": True,
+    "private-members": True,
+    "undoc-members": True,
+    "member-order": "bysource",
+    "show-inheritance": True,
+}
+autodoc_inherit_docstrings = False
+autodoc_typehints = "description"
+autodoc_typehints_description_target = "all"
+autodoc_typehints_format = "short"
+autodoc_member_order = 'bysource'
+
+napoleon_google_docstring = False
+napoleon_numpy_docstring = True
+napoleon_include_init_with_doc = True
+
+templates_path = ['_templates']
+exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
 
 
 # -- Options for HTML output -------------------------------------------------
@@ -63,3 +83,4 @@ nb_execution_mode = "off"
 
 html_theme = 'furo'
 html_static_path = ['_static']
+html_last_updated_fmt = '%Y-%m-%d %H:%M:%S'

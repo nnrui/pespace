@@ -1,3 +1,9 @@
+"""
+Interface for using bilby to perform parameter estimation.
+
+This module provides a bilby-compatible likelihood class enabling the use of various 
+external samplers supported in bilby.
+"""
 from __future__ import annotations
 import logging
 
@@ -14,9 +20,14 @@ except ImportError:
 
 
 class LikelihoodBilbyInterface(Likelihood):
-    # TODO:
-    # - add support for multiple, share or check the same frequency samples, different obs duration or cadance
-    # - phase time distance marginalization
+    """Bilby-compatible likelihood class for sampling.
+
+    TODO:
+    
+    - Add support for multiple detectors with shared or different frequency samples,
+      observation durations, or cadences
+    - Implement phase, time, and distance marginalization
+    """
 
     def __init__(
         self,
@@ -25,15 +36,29 @@ class LikelihoodBilbyInterface(Likelihood):
         channels: tuple[str],
     ):
         """
-        create a Likelihood instance which can be used for sampling with bilby
+        Initialize the Bilby likelihood interface.
 
         Parameters
-        ==========
-        wavefrom: object
-            the instance where `waveform_container` is detectors
-        detector: object
-            see pespace.detectors for all supported detector class. for likelihood evaluation, the TDI channels
-            must be set as ("A","E","T") or ("A","E").
+        ----------
+        waveform : BaseWaveform or WaveformLALSimulationInterface
+            Waveform model instance that provides the ``waveform_container`` attribute
+            and ``update_waveform`` method for generating gravitational wave signals.
+        detector : InterferometerAntenna or tuple of InterferometerAntenna
+            Detector instance(s) for computing detector responses. Each detector must 
+            have ``tdi_data`` and ``update_detector_response`` attributes/methods.
+        channels : tuple of str
+            TDI channels to use for likelihood computation. Must be a subset of
+            ('A', 'E', 'T'). Common choices are ('A', 'E', 'T') or ('A', 'E').
+
+        Raises
+        ------
+        ValueError
+            If any channel in ``channels`` is not one of 'A', 'E', or 'T'.
+
+        Notes
+        -----
+        The likelihood computation uses the Whittle approximation, which assumes
+        Gaussian and stationary noise.
         """
         super(LikelihoodBilbyInterface, self).__init__(parameters=dict())
 
@@ -53,12 +78,16 @@ class LikelihoodBilbyInterface(Likelihood):
 
     def log_likelihood(self):
         """
-        Calculates the real part of log-likelihood value
+        Calculate the log-likelihood value for the current parameters.
+
+        This method updates the waveform model with the current parameter values,
+        computes the detector response for each detector, and evaluates the
+        Whittle likelihood across all specified TDI channels.
 
         Returns
-        =======
-        float: The real part of the log likelihood
-
+        -------
+        float
+            The log-likelihood value summed over all detectors and channels.
         """
         self.waveform.update_waveform(self.parameters)
         logl = 0.0

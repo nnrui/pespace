@@ -1,3 +1,4 @@
+"""Utility functions and data structures."""
 import h5py
 import taichi as ti
 import taichi.math as tm
@@ -30,6 +31,18 @@ SingleLinkStructReal = ti.types.struct(
 
 @ti.func
 def next_power_of_2(n: ti.u32) -> ti.u32:
+    """Compute the next power of 2 greater than or equal to n.
+
+    Parameters
+    ----------
+    n : ti.u32
+        Input unsigned 32-bit integer.
+
+    Returns
+    -------
+    ti.u32
+        The smallest power of 2 that is greater than or equal to n.
+    """
     ret = ti.u32(0)
     if n <= ti.u32(1):
         ret = ti.u32(1)
@@ -46,6 +59,18 @@ def next_power_of_2(n: ti.u32) -> ti.u32:
 
 @ti.func
 def sinc(x: float) -> float:
+    """Compute the sinc function: sin(x)/x.
+
+    Parameters
+    ----------
+    x : float
+        Input value.
+
+    Returns
+    -------
+    float
+        The value of sinc(x). Returns 1.0 when x = 0.0.
+    """
     ret = 0.0
     if x == 0.0:
         ret = 1.0
@@ -56,19 +81,44 @@ def sinc(x: float) -> float:
 
 @ti.func
 def linear_interpolate_kernel(left, right, frac) -> float:
-    """
-    frac: [0, 1]
+    """Perform linear interpolation between two values.
+
+    Parameters
+    ----------
+    left : float
+        Left boundary value.
+    right : float
+        Right boundary value.
+    frac : float
+        Fractional position between left and right, in the range [0, 1].
+
+    Returns
+    -------
+    float
+        Interpolated value.
     """
     return left + (right - left) * frac
 
 
 @ti.func
 def lagrange_interpolate_kernel():
+    """Lagrange interpolation kernel (not implemented).
+
+    Notes
+    -----
+    This function is a placeholder for future implementation.
+    """
     pass
 
 
 @ti.func
 def sinc_interpolate_kernel():
+    """Sinc interpolation kernel (not implemented).
+
+    Notes
+    -----
+    This function is a placeholder for future implementation.
+    """
     pass
 
 
@@ -82,19 +132,25 @@ INTERPOLATE_KERNELS = {
 @ti.func
 def get_polarization_tensor_ssb(
     lam: float, beta: float, psi: float
-) -> PolarizationStruct:  #
-    """
-    return the polarization tensor in SSB
+) -> PolarizationStruct:
+    """Compute the polarization tensors in the Solar System Barycenter frame.
 
     Parameters
-    ==========
-    ecliptic_longitude: lambda,
-    ecliptic_latitude: beta, note that beta is (-pi/2, pi/2)
-    polarizatione: psi,
+    ----------
+    lam : float
+        Ecliptic longitude in radians.
+    beta : float
+        Ecliptic latitude in radians, in the range :math:`(-\\pi/2, \\pi/2)`.
+    psi : float
+        Polarization angle in radians.
 
-    Returns:
-    ========
-    matrix: 3*3 matrix
+    Returns
+    -------
+    PolarizationStruct
+        A struct containing two 3x3 matrices:
+        
+        - plus: Plus polarization tensor (:math:`e_+ = p \\otimes p - q \\otimes q`)
+        - cross: Cross polarization tensor (:math:`e_\\times = p \\otimes q + q \\otimes p`)
     """
     # TODO: the constant should compute only once to reduce compution burden.
     sin_lam = tm.sin(lam)
@@ -128,7 +184,24 @@ def get_polarization_tensor_ssb(
 def get_gw_propagation_unit_vector(
     lam: float, beta: float
 ) -> ti.types.vector(3, float):
-    # note that beta is (-pi/2, pi/2)
+    """Compute the gravitational wave propagation unit vector.
+
+    Parameters
+    ----------
+    lam : float
+        Ecliptic longitude in radians.
+    beta : float
+        Ecliptic latitude in radians, in the range :math:`(-\\pi/2, \\pi/2)`.
+
+    Returns
+    -------
+    ti.types.vector(3, float)
+        Unit vector pointing in the direction of GW propagation in the SSB frame.
+
+    Notes
+    -----
+    The propagation direction is opposite to the source direction.
+    """
     return ti.Vector(
         [-tm.cos(beta) * tm.cos(lam), -tm.cos(beta) * tm.sin(lam), -tm.sin(beta)]
     )
@@ -137,14 +210,18 @@ def get_gw_propagation_unit_vector(
 def taichi_field_to_complex_numpy_array_dict(
     field_container: ti.Field,
 ) -> dict[str, NDArray]:
-    """
-    Convert a taichi field to a dictionary of complex numpy arrays.
+    """Convert a Taichi field to a dictionary of complex NumPy arrays.
 
-    Args:
-        field_container: Taichi field with shape (N, 2)
+    Parameters
+    ----------
+    field_container : ti.Field
+        Taichi field container with shape (N, 2), where the last dimension
+        represents [real, imaginary] components.
 
-    Returns:
-        Dictionary of complex arrays with shape (N,)
+    Returns
+    -------
+    dict[str, NDArray]
+        Dictionary mapping field names to complex-valued NumPy arrays of shape (N,).
     """
     return dict(
         [
@@ -158,12 +235,15 @@ def complex_numpy_array_dict_to_taichi_field(
     array_dict: dict[str, NDArray],
     field_container: ti.Field,
 ) -> None:
-    """
-    Convert a dictionary of complex numpy arrays to a taichi field.
+    """Convert a dictionary of complex NumPy arrays to a Taichi field.
 
-    Args:
-        array_dict: Dictionary of 1D complex-valued arrays;
-        field_container: Target taichi field container;
+    Parameters
+    ----------
+    array_dict : dict[str, NDArray]
+        Dictionary mapping field names to 1D complex-valued NumPy arrays.
+    field_container : ti.Field
+        Target Taichi field container with shape (N, 2) to store
+        [real, imaginary] components.
     """
     field_container.from_numpy(
         dict(
@@ -263,43 +343,28 @@ def complex_numpy_array_dict_to_taichi_field(
 #     '''
 #     return
 
-
-def noise_weighted_inner_product(aa, bb, psd_array, delta_freq):
-    """
-    compute the noise weighted inner product between two arrays on the uniform frequency grid, <aa|bb>
-
-    Parameters
-    ==========
-    aa: array
-        first array to compute inner product
-    bb: array
-        second array to compute inner product
-    psd_array: array
-        psd of the noise which is the array have the same shape of aa and bb
-    delta_freq: float
-        the spacing of two adjacent frequency points
-
-    Returns
-    =======
-    float
-    """
-    integrand = aa * np.conj(bb) / psd_array
-    return (4 * delta_freq * np.sum(integrand)).real
-
-
 def recursively_save_dict_contents_to_group(h5file, path, dic):
-    """
-    Recursively save a dictionary to a HDF5 group
-    copied from bilby.core.utils.io.recursively_save_dict_contents_to_group
+    """Recursively save a dictionary to an HDF5 group.
 
     Parameters
-    ==========
-    h5file: h5py.File
-        Open HDF5 file
-    path: str
-        Path inside the HDF5 file
-    dic: dict
-        The dictionary containing the data
+    ----------
+    h5file : h5py.File
+        HDF5 file object.
+    path : str
+        Path inside the HDF5 file where the dictionary will be saved.
+    dic : dict
+        Dictionary containing the data to save. Supports nested dictionaries,
+        lists, NumPy arrays, and None values.
+
+    Raises
+    ------
+    ValueError
+        If the dictionary contains values of unsupported types.
+
+    Notes
+    -----
+    This function is adapted from ``bilby.core.utils.io.recursively_save_dict_contents_to_group``.
+    Supported value types: ``dict``, ``list``, ``np.ndarray``, ``None``.
     """
     for key, value in dic.items():
         if isinstance(value, dict):
@@ -321,21 +386,24 @@ def recursively_save_dict_contents_to_group(h5file, path, dic):
 
 
 def recursively_load_dict_contents_from_group(h5file, path):
-    """
-    Recursively load a HDF5 file into a dictionary
-    copied from bilby.core.utils.io.recursively_load_dict_contents_from_group
+    """Recursively load an HDF5 group into a dictionary.
 
     Parameters
-    ==========
-    h5file: h5py.File
-        Open h5py file object
-    path: str
-        Path within the HDF5 file
+    ----------
+    h5file : h5py.File
+        HDF5 file object.
+    path : str
+        Path within the HDF5 file to load from.
 
     Returns
-    =======
-    output: dict
-        The contents of the HDF5 file unpacked into the dictionary.
+    -------
+    dict
+        Dictionary containing the contents of the HDF5 group, with nested
+        structure preserved.
+
+    Notes
+    -----
+    This function is adapted from ``bilby.core.utils.io.recursively_load_dict_contents_from_group``.
     """
     output = {}
     for key, item in h5file[path].items():
@@ -346,15 +414,3 @@ def recursively_load_dict_contents_from_group(h5file, path):
                 h5file, path + key + "/"
             )
     return output
-
-
-def XYZ_to_AET(
-    X: NDArray[np.float64 | np.complex128],
-    Y: NDArray[np.float64 | np.complex128],
-    Z: NDArray[np.float64 | np.complex128],
-) -> dict[str, NDArray[np.float64 | np.complex128]]:
-    A = (Z - X) / np.sqrt(2)
-    E = (X - 2 * Y + Z) / np.sqrt(6)
-    T = (X + Y + Z) / np.sqrt(3)
-
-    return {"A": A, "E": E, "T": T}

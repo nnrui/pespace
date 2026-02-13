@@ -1,3 +1,4 @@
+"""Module for handling TDI combinations and data of TDI channels."""
 # from __future__ import annotations
 # since the type hint in current taichi-lang does not support to parse types from strings,
 # use string literal types for foward reference in python scope.
@@ -124,11 +125,19 @@ from ..utils.constants import *
 @ti.kernel
 def _add_input_field_into_tdi_data(tdi_data: ti.template(), input: ti.template()):
     """
-    Add the input of 1d field into TDI_data. The input field must has same shape and
-    same channels with TDI_data.
-    StructField has the default layout of AoS, unrolling the channels in the inner loop
-    for memory accessing efficiency.
-    the base field is dimensionality-independent, can be used to TDI data of all domain.
+    Add the input into TDI data.
+
+    The input field must have the same shape and channels as ``TDI_data``.
+    ``StructField`` has the default layout of AoS, unrolling the channels in the inner 
+    loop for memory accessing efficiency. This function is dimensionality-independent 
+    and can be used for TDI data of all domains.
+
+    Parameters
+    ----------
+    tdi_data : ti.template()
+        Target TDI data field to add into.
+    input : ti.template()
+        Input field to be added, must have same shape and channels as tdi_data.
     """
     for I in ti.grouped(tdi_data):  # dimensionality independent
         for chan in ti.static(tdi_data.keys):  # beter performance for AOS layout
@@ -138,22 +147,40 @@ def _add_input_field_into_tdi_data(tdi_data: ti.template(), input: ti.template()
 @dataclass(frozen=True)
 class DataInformation:
     """
-    Storing TDI channels data information.
+    Store TDI channel data information.
 
-    Parameters:
-    ===========
-    channels:
-        TDI channel names;
-    duration:
-        observing duration of data, in the unit of second;
-    delta_time:
-        sampling cadence, in the unit of second;
-    start_time:
-        the time label for the first time sample, in the unit of second;
-    minimum_frequency:
-        the minimum for the limited frequency band, in the unit of Hz;
-    maximum_frequency:
-        the maximum for the limited frequency band, in the unit of Hz.
+    Attributes
+    ----------
+    channels : tuple[str, ...]
+        TDI channel names.
+    duration : float
+        Observing duration of data, in seconds.
+    delta_time : float
+        Sampling cadence, in seconds.
+    start_time : float
+        Time label for the first time sample, in seconds.
+    minimum_frequency : float
+        Minimum frequency for the limited frequency band, in Hz.
+    maximum_frequency : float
+        Maximum frequency for the limited frequency band, in Hz.
+    sampling_frequency : float
+        Sampling frequency, computed as 1/delta_time.
+    delta_frequency : float
+        Frequency resolution, computed as 1/duration.
+    time_series_length : int
+        Number of time samples.
+    time_samples_array : NDArray
+        Numpy array of time sample values.
+    full_frequency_series_length : int
+        Length of full frequency series from FFT.
+    full_frequency_samples_array : NDArray
+        Array of all frequency samples from FFT.
+    frequency_mask_array : NDArray[np.bool_]
+        Boolean mask for selecting frequencies within [minimum_frequency, maximum_frequency].
+    frequency_samples_array : NDArray
+        Numpy array of frequency samples within the specified range.
+    frequency_series_length : int
+        Number of frequency samples within the specified range.
     """
 
     channels: tuple[str, ...]
@@ -175,9 +202,12 @@ class DataInformation:
 
     def __post_init__(self) -> None:
         """
-        Generating useful numbers from the duration and delta_time, and setting proper time and frequency samples:
+        Generate derived quantities from duration and delta_time.
 
-        TODO: - describing rules for time samples and frequency samples
+        Computes sampling frequencies, array lengths, and time/frequency sample arrays.
+        Sets proper time and frequency samples based on the input parameters.
+        Time samples are generated as: start_time + n * delta_time for n = 0, 1, ..., time_series_length-1
+        Frequency samples are generated using numpy.fft.rfftfreq and then masked to the specified range.
         """
         sampling_frequency = 1 / self.delta_time
         delta_frequency = 1 / self.duration
@@ -213,12 +243,24 @@ class DataInformation:
 
 
 class TDIChannelData:
-    # TODO:
-    # - check the normalizing factor of the rfft function
-
-    """Storing and manipulating TDI data."""
+    """Store and manipulate TDI channel data."""
 
     def __init__(self, scaling: bool = False) -> None:
+        """
+        Initialize TDIChannelData instance.
+
+        Parameters
+        ----------
+        scaling : bool, optional
+            Whether to apply scaling to the data. Default is False.
+            If False and using ``f32`` precision, a warning will be issued about
+            potential numerical errors.
+
+        Raises
+        ------
+        UserWarning
+            If scaling is False and default float precision is ``f32``.
+        """
         self.scaling = scaling
         if (not scaling) and (
             ti.lang.impl.current_cfg().default_fp.to_string() == "f32"
@@ -238,9 +280,11 @@ class TDIChannelData:
         self._initialize_state()
 
     def _reset(self) -> None:
+        """Reset the instance to initial state."""
         self._initialize_state()
 
     def _initialize_state(self) -> None:
+        """Initialize all data fields to None."""
         self.time_samples = None
         self.frequency_samples = None
         self.wavelet_samples = None
@@ -258,6 +302,14 @@ class TDIChannelData:
 
     @property
     def data_info(self) -> None | DataInformation:
+        """
+        Get data information.
+
+        Returns
+        -------
+        DataInformation or None
+            Metadata about the TDI data, or None if not set.
+        """
         return self._data_info
 
     def set_data_info(
@@ -269,6 +321,29 @@ class TDIChannelData:
         minimum_frequency: float,
         maximum_frequency: float,
     ) -> None:
+        """
+        Set data information for TDI channels.
+
+        Parameters
+        ----------
+        channels : tuple[str, ...]
+            TDI channel names.
+        duration : float
+            Observing duration of data, in seconds.
+        delta_time : float
+            Sampling cadence, in seconds.
+        start_time : float
+            Time label for the first time sample, in seconds.
+        minimum_frequency : float
+            Minimum frequency for the limited frequency band, in Hz.
+        maximum_frequency : float
+            Maximum frequency for the limited frequency band, in Hz.
+
+        Raises
+        ------
+        UserWarning
+            If ``data_info`` is being set when TDI data already exists.
+        """
         if self._reset_flag:
             warnings.warn(
                 "You are setting `data_info`, whereas you have set TDI data of current "
@@ -286,8 +361,11 @@ class TDIChannelData:
 
     def _init_td_data(self) -> None:
         """
-        Initializing `ti.field` for `time_samples` and `td_data`, only for internel calls.
-        Call after setting `data_info`. Setting time domain data externally using `set_td_data_from_zero`.
+        Initialize ``taichi.field`` for time domain data.
+
+        Creates ``time_samples`` and ``td_data`` fields. This is an internal method
+        that should be called after setting ``data_info``. Use ``set_td_data_from_zero``
+        or ``set_td_data_from_input`` to set time domain data externally.
         """
         self.time_samples = ti.field(float, (self.data_info.time_series_length,))
         self.time_samples.from_numpy(
@@ -300,8 +378,11 @@ class TDIChannelData:
 
     def _init_fd_data(self) -> None:
         """
-        Initializing `ti.field` for `frequency_samples` and `fd_data`, only for internel calls.
-        Call after setting `data_info`. Setting frequency domain data externally using `set_fd_data_from_zero`.
+        Initialize ``taichi.field`` for frequency domain data.
+
+        Creates ``frequency_samples`` and ``fd_data`` fields. This is an internal method
+        that should be called after setting ``data_info``. Use ``set_fd_data_from_zero``
+        or ``set_fd_data_from_input`` to set frequency domain data externally.
         """
         self.frequency_samples = ti.field(
             float, (self.data_info.frequency_series_length,)
@@ -315,6 +396,14 @@ class TDIChannelData:
         )
 
     def _init_wd_data(self) -> None:
+        """
+        Initialize ``taichi.field`` for wavelet domain data.
+
+        Raises
+        ------
+        NotImplementedError
+            This method is not yet implemented.
+        """
         raise NotImplementedError()
 
     def set_td_data_from_input(
@@ -327,16 +416,33 @@ class TDIChannelData:
         minimum_frequency: float = 1e-5,
         maximum_frequency: float = 0.1,
     ) -> None:
-        """Set time domain TDI data from input numpy array.
+        """
+        Set time domain TDI data from input numpy array.
 
-        Parameters:
+        Parameters
         ----------
-        channels: TDI channel names;
-        duration: observing duration of data, in the unit of second;
-        delta_time: sampling cadence, in the unit of second;
-        tdi_data_array: array storing TDI data with the shape of (len(channels), time_series_length), the order in channels list must to be same with the tdi_data_array in input array;
-        start_time: the time label for the first time sample, in the unit of second;
+        channels : tuple[str, ...]
+            TDI channel names.
+        duration : float
+            Observing duration of data, in seconds.
+        delta_time : float
+            Sampling cadence, in seconds.
+        tdi_data_array : NDArray
+            Array storing TDI data with shape ``(len(channels), time_series_length)``.
+            The order in channels list must match the order in ``tdi_data_array``.
+        start_time : float, optional
+            Time label for the first time sample, in seconds. Default is 0.0.
+        minimum_frequency : float, optional
+            Minimum frequency for the limited frequency band, in Hz. Default is 1e-5.
+        maximum_frequency : float, optional
+            Maximum frequency for the limited frequency band, in Hz. Default is 0.1.
 
+        Raises
+        ------
+        ValueError
+            If the shape of `tdi_data_array` does not match the expected dimensions.
+        UserWarning
+            If TDI data has been set previously, the instance will be reset.
         """
         if self._reset_flag:
             warnings.warn(
@@ -385,8 +491,39 @@ class TDIChannelData:
         minimum_frequency: float = 1e-5,
         maximum_frequency: float = 0.1,
     ) -> None:
-        """Note: the order in channels list must to be same with the tdi_data_array in input array
-        the length of input tdi_data_array need to match the self.data_info.frequency_series_length. If the frequency series are obtained from FFT, self.data_info.frequency_mask_array may needed to mask the array.
+        """
+        Set frequency domain TDI data from input numpy array.
+
+        Parameters
+        ----------
+        channels : tuple[str, ...]
+            TDI channel names.
+        duration : float
+            Observing duration of data, in seconds.
+        delta_time : float
+            Sampling cadence, in seconds.
+        tdi_data_array : NDArray
+            Complex array storing TDI data with shape ``(len(channels), frequency_series_length)``.
+            The order in channels list must match the order in ``tdi_data_array``.
+        start_time : float, optional
+            Time label for the first time sample, in seconds. Default is 0.0.
+        minimum_frequency : float, optional
+            Minimum frequency for the limited frequency band, in Hz. Default is 1e-5.
+        maximum_frequency : float, optional
+            Maximum frequency for the limited frequency band, in Hz. Default is 0.1.
+
+        Raises
+        ------
+        ValueError
+            If the shape of ``tdi_data_array`` does not match the expected dimensions.
+        UserWarning
+            If TDI data has been set previously, the instance will be reset.
+
+        Notes
+        -----
+        The length of input ``tdi_data_array`` must match self.data_info.frequency_series_length.
+        If the frequency series are obtained from FFT, self.data_info.frequency_mask_array
+        may be needed to mask the array before input.
         """
         if self._reset_flag:
             warnings.warn(
@@ -448,6 +585,29 @@ class TDIChannelData:
         minimum_frequency: float = 1e-5,
         maximum_frequency: float = 0.1,
     ) -> None:
+        """
+        Initialize time domain TDI data with zeros.
+
+        Parameters
+        ----------
+        channels : tuple[str, ...]
+            TDI channel names.
+        duration : float
+            Observing duration of data, in seconds.
+        delta_time : float
+            Sampling cadence, in seconds.
+        start_time : float, optional
+            Time label for the first time sample, in seconds. Default is 0.0.
+        minimum_frequency : float, optional
+            Minimum frequency for the limited frequency band, in Hz. Default is 1e-5.
+        maximum_frequency : float, optional
+            Maximum frequency for the limited frequency band, in Hz. Default is 0.1.
+
+        Raises
+        ------
+        UserWarning
+            If TDI data has been set previously, the instance will be reset.
+        """
         if self._reset_flag:
             warnings.warn(
                 "You are setting `td_data` with zero value, whereas you have probably "
@@ -481,6 +641,29 @@ class TDIChannelData:
         minimum_frequency: float = 1e-5,
         maximum_frequency: float = 0.1,
     ) -> None:
+        """
+        Initialize frequency domain TDI data with zeros.
+
+        Parameters
+        ----------
+        channels : tuple[str, ...]
+            TDI channel names.
+        duration : float
+            Observing duration of data, in seconds.
+        delta_time : float
+            Sampling cadence, in seconds.
+        start_time : float, optional
+            Time label for the first time sample, in seconds. Default is 0.0.
+        minimum_frequency : float, optional
+            Minimum frequency for the limited frequency band, in Hz. Default is 1e-5.
+        maximum_frequency : float, optional
+            Maximum frequency for the limited frequency band, in Hz. Default is 0.1.
+
+        Raises
+        ------
+        UserWarning
+            If TDI data has been set previously, the instance will be reset.
+        """
         if self._reset_flag:
             warnings.warn(
                 "You are setting `fd_data` with zero value, whereas you have probably "
@@ -506,14 +689,39 @@ class TDIChannelData:
         self._reset_flag = True
 
     def set_wd_data_from_zero(self) -> None:
+        """
+        Initialize wavelet domain TDI data with zeros.
+
+        Raises
+        ------
+        NotImplementedError
+            This method is not yet implemented.
+        """
         raise NotImplementedError()
 
     def set_fd_data_from_td(
         self,
         window: None | float | str | tuple[str | float] | NDArray = None,
     ) -> None:
-        """see scipy.signal.get_window for more details about window parameter
-        TODO: check the normalizing factor
+        """
+        Compute frequency domain data from time domain data using FFT.
+
+        Parameters
+        ----------
+        window : None, float, str, tuple, or NDArray, optional
+            Window function to apply before FFT. See ``scipy.signal.get_window`` for details.
+            If None, no windowing is applied. Default is None.
+
+        Raises
+        ------
+        ValueError
+            If td_data is not set or fd_data has already been set.
+
+        Notes
+        -----
+
+        - time-shift of start time is not applied in current implementation.
+        - The FFT is normalized by dividing by the sampling frequency.
         """
 
         if (self.td_data is None) or (self.fd_data is not None):
@@ -557,18 +765,47 @@ class TDIChannelData:
         self,
         window: None | float | str | tuple[str | float] | NDArray = None,
     ) -> None:
-        """By default, irfft assumes an even output length which puts the last entry at the Nyquist frequency;
-        To avoid losing information, the correct length of the real input must be given.
+        """
+        Compute time domain data from frequency domain data using inverse FFT.
+
+        Raises
+        ------
+        NotImplementedError
+            This method is not yet implemented.
         """
         raise NotImplementedError()
 
     def set_wd_data_from_td(self) -> None:
+        """
+        Compute wavelet domain data from time domain data.
+
+        Raises
+        ------
+        NotImplementedError
+            This method is not yet implemented.
+        """
         raise NotImplementedError()
 
     def set_wd_data_from_fd(self) -> None:
+        """
+        Compute wavelet domain data from frequency domain data.
+
+        Raises
+        ------
+        NotImplementedError
+            This method is not yet implemented.
+        """
         raise NotImplementedError()
 
     def set_fd_noise_power_density_from_td_data(self) -> None:
+        """
+        Estimate frequency domain noise power spectral density from time domain data.
+
+        Raises
+        ------
+        NotImplementedError
+            This method is not yet implemented.
+        """
         raise NotImplementedError()
 
     def set_fd_noise_power_density_from_model(
@@ -576,6 +813,23 @@ class TDIChannelData:
         noise_model: str | FrequencyDomainNoiseModel,
         **model_kwards: dict,
     ) -> None:
+        """
+        Set frequency domain noise power spectral density from a noise model.
+
+        Parameters
+        ----------
+        noise_model : str or FrequencyDomainNoiseModel
+            Name of an available noise model or a FrequencyDomainNoiseModel instance.
+        **model_kwards : dict
+            Additional keyword arguments passed to the noise model.
+
+        Raises
+        ------
+        ValueError
+            If ``data_info`` has not been set, or if the ``noise_model`` string is not recognized.
+        UserWarning
+            If ``fd_noise_power_density`` has been set previously.
+        """
         if isinstance(noise_model, str):
             if noise_model in available_noise_models.keys():
                 psd = available_noise_models[noise_model]
@@ -613,26 +867,57 @@ class TDIChannelData:
         )
 
     def get_td_noise_realization(self):
+        """
+        Generate a noise realization in time domain.
+
+        Raises
+        ------
+        NotImplementedError
+            This method is not yet implemented.
+        """
         raise NotImplementedError()
 
     def get_fd_noise_realization(
         self, seed=None, output_type: str = "taichi"
     ) -> ti.StructField | dict[str, NDArray]:
         """
-        Generating a noise realization in frequency domian.
-        there is no sanity check
-        To avoid directly modifiying the stroed tdi_data internally, which could potentially leading the missmatch among data of different domain,
-        this method only return the generated noise data as `NDArray`. Using `add_into_frequency_domian_data` manually to add the noise realization into the TDI_data externally.
+        Generate a noise realization in frequency domain from the power spectral density.
 
-        generate a noise realization from psd
-        Reference:
-        (eq.12) in https://journals.aps.org/prd/abstract/10.1103/PhysRevD.102.023033
-        https://lscsoft.docs.ligo.org/bilby/api/bilby.gw.detector.psd.PowerSpectralDensity.html#bilby.gw.detector.psd.PowerSpectralDensity.get_noise_realisation
+        This method generates colored Gaussian noise in the frequency domain based on
+        the stored noise power spectral density. The noise is generated as white noise
+        and then colored by multiplying with the square root of the PSD.
 
         Parameters
-        ==========
-        seed: integer,
-            set the seed for predictable random number sequence, default is None
+        ----------
+        seed : int, optional
+            Seed for the random number generator for reproducible results. Default is None.
+        output_type : str, optional
+            Output format, either "taichi" for ``taichi.StructField`` or "numpy" for dict of arrays.
+            Default is "taichi".
+
+        Returns
+        -------
+        ti.StructField or dict[str, NDArray]
+            Noise realization in frequency domain. Format depends on ``output_type`` parameter.
+
+        Raises
+        ------
+        ValueError
+            If ``fd_noise_power_density`` has not been set, or if ``output_type`` is invalid.
+
+        References
+        ----------
+        .. [1] Eq. 12 in Phys. Rev. D 102, 023033 (2020)
+               https://journals.aps.org/prd/abstract/10.1103/PhysRevD.102.023033
+        .. [2] Bilby PowerSpectralDensity.get_noise_realisation
+               https://lscsoft.docs.ligo.org/bilby/api/bilby.gw.detector.psd.PowerSpectralDensity.html#bilby.gw.detector.psd.PowerSpectralDensity.get_noise_realisation
+
+        Notes
+        -----
+        To avoid directly modifying the stored tdi_data internally, which could potentially
+        lead to mismatch among data of different domains, this method only returns the
+        generated noise data. Use ``add_into_fd_data`` to manually add the noise realization
+        into the TDI data.
         """
         if self.fd_noise_power_density is None:
             raise ValueError(
@@ -674,9 +959,33 @@ class TDIChannelData:
         return ret
 
     def add_into_td_data(self) -> None:
+        """
+        Add data into time domain TDI data.
+
+        Raises
+        ------
+        NotImplementedError
+            This method is not yet implemented.
+        """
         raise NotImplementedError()
 
     def add_into_fd_data(self, input: ti.StructField | dict[str, NDArray]) -> None:
+        """
+        Add input data into frequency domain TDI data.
+
+        Parameters
+        ----------
+        input : ti.StructField or dict[str, NDArray]
+            Input data to add. Can be either a ``taichi.StructField`` or a dictionary
+            of numpy arrays. Must have the same shape and channels as ``fd_data``.
+
+        Raises
+        ------
+        ValueError
+            If input shape or channels do not match ``fd_data``.
+        TypeError
+            If input type is not ``taichi.StructField`` or ``dict[str, NDArray]``.
+        """
         if isinstance(input, ti.StructField):
             if not input.shape == (self.data_info.frequency_series_length,):
                 raise ValueError(
@@ -719,11 +1028,32 @@ class TDIChannelData:
         _add_input_field_into_tdi_data(self.fd_data, input_field)
 
     def add_into_wd_data(self) -> None:
+        """
+        Add data into wavelet domain TDI data.
+
+        Raises
+        ------
+        NotImplementedError
+            This method is not yet implemented.
+        """
         raise NotImplementedError()
 
     def save_to_file(self, filename: str) -> None:
         """
-        Save the data stored in the instance to a hdf5 file.
+        Save the data stored in the instance to an HDF5 file.
+
+        Parameters
+        ----------
+        filename : str
+            Path to the output HDF5 file.
+
+        Notes
+        -----
+        The file will contain three groups:
+        
+        - data_info: metadata about the TDI data
+        - tdi_data: TDI data in various domains (``td_data``, ``fd_data``, ``wd_data``)
+        - noise_data: noise power spectral densities
         """
         tdi_data = [
             "td_data",
@@ -760,9 +1090,30 @@ class TDIChannelData:
     @staticmethod
     def recover_from_file(filename: str) -> "TDIChannelData":
         """
-        Recovering `TDIChannelData` instance from the file saved by the
-        `save_to_file` method. For other data format, please using methods for setting
-        from input array according to the domain of the data, like `set_td_data_from_input`, etc.
+        Recover TDIChannelData instance from an HDF5 file.
+
+        This method reconstructs a ``TDIChannelData`` instance from a file saved by
+        the ``save_to_file`` method.
+
+        Parameters
+        ----------
+        filename : str
+            Path to the input HDF5 file.
+
+        Returns
+        -------
+        TDIChannelData
+            Recovered ``TDIChannelData`` instance with all stored data.
+
+        Raises
+        ------
+        AssertionError
+            If any derived quantities in the file do not match the recomputed values.
+
+        Notes
+        -----
+        For other data formats, use methods for setting from input arrays according
+        to the domain of the data, such as ``set_td_data_from_input``, etc.
         """
         ret_cls = TDIChannelData()
 
@@ -891,39 +1242,114 @@ class TDIChannelData:
 
     @property
     def td_data_numpy(self) -> dict[str, NDArray]:
+        """
+        Get time domain data as numpy arrays.
+
+        Returns
+        -------
+        dict[str, NDArray]
+            Dictionary mapping channel names to time domain data arrays.
+        """
         return self.td_data.to_numpy()
 
     @property
     def fd_data_numpy(self) -> dict[str, NDArray]:
+        """
+        Get frequency domain data as complex numpy arrays.
+
+        Returns
+        -------
+        dict[str, NDArray]
+            Dictionary mapping channel names to complex frequency domain data arrays.
+        """
         return taichi_field_to_complex_numpy_array_dict(self.fd_data)
 
     @property
     def wd_data_numpy(self) -> dict[str, NDArray]:
+        """
+        Get wavelet domain data as numpy arrays.
+
+        Returns
+        -------
+        dict[str, NDArray]
+            Dictionary mapping channel names to wavelet domain data arrays.
+        """
         return self.wd_data.to_numpy()
 
     @property
     def fd_noise_power_density_numpy(self) -> dict[str, NDArray]:
+        """
+        Get frequency domain noise power spectral density as numpy arrays.
+
+        Returns
+        -------
+        dict[str, NDArray]
+            Dictionary mapping channel names to noise PSD arrays.
+        """
         return self.fd_noise_power_density.to_numpy()
 
 
 class TDICombinationModel(ABC):
+    """
+    Abstract base class for TDI combination models.
+
+    This class defines the interface for TDI combination models that compute
+    TDI observables from single-link responses.
+    """
 
     @property
     @abstractmethod
     def domain(self) -> str:
+        """
+        Get the domain of the TDI combination.
+
+        Returns
+        -------
+        str
+            Domain identifier, either 'td' (time domain) or 'fd' (frequency domain).
+        """
         pass
 
     @abstractmethod
     def update_tdi_response(self) -> None:
+        """
+        Update TDI response from single-link responses.
+
+        This method computes TDI observables from the detector's single-link responses.
+        """
         pass
 
 
 @ti.data_oriented
 class TDMichelsonConstantEqualArm(TDICombinationModel):
+    """
+    Time-domain Michelson TDI combination for constant equal-arm detectors (**UNCOMPLETE**).
+
+    This class implements TDI combinations in the time domain for space-borne
+    interferometers with constant and equal arm lengths. Supports both
+    generation 1.5 and 2.0 TDI, and both orthogonal (A, E, T) and
+    non-orthogonal (X, Y, Z) channel combinations.
+    """
 
     domain = "td"
 
     def __init__(self, generation="1.5", orthogonal=True):
+        """
+        Initialize time-domain Michelson TDI combination model.
+
+        Parameters
+        ----------
+        generation : str, optional
+            TDI generation, either '1.5' or '2.0'. Default is '1.5'.
+        orthogonal : bool, optional
+            Whether to use orthogonal channels (A, E, T) or non-orthogonal (X, Y, Z).
+            Default is True.
+
+        Raises
+        ------
+        ValueError
+            If generation is not '1.5' or '2.0'.
+        """
         self.generation = str(generation)
         if self.generation == "1.5":  # TODO: improve for unconstant armlength
             self.max_num_delay = 3
@@ -942,6 +1368,14 @@ class TDMichelsonConstantEqualArm(TDICombinationModel):
         self.extended_time_series_length = None
 
     def init_tdi_combination_model(self, detector: "InterferometerAntenna") -> None:
+        """
+        Initialize the TDI combination model with a detector instance.
+
+        Parameters
+        ----------
+        detector : InterferometerAntenna
+            Detector instance to associate with this TDI model.
+        """
         self.detector = weakref.proxy(detector)
         self.detector.tdi_response = ti.Struct.field(
             dict.fromkeys(self.labels, float),
@@ -960,6 +1394,7 @@ class TDMichelsonConstantEqualArm(TDICombinationModel):
 
     @ti.kernel
     def update_tdi_response(self):
+        """Update TDI response from single-link responses in time domain."""
         # temporarily store the single link response with delays in the loop
         delayed_response = ti.field(SingleLinkStructReal, shape=(self.max_num_delay,))
 
@@ -1102,10 +1537,34 @@ class TDMichelsonConstantEqualArm(TDICombinationModel):
 
 @ti.data_oriented
 class FDMichelsonConstantEqualArm(TDICombinationModel):
+    """
+    Frequency-domain Michelson TDI combination for constant equal-arm detectors.
+
+    This class implements TDI combinations in the frequency domain for space-based
+    interferometers with constant and equal arm lengths. Supports both
+    generation 1.5 and 2.0 TDI, and both orthogonal (A, E, T) and
+    non-orthogonal (X, Y, Z) channel combinations.
+    """
 
     domain = "fd"
 
     def __init__(self, generation="1.5", orthogonal=True):
+        """
+        Initialize frequency-domain Michelson TDI combination model.
+
+        Parameters
+        ----------
+        generation : str, optional
+            TDI generation, either '1.5' or '2.0'. Default is '1.5'.
+        orthogonal : bool, optional
+            Whether to use orthogonal channels (A, E, T) or non-orthogonal (X, Y, Z).
+            Default is True.
+
+        Raises
+        ------
+        ValueError
+            If generation is not '1.5' or '2.0'.
+        """
         self.generation = str(generation)
         if not (self.generation == "1.5" or self.generation == "2.0"):
             raise ValueError(f"Unsupported generation {self.generation}.")
@@ -1120,6 +1579,14 @@ class FDMichelsonConstantEqualArm(TDICombinationModel):
         self._cached_field = None
 
     def init_tdi_combination_model(self, detector: "InterferometerAntenna") -> None:
+        """
+        Initialize the TDI combination model with a detector instance.
+
+        Parameters
+        ----------
+        detector : InterferometerAntenna
+            Detector instance to associate with this TDI model.
+        """
         self.detector = weakref.proxy(detector)
         self.detector.tdi_response = ti.Struct.field(
             dict.fromkeys(self.labels, ti_complex),
@@ -1133,6 +1600,12 @@ class FDMichelsonConstantEqualArm(TDICombinationModel):
 
     @ti.kernel
     def _set_cached_field(self):
+        """
+        Compute and cache frequency-dependent prefactors and delay factors.
+
+        This method computes and caches the delay factors :math:`\\mathrm{exp}(-i2\\pi fL)`
+        and generation-dependent prefactors for TDI computation.
+        """
         for i in self._cached_field:
             delay_factor = tm.cexp(
                 -2.0
@@ -1161,18 +1634,19 @@ class FDMichelsonConstantEqualArm(TDICombinationModel):
         delay_factor: ti.template(), singlelink_response: ti.template()
     ) -> ti_complex:
         """
-        Function for computing X channel of TDI combination in frequency domain.
+        Compute X channel of TDI combination in frequency domain.
 
-        Parameters:
-        ===========
-        z:
-            Delay factor, exp(-1j*2*PI*f*arm_length_sec).
-        singlelink_responses:
-            Responses of each link.
+        Parameters
+        ----------
+        delay_factor : ti.template()
+            Delay factor, :math:`\\mathrm{exp}(-i2\\pi fL)`.
+        singlelink_response : ti.template()
+            Single-link responses for six links.
 
-        Returns:
-        ========
-        X channel without the generation prefactor.
+        Returns
+        -------
+        ti_complex
+            X channel response without the generation prefactor.
         """
         return (
             singlelink_response["link13"]
@@ -1188,7 +1662,21 @@ class FDMichelsonConstantEqualArm(TDICombinationModel):
     def _get_Y_channel_response(
         delay_factor: ti.template(), singlelink_response: ti.template()
     ) -> ti_complex:
-        """ """
+        """
+        Compute Y channel of TDI combination in frequency domain.
+
+        Parameters
+        ----------
+        delay_factor : ti.template()
+            Delay factor, :math:`\\mathrm{exp}(-i2\\pi fL)`.
+        singlelink_response : ti.template()
+            Single-link responses for all six links.
+
+        Returns
+        -------
+        ti_complex
+            Y channel response without the generation prefactor.
+        """
         return (
             singlelink_response["link21"]
             - singlelink_response["link23"]
@@ -1203,7 +1691,21 @@ class FDMichelsonConstantEqualArm(TDICombinationModel):
     def _get_Z_channel_response(
         delay_factor: ti.template(), singlelink_response: ti.template()
     ) -> ti_complex:
-        """ """
+        """
+        Compute Z channel of TDI combination in frequency domain.
+
+        Parameters
+        ----------
+        delay_factor : ti.template()
+            Delay factor, :math:`\\mathrm{exp}(-i2\\pi fL)`.
+        singlelink_response : ti.template()
+            Single-link responses for all six links.
+
+        Returns
+        -------
+        ti_complex
+            Z channel response without the generation prefactor.
+        """
         return (
             singlelink_response["link32"]
             - singlelink_response["link31"]
@@ -1215,6 +1717,7 @@ class FDMichelsonConstantEqualArm(TDICombinationModel):
 
     @ti.kernel
     def update_tdi_response(self):
+        """Update TDI response from single-link responses in frequency domain."""
         for i in self.detector.tdi_response:
             prefactor = self._cached_field[i].prefactor
             delay_factor = self._cached_field[i].delay_factor
@@ -1246,6 +1749,16 @@ class FDMichelsonConstantEqualArm(TDICombinationModel):
 
 @ti.data_oriented
 class FDMichelsonConstantEqualArmFFT(TDICombinationModel):
+    """
+    Frequency-domain Michelson TDI combination using FFT approach.
+
+    This class is a placeholder for implementing TDI combinations in the frequency
+    domain using FFT-based methods for constant equal-arm detectors.
+
+    Notes
+    -----
+    This class is not yet implemented.
+    """
     pass
 
 

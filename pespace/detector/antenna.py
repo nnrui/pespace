@@ -1,3 +1,4 @@
+"""Module for descriping detectors and single link response models."""
 # from __future__ import annotations
 # since the type hint in current taichi-lang does not support to parse types from strings,
 # use string literal types for foward reference in python scope.
@@ -12,25 +13,27 @@ import taichi.math as tm
 from .orbit import OrbitModelBase, available_orbit_models
 from ..utils.utils import (
     taichi_field_to_complex_numpy_array_dict,
-    complex_numpy_array_dict_to_taichi_field,
     get_polarization_tensor_ssb,
     get_gw_propagation_unit_vector,
     sinc,
-    noise_weighted_inner_product,
     ti_complex,
     PolarizationStruct,
     SingleLinkStructComplex,
-    SingleLinkStructReal,
-    INTERPOLATE_KERNELS,
-)
+    )
 from ..utils.constants import *
 
 
 @ti.data_oriented
 class InterferometerAntenna:
-    # TODO:
-    # - include suppot to higher modes
-    # - add more tdi combination, and setting it as input argument (or including it in TDIChannelData class)
+    """
+    Class representing a space-borne gravitational wave detector.
+
+    This class use a orbit model to define a detector, and hosting data of tdi channels,
+    models for responses of single links, models for TDI combination. 
+    This class can be used to compute detector responses, inject signals into the data, 
+    and calculate SNR. 
+    It serves as the main interface for users to interact with the detector.
+    """
 
     def __init__(
         self,
@@ -40,7 +43,30 @@ class InterferometerAntenna:
         response_model: "SingleLinkResponseModel",
         tdi_combination: "TDICombinationModel",
     ) -> None:
-        """ """
+        """
+        Initialize the InterferometerAntenna.
+
+        Parameters
+        ----------
+        name : str
+            Name of the interferometer.
+        tdi_data : TDIChannelData
+            TDI channel data object containing frequency/time domain data.
+        orbit_model : str or OrbitModelBase
+            Orbit model of the detector. Can be a string name of an available orbit model
+            or an instance of ``OrbitModelBase``.
+        response_model : SingleLinkResponseModel
+            Model for computing single link response.
+        tdi_combination : TDICombinationModel
+            Model for TDI combination to compute TDI observables from single link responses.
+
+        Raises
+        ------
+        ValueError
+            If the ``orbit_model`` string is not a recognized orbit model name.
+        TypeError
+            If ``orbit_model`` is neither a string nor an ``OrbitModelBase`` instance.
+        """
         self.name = name
         self.tdi_data = tdi_data
         if isinstance(orbit_model, OrbitModelBase):
@@ -75,6 +101,22 @@ class InterferometerAntenna:
         psi: float,
         tc: float,
     ) -> None:
+        """
+        Update detector responses for a given waveform.
+
+        Parameters
+        ----------
+        waveform : ti.StructField
+            Waveform data.
+        lam : float
+            Ecliptic longitude of the source.
+        beta : float
+            Ecliptic latitude of the source.
+        psi : float
+            Polarization angle.
+        tc : float
+            Coalescence time.
+        """
         self.response_model.update_single_link_response(waveform, lam, beta, psi, tc)
         self.tdi_combination.update_tdi_response()
 
@@ -86,6 +128,27 @@ class InterferometerAntenna:
         psi: float,
         tc: float,
     ) -> None:
+        """
+        Inject a signal into the detector data.
+
+        Parameters
+        ----------
+        waveform : ti.StructField
+            Waveform data.
+        lam : float
+            Ecliptic longitude of the source.
+        beta : float
+            Ecliptic latitude of the source.
+        psi : float
+            Polarization angle.
+        tc : float
+            Coalescence time.
+
+        Raises
+        ------
+        NotImplementedError
+            If the domain is not supported.
+        """
         self.update_detector_response(waveform, lam, beta, psi, tc)
         if self.tdi_combination.domain == "fd":
             self.tdi_data.add_into_fd_data(self.tdi_response)
@@ -107,28 +170,104 @@ class InterferometerAntenna:
         psi: float,
         tc: float,
     ) -> dict[str, float]:
+        """
+        Calculate the optimal SNR for the given waveform.
+
+        Placeholder implementation
+
+        Parameters
+        ----------
+        waveform : ti.StructField
+            Waveform data structure containing gravitational wave polarizations.
+        lam : float
+            Ecliptic longitude of the source in radians.
+        beta : float
+            Ecliptic latitude of the source in radians.
+        psi : float
+            Polarization angle in radians.
+        tc : float
+            Coalescence time in seconds.
+
+        Returns
+        -------
+        dict[str, float]
+            Dictionary containing SNR for (A, E, T) channels and the total.
+        """
         pass
 
     @property
     def tdi_response_numpy(self) -> dict[str, NDArray]:
+        """
+        Get the TDI response as a dictionary of NumPy arrays.
+
+        Returns
+        -------
+        dict[str, NDArray]
+            TDI response data.
+        """
         return taichi_field_to_complex_numpy_array_dict(self.tdi_response)
 
     @property
     def single_link_response_numpy(self) -> dict[str, NDArray]:
+        """
+        Get the single link response as a dictionary of NumPy arrays.
+
+        Returns
+        -------
+        dict[str, NDArray]
+            Single link response data.
+        """
         return taichi_field_to_complex_numpy_array_dict(self.single_link_response)
 
 
 class SingleLinkResponseModel(ABC):
+    """
+    Abstract base class for single link response models.
+
+    This class defines the interface for computing single link responses. 
+    Subclasses must implement the ``update_single_link_response`` method to compute 
+    responses based on specific models.
+
+    Notes
+    -----
+    All subclasses should implement the ``init_single_link_response_model``
+    and ``update_single_link_response`` methods.
+    """
+
+    @abstractmethod
+    def init_single_link_response_model(self, detector: InterferometerAntenna) -> None:
+        """
+        Initialize the single link response model.
+
+        Parameters
+        ----------
+        detector : InterferometerAntenna
+            The detector instance to initialize the response model for.
+        """
+        pass
 
     @abstractmethod
     def update_single_link_response(self) -> None:
+        """Update the single link response."""
         pass
 
 
 @ti.data_oriented
 class FDResponseModelMarset2018(SingleLinkResponseModel):
+    """Frequency domain response model based on `Marsat et al. (2018) <https://arxiv.org/abs/1806.10734>`_."""
 
     def init_single_link_response_model(self, detector: InterferometerAntenna) -> None:
+        """
+        Initialize the single link response model.
+
+        This method sets up ``taichi.field`` for storing single link responses
+        and creates a weak reference to the detector to avoid circular references.
+
+        Parameters
+        ----------
+        detector : InterferometerAntenna
+            The detector instance to initialize the response model for.
+        """
         self.detector = weakref.proxy(detector)
         self.detector.single_link_response = SingleLinkStructComplex.field(
             shape=(self.detector.tdi_data.data_info.frequency_series_length,),
@@ -143,6 +282,23 @@ class FDResponseModelMarset2018(SingleLinkResponseModel):
         psi: float,
         tc: float,
     ):
+        """
+        Update the single link response for the given waveform parameters.
+
+        Parameters
+        ----------
+        waveform : ti.template
+            Waveform data structure containing polarization modes. Can be a structure 
+            with 'plus', 'cross', and 'tf' keys, or a structure with multiple modes.
+        lam : float
+            Ecliptic longitude of the source in radians.
+        beta : float
+            Ecliptic latitude of the source in radians.
+        psi : float
+            Polarization angle in radians.
+        tc : float
+            Coalescence time in seconds.
+        """
         pol_tensor = get_polarization_tensor_ssb(lam, beta, psi)  # matrix: 3*3
         prop_direc = get_gw_propagation_unit_vector(lam, beta)  # vector: 3
 
@@ -186,6 +342,30 @@ class FDResponseModelMarset2018(SingleLinkResponseModel):
         pol_tensor: PolarizationStruct,
         k: ti.types.vector(3, float),
     ) -> SingleLinkStructComplex:
+        """
+        Calculate single link responses at a specific frequency.
+
+        Parameters
+        ----------
+        hp : ti_complex
+            Plus polarization at the given frequency.
+        hc : ti_complex
+            Cross polarization at the given frequency.
+        tf : float
+            time at the given frequency in seconds.
+        fi : float
+            Frequency in Hz.
+        pol_tensor : PolarizationStruct
+            Polarization tensor structure containing plus and cross components
+        k : ti.types.vector(3, float)
+            Unit vector pointing in the GW propagation direction.
+
+        Returns
+        -------
+        SingleLinkStructComplex
+            Structure containing complex responses for six links:
+            link12, link21, link23, link32, link31, link13.
+        """
         det_vectors = self.detector.orbit_model.get_constellation_vectors(tf)
         # n1: unit vector of 2 -> 3
         n1_h_n1 = (
@@ -242,10 +422,20 @@ class FDResponseModelMarset2018(SingleLinkResponseModel):
 
 
 class FDResponseModelLongWavelength(SingleLinkResponseModel):
+    """
+    Frequency domain response model using long wavelength approximation.
+
+    Placeholder implementation
+    """
     pass
 
 
 class FDResponseModelStaticLongWavelength(SingleLinkResponseModel):
+    """
+    Frequency domain response model using static long wavelength approximation.
+
+    Placeholder implementation
+    """
     pass
 
 

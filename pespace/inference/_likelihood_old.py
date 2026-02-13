@@ -46,7 +46,7 @@ class FrequencyDomainLikelihood(Likelihood):
         create a FrequencyDomainLikelihood instance
 
         Parameters
-        ==========
+        ----------
         wavefrom: object
             the instance where `waveform_container` is detectors
         detector: object
@@ -74,7 +74,7 @@ class FrequencyDomainLikelihood(Likelihood):
         Calculates the real part of log-likelihood value
 
         Returns
-        =======
+        -------
         float: The real part of the log likelihood
 
         """
