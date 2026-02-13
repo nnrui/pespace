@@ -2,3 +2,6 @@ sphinx
 myst-parser
 myst-nb
 furo
+bilby
+pycbc
+lalsuite
