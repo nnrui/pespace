@@ -45,7 +45,7 @@ class OrbitModelBase(ABC):
         pass
 
     @abstractmethod
-    def arm_length_sec(self, time) -> float:
+    def arm_length_sec(self, time: float):
         """
         Get the arm length in units of seconds.
 
@@ -139,7 +139,7 @@ class KeplerianGeocentric:
         self.orbit_params = orbit_params
 
         if backend == "jax":
-            from _jax_impl._orbit_jax import _KeplerianGeocentricJax
+            from ._jax_impl._orbit_jax import _KeplerianGeocentricJax
 
             self._backend_impl = _KeplerianGeocentricJax(orbit_params)
         elif backend == "taichi":
@@ -227,7 +227,7 @@ class KaplerianHeliocentric:
         self.orbit_params = orbit_params
 
         if backend == "jax":
-            from _jax_impl import _KaplerianHeliocentricJax
+            from ._jax_impl._orbit_jax import _KaplerianHeliocentricJax
 
             self._backend_impl = _KaplerianHeliocentricJax(orbit_params)
         elif backend == "taichi":
