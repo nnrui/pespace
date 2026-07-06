@@ -1,12 +1,16 @@
 """Module for orbit models, used to define a specific detector."""
-from abc import ABC, abstractmethod
-from functools import cached_property
 
+from abc import ABC, abstractmethod
+from collections import namedtuple
+
+import numpy as np
 import taichi as ti
 import taichi.math as tm
 
 from ..utils.constants import *
 
+AU_sec = AU_SI / C_SI
+sqrt3 = np.sqrt(3)
 
 # orbit vectors of detector constellation in ecliptic coordinate
 # fellowing the convention of 2108.01167
@@ -24,7 +28,7 @@ class OrbitModelBase(ABC):
     """Abstract base class for orbit models of detector constellations."""
 
     @abstractmethod
-    def get_constellation_vectors(self, time: float) -> ConstellationVectorStruct:
+    def get_constellation_vectors(self, time: float):
         """
         Compute constellation vectors used in response computation at a given time.
 
@@ -35,14 +39,13 @@ class OrbitModelBase(ABC):
 
         Returns
         -------
-        ConstellationVectorStruct
+        ConstellationVectorStruct (taichi) | ConstellationVectorTuple (jax)
             Structure containing unit vectors and position vectors of the three nodes.
         """
         pass
 
-    @property
     @abstractmethod
-    def arm_length_sec(self) -> float:
+    def arm_length_sec(self, time) -> float:
         """
         Get the arm length in units of seconds.
 
@@ -53,15 +56,15 @@ class OrbitModelBase(ABC):
 
         Notes
         -----
-        Since currently only analystic Keplerian orbit models where the armlength is a
-        constant are implemented, we define the armlength as a attribute. This may change
-        in future if the armlength is dependent on time.
+        Currently only analytic Keplerian orbit models where the armlength is a constant
+        are implemented. Orbital models with higher precision may be implemented in future,
+        where arm lengths could be time-dependent. Therefore, we define arm-length as a
+        time-dependent function in the base class to facilitate future extensions.
         """
         pass
 
 
-@ti.data_oriented
-class KeplerianGeocentric(OrbitModelBase):
+class KeplerianGeocentric:
     """
     Analytical Keplerian geocentric orbit model, used for Tianqin.
 
@@ -69,10 +72,6 @@ class KeplerianGeocentric(OrbitModelBase):
     ----------
     .. [1] https://doi.org/10.1088/1361-6382/aab52f
     """
-
-    # Useful constant
-    AU_sec = AU_SI / C_SI
-    sqrt3 = tm.sqrt(3)
 
     def __init__(
         self,
@@ -82,6 +81,7 @@ class KeplerianGeocentric(OrbitModelBase):
         omega_rotation: float = 2 * PI / (3.65 * DAY_SI),
         lambda_ref: float = 120.5 / 180 * PI,
         beta_ref: float = -4.7 / 180 * PI,
+        backend: str = "taichi",
     ) -> None:
         """
         Initialize the Keplerian geocentric orbit model.
@@ -105,39 +105,161 @@ class KeplerianGeocentric(OrbitModelBase):
         beta_ref : float, optional
             Ecliptic latitude of the reference source in radians.
             Default is :math:`-4.7/180*\\pi` for RX J0806.3+1527.
+        backend : str, optional
+            Computation backend, either 'taichi' (default) or 'jax'.
         """
+        OrbitParams = namedtuple(
+            "OrbitParams",
+            [
+                "static_arm_sec",
+                "r_det_sec",
+                "rotation_initial",
+                "revolution_initial",
+                "omega_rotation",
+                "omega_revolution",
+                "slam_ref",
+                "clam_ref",
+                "sbeta_ref",
+                "cbeta_ref",
+            ],
+        )
 
-        self.arm_length = arm_length
-        # radius of detector rotation orbit
-        self.r_det_sec = self.arm_length_sec / self.sqrt3
+        orbit_params = OrbitParams(
+            static_arm_sec=arm_length / C_SI,
+            r_det_sec=arm_length / C_SI / np.sqrt(3),  # radius of detector rotation orbit # fmt: skip
+            rotation_initial=rotation_initial,
+            revolution_initial=revolution_initial,
+            omega_rotation=omega_rotation,
+            omega_revolution=2 * PI / YEAR_SI,
+            slam_ref=np.sin(lambda_ref),
+            clam_ref=np.cos(lambda_ref),
+            sbeta_ref=np.sin(beta_ref),
+            cbeta_ref=np.cos(beta_ref),
+        )
+        self.orbit_params = orbit_params
 
-        self.rotation_initial = rotation_initial
-        self.revolution_initial = revolution_initial
+        if backend == "jax":
+            from _jax_impl._orbit_jax import _KeplerianGeocentricJax
 
-        self.omega_rotation = omega_rotation
-        self.omega_revolution = 2 * PI / YEAR_SI
+            self._backend_impl = _KeplerianGeocentricJax(orbit_params)
+        elif backend == "taichi":
+            self._backend_impl = _KeplerianGeocentricTaichi(orbit_params)
+        else:
+            raise ValueError(f"Unknown backend: {backend}")
 
-        self.slam_ref = tm.sin(lambda_ref)
-        self.clam_ref = tm.cos(lambda_ref)
-        self.sbeta_ref = tm.sin(beta_ref)
-        self.cbeta_ref = tm.cos(beta_ref)
+        self.get_constellation_vectors = self._backend_impl.get_constellation_vectors
+        self.arm_length_sec = self._backend_impl.arm_length_sec
 
-    @cached_property
-    def arm_length_sec(self) -> float:
+
+class KaplerianHeliocentric:
+    """
+    Analytical Keplerian heliocentric orbit model, used for LISA and Taiji.
+
+    References
+    ----------
+    .. [1] https://arxiv.org/abs/2301.02967
+    .. [2] https://lisa-ldc.in2p3.fr/static/data/pdf/LDC-manual-Sangria.pdf
+    """
+
+    def __init__(
+        self,
+        arm_length: float,
+        rotation_initial: float = 0.0,
+        revolution_initial: float = 0.0,
+        backend: str = "taichi",
+    ) -> None:
         """
-        Get the arm length in units of seconds.
+        Initialize the Keplerian heliocentric orbit model.
 
-        Returns
-        -------
-        float
-            Arm length in seconds.
+        Parameters
+        ----------
+        arm_length : float
+            Arm length of the detector in meters.
+        rotation_initial : float, optional
+            Initial phase of detector rotation around its center in radians,
+            range :math:`[0, 2\\pi]`. Default is 0.0.
+        revolution_initial : float, optional
+            Initial phase of detector revolution around the Sun in radians,
+            range :math:`[0, 2\\pi]`. Default is 0.0.
+        backend : str, optional
+            Computation backend, either 'taichi' (default) or 'jax'.
         """
-        return self.arm_length / C_SI
+        # static arm-length
+        arm_sec = arm_length / C_SI
+        # r'=AU*ecc=L/(2*sqrt3), ecc=L/(2*AU*sqrt3)
+        r_prime = arm_sec / (2 * np.sqrt(3))
+        # omega: revolution angular velocity of the constellation
+        omega = 2 * PI / YEAR_SI
+        # kappa_n: phase for each node
+        kappa_1 = rotation_initial
+        kappa_2 = kappa_1 + 2 * PI / 3
+        kappa_3 = kappa_2 + 2 * PI / 3
+
+        OrbitParams = namedtuple(
+            "OrbitParams",
+            [
+                "static_arm_sec",
+                "rotation_initial",
+                "revolution_initial",
+                "r_prime",
+                "omega",
+                "ck1",
+                "sk1",
+                "ck2",
+                "sk2",
+                "ck3",
+                "sk3",
+            ],
+        )
+        orbit_params = OrbitParams(
+            static_arm_sec=arm_sec,
+            rotation_initial=rotation_initial,
+            revolution_initial=revolution_initial,
+            r_prime=r_prime,
+            omega=omega,
+            ck1=np.cos(kappa_1),
+            sk1=np.sin(kappa_1),
+            ck2=np.cos(kappa_2),
+            sk2=np.sin(kappa_2),
+            ck3=np.cos(kappa_3),
+            sk3=np.sin(kappa_3),
+        )
+        self.orbit_params = orbit_params
+
+        if backend == "jax":
+            from _jax_impl import _KaplerianHeliocentricJax
+
+            self._backend_impl = _KaplerianHeliocentricJax(orbit_params)
+        elif backend == "taichi":
+            self._backend_impl = _KaplerianHeliocentricTaichi(orbit_params)
+        else:
+            raise ValueError(f"Unknown backend: {backend}")
+
+        self.get_constellation_vectors = self._backend_impl.get_constellation_vectors
+        self.arm_length_sec = self._backend_impl.arm_length_sec
+
+
+@ti.data_oriented
+class _KeplerianGeocentricTaichi(OrbitModelBase):
+    """Taichi backend for Keplerian geocentric orbit vector computation."""
+
+    def __init__(self, orbit_params):
+        self.static_arm_sec = orbit_params.static_arm_sec
+        self.r_det_sec = orbit_params.r_det_sec
+        self.rotation_initial = orbit_params.rotation_initial
+        self.revolution_initial = orbit_params.revolution_initial
+        self.omega_rotation = orbit_params.omega_rotation
+        self.omega_revolution = orbit_params.omega_revolution
+        self.slam_ref = orbit_params.slam_ref
+        self.clam_ref = orbit_params.clam_ref
+        self.sbeta_ref = orbit_params.sbeta_ref
+        self.cbeta_ref = orbit_params.cbeta_ref
 
     @ti.func
     def get_constellation_vectors(self, time: float) -> ConstellationVectorStruct:
-        """
-        Compute constellation vectors at a given time.
+        """Compute constellation vectors at a given time (taichi).
+
+        Only callable from within ``@ti.kernel`` functions.
 
         Parameters
         ----------
@@ -147,10 +269,9 @@ class KeplerianGeocentric(OrbitModelBase):
         Returns
         -------
         ConstellationVectorStruct
-            Structure containing:
-            
-            - n1, n2, n3: Unit vectors along the three links
-            - x1, x2, x3: Position vectors of the three nodes in SSB frame (in seconds)
+            Containing:
+            - n1, n2, n3: Unit vectors along the three links;
+            - x1, x2, x3: Position vectors of the three nodes in SSB frame (in seconds);
         """
         # alpha: revolution ortial phase
         alpha = self.omega_revolution * time + self.revolution_initial
@@ -187,88 +308,60 @@ class KeplerianGeocentric(OrbitModelBase):
                 -self.cbeta_ref * sk3,
             ]
         )
-        x0 = ti.Vector([tm.cos(alpha), tm.sin(alpha), 0.0]) * self.AU_sec
+        x0 = ti.Vector([tm.cos(alpha), tm.sin(alpha), 0.0]) * AU_sec
 
         return ConstellationVectorStruct(
-            n1=(node3_det - node2_det) / self.arm_length_sec,
-            n2=(node1_det - node3_det) / self.arm_length_sec,
-            n3=(node2_det - node1_det) / self.arm_length_sec,
+            n1=(node3_det - node2_det) / self.static_arm_sec,
+            n2=(node1_det - node3_det) / self.static_arm_sec,
+            n3=(node2_det - node1_det) / self.static_arm_sec,
             x1=node1_det + x0,
             x2=node2_det + x0,
             x3=node3_det + x0,
         )
 
+    @ti.func
+    def arm_length_sec(self, time) -> float:
+        """Return the constant arm-length in seconds.
 
-@ti.data_oriented
-class KaplerianHeliocentric(OrbitModelBase):
-    """
-    Analytical Keplerian heliocentric orbit model, used for LISA and Taiji.
-    
-    References
-    ----------
-    .. [1] https://arxiv.org/abs/2301.02967
-    .. [2] https://lisa-ldc.in2p3.fr/static/data/pdf/LDC-manual-Sangria.pdf
-    """
-
-    # Useful constant
-    AU_sec = AU_SI / C_SI
-    sqrt3 = tm.sqrt(3)
-
-    def __init__(
-        self,
-        arm_length: float,
-        rotation_initial: float = 0.0,
-        revolution_initial: float = 0.0,
-    ) -> None:
-        """
-        Initialize the Keplerian heliocentric orbit model.
+        For analytic Keplerian orbits, the arm-length is a constant. The ``time``
+        parameter is retained only for interface consistency with :class:`OrbitModelBase`.
+        The call overhead could be eliminated by the backend of taichi or jax.
 
         Parameters
         ----------
-        arm_length : float
-            Arm length of the detector in meters.
-        rotation_initial : float, optional
-            Initial phase of detector rotation around its center in radians,
-            range :math:`[0, 2\\pi]`. Default is 0.0.
-        revolution_initial : float, optional
-            Initial phase of detector revolution around the Sun in radians,
-            range :math:`[0, 2\\pi]`. Default is 0.0.
-        """
-        self.arm_length = arm_length
-        self.rotation_initial = rotation_initial
-        self.revolution_initial = revolution_initial
-
-        # r'=AU*ecc=L/(2*sqrt3), ecc=L/(2*AU*sqrt3)
-        self.r_prime = self.arm_length_sec / (2 * self.sqrt3)
-        # omega: revolution angular velocity of the constellation
-        self.omega = 2 * PI / YEAR_SI
-        # kappa_n: phase for each node
-        kappa_1 = self.rotation_initial
-        kappa_2 = kappa_1 + 2 * PI / 3
-        kappa_3 = kappa_2 + 2 * PI / 3
-        self.ck1 = tm.cos(kappa_1)
-        self.sk1 = tm.sin(kappa_1)
-        self.ck2 = tm.cos(kappa_2)
-        self.sk2 = tm.sin(kappa_2)
-        self.ck3 = tm.cos(kappa_3)
-        self.sk3 = tm.sin(kappa_3)
-
-    @cached_property
-    def arm_length_sec(self) -> float:
-        """
-        Get the arm length in units of seconds.
+        time : float
+            Time in seconds.
 
         Returns
         -------
         float
-            Arm length in seconds.
+            Arm-length in seconds.
         """
-        return self.arm_length / C_SI
+        return self.static_arm_sec
+
+
+@ti.data_oriented
+class _KaplerianHeliocentricTaichi(OrbitModelBase):
+    """Taichi backend for Keplerian heliocentric orbit vector computation."""
+
+    def __init__(self, orbit_params):
+        self.static_arm_sec = orbit_params.static_arm_sec
+        self.rotation_initial = orbit_params.rotation_initial
+        self.revolution_initial = orbit_params.revolution_initial
+        self.r_prime = orbit_params.r_prime
+        self.omega = orbit_params.omega
+        self.ck1 = orbit_params.ck1
+        self.sk1 = orbit_params.sk1
+        self.ck2 = orbit_params.ck2
+        self.sk2 = orbit_params.sk2
+        self.ck3 = orbit_params.ck3
+        self.sk3 = orbit_params.sk3
 
     @ti.func
     def get_constellation_vectors(self, time: float) -> ConstellationVectorStruct:
-        """
-        Compute constellation vectors at a given time.
+        """Compute constellation vectors at a given time (taichi).
+
+        Only callable from within ``@ti.kernel`` functions.
 
         Parameters
         ----------
@@ -278,10 +371,10 @@ class KaplerianHeliocentric(OrbitModelBase):
         Returns
         -------
         ConstellationVectorStruct
-            Structure containing:
+            Containing:
+            - n1, n2, n3: Unit vectors along the three links;
+            - x1, x2, x3: Position vectors of the three nodes in SSB frame (in seconds);
 
-            - n1, n2, n3: Unit vectors along the three links
-            - x1, x2, x3: Position vectors of the three nodes in SSB frame (in seconds)
         """
         # alpha: revolution ortial phase
         alpha = self.omega * time + self.revolution_initial
@@ -295,33 +388,53 @@ class KaplerianHeliocentric(OrbitModelBase):
             [
                 sa * ca * self.sk1 - (1 + sa_pow2) * self.ck1,
                 sa * ca * self.ck1 - (1 + ca_pow2) * self.sk1,
-                -self.sqrt3 * (ca * self.ck1 + sa * self.sk1),
+                -sqrt3 * (ca * self.ck1 + sa * self.sk1),
             ]
         )
         x2_det = self.r_prime * ti.Vector(
             [
                 sa * ca * self.sk2 - (1 + sa_pow2) * self.ck2,
                 sa * ca * self.ck2 - (1 + ca_pow2) * self.sk2,
-                -self.sqrt3 * (ca * self.ck2 + sa * self.sk2),
+                -sqrt3 * (ca * self.ck2 + sa * self.sk2),
             ]
         )
         x3_det = self.r_prime * ti.Vector(
             [
                 sa * ca * self.sk3 - (1 + sa_pow2) * self.ck3,
                 sa * ca * self.ck3 - (1 + ca_pow2) * self.sk3,
-                -self.sqrt3 * (ca * self.ck3 + sa * self.sk3),
+                -sqrt3 * (ca * self.ck3 + sa * self.sk3),
             ]
         )
-        x0 = ti.Vector([ca, sa, 0.0]) * self.AU_sec
+        x0 = ti.Vector([ca, sa, 0.0]) * AU_sec
 
         return ConstellationVectorStruct(
-            n1=(x3_det - x2_det) / self.arm_length_sec,
-            n2=(x1_det - x3_det) / self.arm_length_sec,
-            n3=(x2_det - x1_det) / self.arm_length_sec,
+            n1=(x3_det - x2_det) / self.static_arm_sec,
+            n2=(x1_det - x3_det) / self.static_arm_sec,
+            n3=(x2_det - x1_det) / self.static_arm_sec,
             x1=x1_det + x0,
             x2=x2_det + x0,
             x3=x3_det + x0,
         )
+
+    @ti.func
+    def arm_length_sec(self, time) -> float:
+        """Return the constant arm-length in seconds.
+
+        For analytic Keplerian orbits, the arm-length is a constant. The ``time``
+        parameter is retained only for interface consistency with :class:`OrbitModelBase`.
+        The call overhead could be eliminated by the backend of taichi or jax.
+
+        Parameters
+        ----------
+        time : float
+            Time in seconds.
+
+        Returns
+        -------
+        float
+            Arm-length in seconds.
+        """
+        return self.static_arm_sec
 
 
 available_orbit_models = {
