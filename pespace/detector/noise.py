@@ -1,9 +1,8 @@
-"""Module for modeling noise behavior of detectors."""
+"""Module for modeling noise features of detectors."""
+
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
 
-import taichi as ti
-import numpy as np
 from numpy import sin, cos
 from numpy.typing import NDArray
 
@@ -18,6 +17,7 @@ class FrequencyDomainNoiseModel(ABC):
         self,
         frequencies: NDArray,
         tdi_channels: tuple[str, ...],
+        scaling: bool,
         tdi_generation: str,
     ) -> dict[str, NDArray]:
         """
@@ -29,6 +29,8 @@ class FrequencyDomainNoiseModel(ABC):
             Array of frequency values at which to compute the PSD.
         tdi_channels : tuple[str, ...]
             Tuple of TDI channel names (e.g., 'X', 'Y', 'Z', 'A', 'E', 'T').
+        scaling : bool
+            If True, apply geometric scaling factor (PC_SI / (MRSUN_SI * MTSUN_SI))^2.
         tdi_generation : str
             TDI generation version (e.g., '1.5' or '2.0').
 
@@ -122,11 +124,10 @@ class AnalyticPowerSpectralDensity(FrequencyDomainNoiseModel):
         frequencies : NDArray
             Array of frequency values in Hz at which to compute the PSD.
         tdi_channels : tuple[str, ...]
-            Tuple of TDI channel names. Supported channels are 'X', 'Y', 'Z',
-            'A', 'E', and 'T'.
+            Tuple of TDI channel names. Supported channels are 'X', 'Y', 'Z', 'A', 'E', and 'T'.
         scaling : bool
             If True, apply geometric scaling factor (PC_SI / (MRSUN_SI * MTSUN_SI))^2.
-            Using ``scaling=True`` when ``default_fp=ti.f32``.
+            Using ``scaling=True`` when using float32 as the default float precision.
         tdi_generation : str
             Supported values are '1.5' and '2.0'.
 
@@ -134,12 +135,15 @@ class AnalyticPowerSpectralDensity(FrequencyDomainNoiseModel):
         -------
         dict[str, NDArray]
             Dictionary mapping each TDI channel name to its corresponding PSD array.
+            The retured numpy arrays use the default `float64` precision. If `float32` is
+            used as the default precision in taichi or jax, precision conversion need to
+            be performed externally.
 
         Raises
         ------
         ValueError
             If an unknown TDI channel is specified.
-        Exception
+        ValueError
             If an unknown TDI generation is specified.
         """
 
@@ -157,7 +161,7 @@ class AnalyticPowerSpectralDensity(FrequencyDomainNoiseModel):
         elif tdi_generation == "2.0":
             prefactor = 4.0 * sin(4 * PI * frequencies * self.arm_length_sec) ** 2
         else:
-            raise Exception("The TDI generation {} is unknown".format(tdi_generation))
+            raise ValueError("The TDI generation {} is unknown".format(tdi_generation))
 
         psd_dict = {}
         for chan in tdi_channels:
@@ -198,11 +202,7 @@ class AnalyticPowerSpectralDensity(FrequencyDomainNoiseModel):
                 raise ValueError(f"Unknown TDI channel {chan}.")
             psd *= prefactor
 
-            if ti.lang.impl.current_cfg().default_fp.to_string() == "f32":
-                data_type = np.float32
-            else:
-                data_type = np.float64
-            psd_dict[chan] = np.astype(psd, data_type)
+            psd_dict[chan] = psd
 
         return psd_dict
 
