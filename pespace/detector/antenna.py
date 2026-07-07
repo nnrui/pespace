@@ -1,4 +1,5 @@
 """Module for descriping detectors and single link response models."""
+
 # from __future__ import annotations
 # since the type hint in current taichi-lang does not support to parse types from strings,
 # use string literal types for foward reference in python scope.
@@ -13,14 +14,110 @@ import taichi.math as tm
 from .orbit import OrbitModelBase, available_orbit_models
 from ..utils.utils import (
     taichi_field_to_complex_numpy_array_dict,
-    get_polarization_tensor_ssb,
-    get_gw_propagation_unit_vector,
-    sinc,
+    sinc_taichi,
     ti_complex,
     PolarizationStruct,
     SingleLinkStructComplex,
-    )
+)
 from ..utils.constants import *
+
+PolarizationStruct = ti.types.struct(
+    plus=ti.types.matrix(3, 3, float), cross=ti.types.matrix(3, 3, float)
+)
+SingleLinkStructComplex = ti.types.struct(
+    link12=ti_complex,
+    link21=ti_complex,
+    link23=ti_complex,
+    link32=ti_complex,
+    link31=ti_complex,
+    link13=ti_complex,
+)
+SingleLinkStructReal = ti.types.struct(
+    link12=float,
+    link21=float,
+    link23=float,
+    link32=float,
+    link31=float,
+    link13=float,
+)
+
+
+@ti.func
+def get_polarization_tensor_ssb_taichi(
+    lam: float, beta: float, psi: float
+) -> PolarizationStruct:
+    """Compute the polarization tensors in the Solar System Barycenter frame.
+
+    Parameters
+    ----------
+    lam : float
+        Ecliptic longitude in radians.
+    beta : float
+        Ecliptic latitude in radians, in the range :math:`(-\\pi/2, \\pi/2)`.
+    psi : float
+        Polarization angle in radians.
+
+    Returns
+    -------
+    PolarizationStruct
+        A struct containing two 3x3 matrices:
+
+        - plus: Plus polarization tensor (:math:`e_+ = p \\otimes p - q \\otimes q`)
+        - cross: Cross polarization tensor (:math:`e_\\times = p \\otimes q + q \\otimes p`)
+    """
+    # TODO: the constant should compute only once to reduce compution burden.
+    sin_lam = tm.sin(lam)
+    cos_lam = tm.cos(lam)
+    sin_beta = tm.sin(beta)
+    cos_beta = tm.cos(beta)
+    sin_psi = tm.sin(psi)
+    cos_psi = tm.cos(psi)
+    p = ti.Vector(
+        [
+            sin_lam * cos_psi - cos_lam * sin_beta * sin_psi,
+            -cos_lam * cos_psi - sin_lam * sin_beta * sin_psi,
+            cos_beta * sin_psi,
+        ]
+    )
+    q = ti.Vector(
+        [
+            -sin_lam * sin_psi - cos_lam * sin_beta * cos_psi,
+            cos_lam * sin_psi - sin_lam * sin_beta * cos_psi,
+            cos_beta * cos_psi,
+        ]
+    )
+
+    return PolarizationStruct(
+        plus=(p.outer_product(p) - q.outer_product(q)),
+        cross=(p.outer_product(q) + q.outer_product(p)),
+    )
+
+
+@ti.func
+def get_gw_propagation_unit_vector_taichi(
+    lam: float, beta: float
+) -> ti.types.vector(3, float):
+    """Compute the gravitational wave propagation unit vector.
+
+    Parameters
+    ----------
+    lam : float
+        Ecliptic longitude in radians.
+    beta : float
+        Ecliptic latitude in radians, in the range :math:`(-\\pi/2, \\pi/2)`.
+
+    Returns
+    -------
+    ti.types.vector(3, float)
+        Unit vector pointing in the direction of GW propagation in the SSB frame.
+
+    Notes
+    -----
+    The propagation direction is opposite to the source direction.
+    """
+    return ti.Vector(
+        [-tm.cos(beta) * tm.cos(lam), -tm.cos(beta) * tm.sin(lam), -tm.sin(beta)]
+    )
 
 
 @ti.data_oriented
@@ -29,9 +126,9 @@ class InterferometerAntenna:
     Class representing a space-borne gravitational wave detector.
 
     This class use a orbit model to define a detector, and hosting data of tdi channels,
-    models for responses of single links, models for TDI combination. 
-    This class can be used to compute detector responses, inject signals into the data, 
-    and calculate SNR. 
+    models for responses of single links, models for TDI combination.
+    This class can be used to compute detector responses, inject signals into the data,
+    and calculate SNR.
     It serves as the main interface for users to interact with the detector.
     """
 
@@ -42,6 +139,7 @@ class InterferometerAntenna:
         orbit_model: str | OrbitModelBase,
         response_model: "SingleLinkResponseModel",
         tdi_combination: "TDICombinationModel",
+        backend: str = "taichi",
     ) -> None:
         """
         Initialize the InterferometerAntenna.
@@ -59,6 +157,9 @@ class InterferometerAntenna:
             Model for computing single link response.
         tdi_combination : TDICombinationModel
             Model for TDI combination to compute TDI observables from single link responses.
+        backend: str
+            backend for computation.
+
 
         Raises
         ------
@@ -224,8 +325,8 @@ class SingleLinkResponseModel(ABC):
     """
     Abstract base class for single link response models.
 
-    This class defines the interface for computing single link responses. 
-    Subclasses must implement the ``update_single_link_response`` method to compute 
+    This class defines the interface for computing single link responses.
+    Subclasses must implement the ``update_single_link_response`` method to compute
     responses based on specific models.
 
     Notes
@@ -288,7 +389,7 @@ class FDResponseModelMarset2018(SingleLinkResponseModel):
         Parameters
         ----------
         waveform : ti.template
-            Waveform data structure containing polarization modes. Can be a structure 
+            Waveform data structure containing polarization modes. Can be a structure
             with 'plus', 'cross', and 'tf' keys, or a structure with multiple modes.
         lam : float
             Ecliptic longitude of the source in radians.
@@ -427,6 +528,7 @@ class FDResponseModelLongWavelength(SingleLinkResponseModel):
 
     Placeholder implementation
     """
+
     pass
 
 
@@ -436,6 +538,7 @@ class FDResponseModelStaticLongWavelength(SingleLinkResponseModel):
 
     Placeholder implementation
     """
+
     pass
 
 

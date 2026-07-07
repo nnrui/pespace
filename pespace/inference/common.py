@@ -1,9 +1,10 @@
 """
 Common utilities for parameter estimation.
 
-This module provides core computational functions for likelihood evaluation, including 
+This module provides core computational functions for likelihood evaluation, including
 the Whittle likelihood computation using taichi-lang for GPU acceleration.
 """
+
 import taichi as ti
 
 
@@ -23,8 +24,8 @@ def _compute_whittle_likelihood(
         Specifying the TDI channels to iterate over.
         Used with ``ti.static()`` for compile-time loop unrolling.
     observed_data : ti.template()
-        ``taichi.field`` containing the observed frequency-domain data for each channel. 
-        Expected to be a field of ``ti.types.vector(2, float)`` indexed by frequency bin 
+        ``taichi.field`` containing the observed frequency-domain data for each channel.
+        Expected to be a field of ``ti.types.vector(2, float)`` indexed by frequency bin
         and channel.
     response_data : ti.template()
         ``taichi.field`` containing detector responses for each channel, having the same
@@ -42,7 +43,7 @@ def _compute_whittle_likelihood(
 
     Notes
     -----
-    
+
     - Uses Array-of-Structures (AoS) layout for ``StructField``, with the channel
       loop placed inside the frequency loop for optimal memory accessing
     - Atomic operations are used to accumulate the log-likelihood to ensure

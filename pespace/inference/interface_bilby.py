@@ -1,9 +1,10 @@
 """
 Interface for using bilby to perform parameter estimation.
 
-This module provides a bilby-compatible likelihood class enabling the use of various 
+This module provides a bilby-compatible likelihood class enabling the use of various
 external samplers supported in bilby.
 """
+
 from __future__ import annotations
 import logging
 
@@ -23,7 +24,7 @@ class LikelihoodBilbyInterface(Likelihood):
     """Bilby-compatible likelihood class for sampling.
 
     TODO:
-    
+
     - Add support for multiple detectors with shared or different frequency samples,
       observation durations, or cadences
     - Implement phase, time, and distance marginalization
@@ -44,7 +45,7 @@ class LikelihoodBilbyInterface(Likelihood):
             Waveform model instance that provides the ``waveform_container`` attribute
             and ``update_waveform`` method for generating gravitational wave signals.
         detector : InterferometerAntenna or tuple of InterferometerAntenna
-            Detector instance(s) for computing detector responses. Each detector must 
+            Detector instance(s) for computing detector responses. Each detector must
             have ``tdi_data`` and ``update_detector_response`` attributes/methods.
         channels : tuple of str
             TDI channels to use for likelihood computation. Must be a subset of

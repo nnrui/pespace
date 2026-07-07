@@ -1,4 +1,5 @@
 """Module for handling TDI combinations and data of TDI channels."""
+
 # from __future__ import annotations
 # since the type hint in current taichi-lang does not support to parse types from strings,
 # use string literal types for foward reference in python scope.
@@ -23,7 +24,6 @@ from ..utils.utils import (
     SingleLinkStructReal,
 )
 from ..utils.constants import *
-
 
 # @ti.func
 # def _TDI_A_FD(
@@ -128,8 +128,8 @@ def _add_input_field_into_tdi_data(tdi_data: ti.template(), input: ti.template()
     Add the input into TDI data.
 
     The input field must have the same shape and channels as ``TDI_data``.
-    ``StructField`` has the default layout of AoS, unrolling the channels in the inner 
-    loop for memory accessing efficiency. This function is dimensionality-independent 
+    ``StructField`` has the default layout of AoS, unrolling the channels in the inner
+    loop for memory accessing efficiency. This function is dimensionality-independent
     and can be used for TDI data of all domains.
 
     Parameters
@@ -1050,7 +1050,7 @@ class TDIChannelData:
         Notes
         -----
         The file will contain three groups:
-        
+
         - data_info: metadata about the TDI data
         - tdi_data: TDI data in various domains (``td_data``, ``fd_data``, ``wd_data``)
         - noise_data: noise power spectral densities
@@ -1759,6 +1759,7 @@ class FDMichelsonConstantEqualArmFFT(TDICombinationModel):
     -----
     This class is not yet implemented.
     """
+
     pass
 
 

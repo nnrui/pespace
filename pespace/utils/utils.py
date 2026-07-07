@@ -1,4 +1,7 @@
 """Utility functions and data structures."""
+
+from collections import namedtuple
+
 import h5py
 import taichi as ti
 import taichi.math as tm
@@ -7,9 +10,7 @@ from numpy.typing import NDArray
 
 from .constants import *
 
-PolarizationStruct = ti.types.struct(
-    plus=ti.types.matrix(3, 3, float), cross=ti.types.matrix(3, 3, float)
-)
+
 ti_complex = ti.types.vector(2, float)
 SingleLinkStructComplex = ti.types.struct(
     link12=ti_complex,
@@ -58,7 +59,7 @@ def next_power_of_2(n: ti.u32) -> ti.u32:
 
 
 @ti.func
-def sinc(x: float) -> float:
+def sinc_taichi(x: float) -> float:
     """Compute the sinc function: sin(x)/x.
 
     Parameters
@@ -128,83 +129,6 @@ INTERPOLATE_KERNELS = {
     "lagrange": lagrange_interpolate_kernel,
 }
 
-
-@ti.func
-def get_polarization_tensor_ssb(
-    lam: float, beta: float, psi: float
-) -> PolarizationStruct:
-    """Compute the polarization tensors in the Solar System Barycenter frame.
-
-    Parameters
-    ----------
-    lam : float
-        Ecliptic longitude in radians.
-    beta : float
-        Ecliptic latitude in radians, in the range :math:`(-\\pi/2, \\pi/2)`.
-    psi : float
-        Polarization angle in radians.
-
-    Returns
-    -------
-    PolarizationStruct
-        A struct containing two 3x3 matrices:
-        
-        - plus: Plus polarization tensor (:math:`e_+ = p \\otimes p - q \\otimes q`)
-        - cross: Cross polarization tensor (:math:`e_\\times = p \\otimes q + q \\otimes p`)
-    """
-    # TODO: the constant should compute only once to reduce compution burden.
-    sin_lam = tm.sin(lam)
-    cos_lam = tm.cos(lam)
-    sin_beta = tm.sin(beta)
-    cos_beta = tm.cos(beta)
-    sin_psi = tm.sin(psi)
-    cos_psi = tm.cos(psi)
-    p = ti.Vector(
-        [
-            sin_lam * cos_psi - cos_lam * sin_beta * sin_psi,
-            -cos_lam * cos_psi - sin_lam * sin_beta * sin_psi,
-            cos_beta * sin_psi,
-        ]
-    )
-    q = ti.Vector(
-        [
-            -sin_lam * sin_psi - cos_lam * sin_beta * cos_psi,
-            cos_lam * sin_psi - sin_lam * sin_beta * cos_psi,
-            cos_beta * cos_psi,
-        ]
-    )
-
-    return PolarizationStruct(
-        plus=(p.outer_product(p) - q.outer_product(q)),
-        cross=(p.outer_product(q) + q.outer_product(p)),
-    )
-
-
-@ti.func
-def get_gw_propagation_unit_vector(
-    lam: float, beta: float
-) -> ti.types.vector(3, float):
-    """Compute the gravitational wave propagation unit vector.
-
-    Parameters
-    ----------
-    lam : float
-        Ecliptic longitude in radians.
-    beta : float
-        Ecliptic latitude in radians, in the range :math:`(-\\pi/2, \\pi/2)`.
-
-    Returns
-    -------
-    ti.types.vector(3, float)
-        Unit vector pointing in the direction of GW propagation in the SSB frame.
-
-    Notes
-    -----
-    The propagation direction is opposite to the source direction.
-    """
-    return ti.Vector(
-        [-tm.cos(beta) * tm.cos(lam), -tm.cos(beta) * tm.sin(lam), -tm.sin(beta)]
-    )
 
 
 def taichi_field_to_complex_numpy_array_dict(
@@ -342,6 +266,7 @@ def complex_numpy_array_dict_to_taichi_field(
 
 #     '''
 #     return
+
 
 def recursively_save_dict_contents_to_group(h5file, path, dic):
     """Recursively save a dictionary to an HDF5 group.

@@ -1,10 +1,11 @@
 """
-Interface to LALSimulation. 
+Interface to LALSimulation.
 
-Note the time-frequency correspondence, t(f), for frequency domain waveforms is 
-approximated by the PN expansion. If phenomenological waveforms are used, ``tiwave`` 
+Note the time-frequency correspondence, t(f), for frequency domain waveforms is
+approximated by the PN expansion. If phenomenological waveforms are used, ``tiwave``
 is recommended for waveform generation.
 """
+
 from typing import Any, Callable
 import logging
 
@@ -42,9 +43,9 @@ class WaveformLALSimulationInterface:
 
     Since lalsimulation does not provide a direct interface to obtain t(f) for each
     waveform approximant, we simply use the phase Post-Newtonian coefficients to derive
-    :math:`t(f)=d\\phi/df`, and use :math:`f_\\mathrm{ISCO}=1/(6^{3/2}\\pi M)` as the 
-    truncation. For frequency above :math:`f_\\mathrm{ISCO}`, we set t(f)=0 adopting the 
-    convention that the binary merge around t=0. If waveform model of IMRPhenomD or 
+    :math:`t(f)=d\\phi/df`, and use :math:`f_\\mathrm{ISCO}=1/(6^{3/2}\\pi M)` as the
+    truncation. For frequency above :math:`f_\\mathrm{ISCO}`, we set t(f)=0 adopting the
+    convention that the binary merge around t=0. If waveform model of IMRPhenomD or
     IMRPhenomX is used, ``tiwave`` is recommended.
     """
 
@@ -94,7 +95,7 @@ class WaveformLALSimulationInterface:
         Notes
         -----
         The ``waveform_container`` structure differs between time and frequency domains:
-        
+
         - Time domain: dict with 'data' (Nx2 array) and 't0' (epoch) keys
         - Frequency domain: Taichi struct field with 'plus', 'cross', and 'tf' components
         """
@@ -299,17 +300,17 @@ def get_PN_d_phase(
 ):
     """Calculate time-frequency correspondence t(f) using Post-Newtonian phase coefficients.
 
-    This function computes :math:`t(f) = -\\frac{1}{2\\pi}\\frac{d\\phi}{df}` using 
+    This function computes :math:`t(f) = -\\frac{1}{2\\pi}\\frac{d\\phi}{df}` using
     Post-Newtonian expansion coefficients.
 
     Parameters
     ----------
     parameters : dict[str, float]
         Dictionary containing binary parameters:
-        
+
         - mass_1, mass_2: Component masses in solar masses
         - spin_1z, spin_2z: Dimensionless spin components along orbital angular momentum
-    
+
     frequency_samples : NDArray
         Array of frequency values in Hz at which to compute t(f).
 
@@ -324,7 +325,7 @@ def get_PN_d_phase(
     The calculation uses the TaylorF2 phase approximation with PN coefficients
     from phi_0 through phi_8. The innermost stable circular orbit (ISCO)
     frequency is used as a cutoff: :math:`f_\\mathrm{ISCO}=1/(6^{3/2}\\pi M)`.
-    For frequencies f<f_ISCO, the time is computed from the PN phase derivative 
+    For frequencies f<f_ISCO, the time is computed from the PN phase derivative
     with a time shift applied so that t(f_ISCO) = 0.
 
     References
