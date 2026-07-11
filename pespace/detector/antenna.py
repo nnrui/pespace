@@ -6,18 +6,14 @@
 import weakref
 from abc import ABC, abstractmethod
 
-import numpy as np
-from numpy.typing import NDArray
 import taichi as ti
 import taichi.math as tm
 
 from .orbit import OrbitModelBase, available_orbit_models
 from ..utils.utils import (
-    taichi_field_to_complex_numpy_array_dict,
-    sinc_taichi,
+    field_to_complex_dict,
+    ti_sinc,
     ti_complex,
-    PolarizationStruct,
-    SingleLinkStructComplex,
 )
 from ..utils.constants import *
 
@@ -61,11 +57,9 @@ def get_polarization_tensor_ssb_taichi(
     -------
     PolarizationStruct
         A struct containing two 3x3 matrices:
-
         - plus: Plus polarization tensor (:math:`e_+ = p \\otimes p - q \\otimes q`)
         - cross: Cross polarization tensor (:math:`e_\\times = p \\otimes q + q \\otimes p`)
     """
-    # TODO: the constant should compute only once to reduce compution burden.
     sin_lam = tm.sin(lam)
     cos_lam = tm.cos(lam)
     sin_beta = tm.sin(beta)
@@ -86,7 +80,6 @@ def get_polarization_tensor_ssb_taichi(
             cos_beta * cos_psi,
         ]
     )
-
     return PolarizationStruct(
         plus=(p.outer_product(p) - q.outer_product(q)),
         cross=(p.outer_product(q) + q.outer_product(p)),
@@ -120,16 +113,15 @@ def get_gw_propagation_unit_vector_taichi(
     )
 
 
-@ti.data_oriented
 class InterferometerAntenna:
     """
     Class representing a space-borne gravitational wave detector.
 
-    This class use a orbit model to define a detector, and hosting data of tdi channels,
-    models for responses of single links, models for TDI combination.
-    This class can be used to compute detector responses, inject signals into the data,
-    and calculate SNR.
-    It serves as the main interface for users to interact with the detector.
+    This class uses an orbit model to define a detector, and hosts data of TDI channels,
+    the model for responses of single links, and the model for TDI combination.
+    This class can be used to compute detector responses, inject signals, and calculate SNR.
+
+    It serves as the main interface to interact with the detector.
     """
 
     def __init__(
@@ -151,52 +143,66 @@ class InterferometerAntenna:
         tdi_data : TDIChannelData
             TDI channel data object containing frequency/time domain data.
         orbit_model : str or OrbitModelBase
-            Orbit model of the detector. Can be a string name of an available orbit model
-            or an instance of ``OrbitModelBase``.
+            Orbit model of the detector.
+            Can be a string name of an available orbit model or an instance of ``OrbitModelBase``.
         response_model : SingleLinkResponseModel
             Model for computing single link response.
         tdi_combination : TDICombinationModel
-            Model for TDI combination to compute TDI observables from single link responses.
-        backend: str
-            backend for computation.
-
+            Model for TDI combination.
+        backend : str
+            Computation backend, 'taichi' (default) or 'jax'.
 
         Raises
         ------
         ValueError
-            If the ``orbit_model`` string is not a recognized orbit model name.
+            If the ``orbit_model`` is string but not a recognized name.
         TypeError
             If ``orbit_model`` is neither a string nor an ``OrbitModelBase`` instance.
         """
-        self.name = name
-        self.tdi_data = tdi_data
-        if isinstance(orbit_model, OrbitModelBase):
-            self.orbit_model = orbit_model
-        elif isinstance(orbit_model, str):
+        if backend not in ("taichi", "jax"):
+            raise ValueError(f"Unknown backend: {backend}")
+        for component in [tdi_data, orbit_model, response_model, tdi_combination]:
+            comp_name = component.__class__.__name__
+            comp_backend = getattr(component, "backend")
+            if not (comp_backend == backend):
+                raise ValueError(
+                    f"Backend mismatch: the passed class {comp_name} uses {comp_backend} as its backend. "
+                    f"But current backend for InterferometerAntenna is setting to {backend}."
+                )
+
+        if not (
+            isinstance(orbit_model, OrbitModelBase) or isinstance(orbit_model, str)
+        ):
+            raise TypeError(
+                f"Expected OrbitModelBase or str for orbit_model, but got {type(orbit_model).__name__}."
+            )
+        if isinstance(orbit_model, str):
             try:
-                self.orbit_model = available_orbit_models[orbit_model]
+                orbit_model = available_orbit_models[orbit_model]
             except KeyError:
                 raise ValueError(
                     f"{orbit_model} is not a implemented orbit model. \n"
                     f"Current available models are {[*available_orbit_models.keys()]}"
                 )
-        else:
-            raise TypeError(
-                f"Expected OrbitModelBase or str for orbit_model, but got {type(orbit_model).__name__}."
-            )
+
+        self.name = name
+        self.tdi_data = tdi_data
+        self.orbit_model = orbit_model
         self.response_model = response_model
         self.tdi_combination = tdi_combination
+        self.backend = backend
 
         self.tdi_response = None
         self.single_link_response = None
 
-        # note the length of single_link_response in TD depending on tdi combination model, init the response_model after the tdi_combination
+        # note the length of single_link_response in TD depending on tdi combination model,
+        # init the response_model after the tdi_combination
         self.tdi_combination.init_tdi_combination_model(self)
         self.response_model.init_single_link_response_model(self)
 
     def update_detector_response(
         self,
-        waveform: ti.StructField,
+        waveform: "ti.StructField | jax.Array",
         lam: float,
         beta: float,
         psi: float,
@@ -207,7 +213,7 @@ class InterferometerAntenna:
 
         Parameters
         ----------
-        waveform : ti.StructField
+        waveform : ti.StructField or jax.array, depending on ``backend``
             Waveform data.
         lam : float
             Ecliptic longitude of the source.
@@ -223,7 +229,7 @@ class InterferometerAntenna:
 
     def inject_signal(
         self,
-        waveform: ti.StructField,
+        waveform,
         lam: float,
         beta: float,
         psi: float,
@@ -234,7 +240,7 @@ class InterferometerAntenna:
 
         Parameters
         ----------
-        waveform : ti.StructField
+        waveform : ti.StructField or jax.array, depending on ``backend``
             Waveform data.
         lam : float
             Ecliptic longitude of the source.
@@ -265,7 +271,7 @@ class InterferometerAntenna:
 
     def get_optimal_snr(
         self,
-        waveform: ti.StructField,
+        waveform: "ti.StructField | jax.Array",
         lam: float,
         beta: float,
         psi: float,
@@ -278,8 +284,7 @@ class InterferometerAntenna:
 
         Parameters
         ----------
-        waveform : ti.StructField
-            Waveform data structure containing gravitational wave polarizations.
+        waveform : ti.StructField or jax.array, depending on ``backend``
         lam : float
             Ecliptic longitude of the source in radians.
         beta : float
@@ -297,43 +302,22 @@ class InterferometerAntenna:
         pass
 
     @property
-    def tdi_response_numpy(self) -> dict[str, NDArray]:
-        """
-        Get the TDI response as a dictionary of NumPy arrays.
-
-        Returns
-        -------
-        dict[str, NDArray]
-            TDI response data.
-        """
-        return taichi_field_to_complex_numpy_array_dict(self.tdi_response)
+    def tdi_response_array(self):
+        """Get the TDI response as a dictionary of NumPy complex arrays."""
+        if self.backend == "jax":
+            return self.tdi_response
+        return field_to_complex_dict(self.tdi_response)
 
     @property
-    def single_link_response_numpy(self) -> dict[str, NDArray]:
-        """
-        Get the single link response as a dictionary of NumPy arrays.
-
-        Returns
-        -------
-        dict[str, NDArray]
-            Single link response data.
-        """
-        return taichi_field_to_complex_numpy_array_dict(self.single_link_response)
+    def single_link_response_array(self):
+        """Get the single link response as a dictionary of NumPy complex arrays."""
+        if self.backend == "jax":
+            return self.single_link_response
+        return field_to_complex_dict(self.single_link_response)
 
 
 class SingleLinkResponseModel(ABC):
-    """
-    Abstract base class for single link response models.
-
-    This class defines the interface for computing single link responses.
-    Subclasses must implement the ``update_single_link_response`` method to compute
-    responses based on specific models.
-
-    Notes
-    -----
-    All subclasses should implement the ``init_single_link_response_model``
-    and ``update_single_link_response`` methods.
-    """
+    """Abstract base class for single link response models."""
 
     @abstractmethod
     def init_single_link_response_model(self, detector: InterferometerAntenna) -> None:
@@ -343,19 +327,53 @@ class SingleLinkResponseModel(ABC):
         Parameters
         ----------
         detector : InterferometerAntenna
-            The detector instance to initialize the response model for.
+            The detector instance to bind with.
         """
         pass
 
     @abstractmethod
-    def update_single_link_response(self) -> None:
+    def update_single_link_response(self, waveform, lam, beta, psi, tc) -> None:
         """Update the single link response."""
         pass
 
 
+class FDResponseModelMarset2018:
+    """
+    Frequency domain response model based on
+    `Marsat et al. (2018) <https://arxiv.org/abs/1806.10734>`_.
+
+    This is the interface for external calling. The actual computation is delegated to
+    the backend-specific implementation (:class:`_FDResponseModelMarset2018Taichi` or
+    :class:`pespace.detector._jax_impl._antenna_jax._FDResponseModelMarset2018Jax`).
+
+    Parameters
+    ----------
+    backend : str, optional
+        Computation backend, 'taichi' (default) or 'jax'.
+    """
+
+    def __init__(self, backend: str = "taichi"):
+        if backend == "jax":
+            from ._jax_impl._antenna_jax import _FDResponseModelMarset2018Jax
+
+            self._backend_impl = _FDResponseModelMarset2018Jax()
+        elif backend == "taichi":
+            self._backend_impl = _FDResponseModelMarset2018Taichi()
+        else:
+            raise ValueError(f"Invalid backend: {backend}")
+
+        self.backend = backend
+        self.init_single_link_response_model = (
+            self._backend_impl.init_single_link_response_model
+        )
+        self.update_single_link_response = (
+            self._backend_impl.update_single_link_response
+        )
+
+
 @ti.data_oriented
-class FDResponseModelMarset2018(SingleLinkResponseModel):
-    """Frequency domain response model based on `Marsat et al. (2018) <https://arxiv.org/abs/1806.10734>`_."""
+class _FDResponseModelMarset2018Taichi(SingleLinkResponseModel):
+    """Taichi backend for backend for FDResponseModelMarset2018."""
 
     def init_single_link_response_model(self, detector: InterferometerAntenna) -> None:
         """
@@ -367,7 +385,7 @@ class FDResponseModelMarset2018(SingleLinkResponseModel):
         Parameters
         ----------
         detector : InterferometerAntenna
-            The detector instance to initialize the response model for.
+            The detector instance binding with the response model.
         """
         self.detector = weakref.proxy(detector)
         self.detector.single_link_response = SingleLinkStructComplex.field(
@@ -468,6 +486,7 @@ class FDResponseModelMarset2018(SingleLinkResponseModel):
             link12, link21, link23, link32, link31, link13.
         """
         det_vectors = self.detector.orbit_model.get_constellation_vectors(tf)
+        arm_sec = self.detector.orbit_model.arm_length_sec(tf)
         # n1: unit vector of 2 -> 3
         n1_h_n1 = (
             det_vectors.n1 @ pol_tensor.plus @ det_vectors.n1 * hp
@@ -492,24 +511,18 @@ class FDResponseModelMarset2018(SingleLinkResponseModel):
         k_x2_x3 = k @ (det_vectors.x2 + det_vectors.x3)  # scalar
         k_x3_x1 = k @ (det_vectors.x3 + det_vectors.x1)  # scalar
 
-        pi_f_L = PI * fi * self.detector.orbit_model.arm_length_sec  # scalar
-        sinc32 = sinc(pi_f_L * (1.0 - k_n1))  # scalar
-        sinc23 = sinc(pi_f_L * (1.0 + k_n1))  # scalar
-        sinc13 = sinc(pi_f_L * (1.0 - k_n2))  # scalar
-        sinc31 = sinc(pi_f_L * (1.0 + k_n2))  # scalar
-        sinc21 = sinc(pi_f_L * (1.0 - k_n3))  # scalar
-        sinc12 = sinc(pi_f_L * (1.0 + k_n3))  # scalar
+        pi_f_L = PI * fi * arm_sec  # scalar
+        sinc32 = ti_sinc(pi_f_L * (1.0 - k_n1))  # scalar
+        sinc23 = ti_sinc(pi_f_L * (1.0 + k_n1))  # scalar
+        sinc13 = ti_sinc(pi_f_L * (1.0 - k_n2))  # scalar
+        sinc31 = ti_sinc(pi_f_L * (1.0 + k_n2))  # scalar
+        sinc21 = ti_sinc(pi_f_L * (1.0 - k_n3))  # scalar
+        sinc12 = ti_sinc(pi_f_L * (1.0 + k_n3))  # scalar
 
         common_exp = -PI * fi * ti_complex([0.0, 1.0])  # ti_complex
-        exp12 = tm.cexp(
-            common_exp * (self.detector.orbit_model.arm_length_sec + k_x1_x2)
-        )  # ti_complex
-        exp23 = tm.cexp(
-            common_exp * (self.detector.orbit_model.arm_length_sec + k_x2_x3)
-        )  # ti_complex
-        exp31 = tm.cexp(
-            common_exp * (self.detector.orbit_model.arm_length_sec + k_x3_x1)
-        )  # ti_complex
+        exp12 = tm.cexp(common_exp * (arm_sec + k_x1_x2))  # ti_complex
+        exp23 = tm.cexp(common_exp * (arm_sec + k_x2_x3))  # ti_complex
+        exp31 = tm.cexp(common_exp * (arm_sec + k_x3_x1))  # ti_complex
 
         prefactor = -pi_f_L * ti_complex([0.0, 1.0])  # ti_complex
         link12 = sinc12 * tm.cmul(tm.cmul(prefactor, n3_h_n3), exp12)  # ti_complex
@@ -526,7 +539,7 @@ class FDResponseModelLongWavelength(SingleLinkResponseModel):
     """
     Frequency domain response model using long wavelength approximation.
 
-    Placeholder implementation
+    Placeholder implementation.
     """
 
     pass
@@ -542,6 +555,9 @@ class FDResponseModelStaticLongWavelength(SingleLinkResponseModel):
     pass
 
 
+# Working in progress
+# Temporarily commented out for testing purposes
+########################################################################################
 # @ti.data_oriented
 # class TDResponseModelCornish2003(SingleLinkResponseModel):
 
