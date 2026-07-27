@@ -64,6 +64,7 @@ class OrbitModelBase(ABC):
         pass
 
 
+@OrbitModelBase.register
 class KeplerianGeocentric:
     """
     Analytical Keplerian geocentric orbit model, used for Tianqin.
@@ -146,11 +147,12 @@ class KeplerianGeocentric:
             self._backend_impl = _KeplerianGeocentricTaichi(orbit_params)
         else:
             raise ValueError(f"Unknown backend: {backend}")
-
+        self.backend = backend
         self.get_constellation_vectors = self._backend_impl.get_constellation_vectors
         self.arm_length_sec = self._backend_impl.arm_length_sec
 
 
+@OrbitModelBase.register
 class KaplerianHeliocentric:
     """
     Analytical Keplerian heliocentric orbit model, used for LISA and Taiji.
@@ -234,7 +236,7 @@ class KaplerianHeliocentric:
             self._backend_impl = _KaplerianHeliocentricTaichi(orbit_params)
         else:
             raise ValueError(f"Unknown backend: {backend}")
-
+        self.backend = backend
         self.get_constellation_vectors = self._backend_impl.get_constellation_vectors
         self.arm_length_sec = self._backend_impl.arm_length_sec
 

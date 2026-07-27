@@ -848,7 +848,7 @@ class TDIChannelData:
 
     def get_fd_noise_realization(
         self, seed=None, output_type: str = "taichi"
-    ) -> ti.StructField | NamedTuple:
+    ) -> ti.StructField | tuple:
         """
         Generate a noise realization in frequency domain from the power spectral density.
 
@@ -938,7 +938,7 @@ class TDIChannelData:
         """
         raise NotImplementedError()
 
-    def add_into_fd_data(self, input: ti.StructField | NamedTuple) -> None:
+    def add_into_fd_data(self, input: ti.StructField | tuple) -> None:
         """
         Add input data into frequency domain TDI data.
 
@@ -1291,7 +1291,7 @@ class TDIChannelData:
         return ret_cls
 
     @property
-    def td_data_numpy(self) -> NamedTuple:
+    def td_data_numpy(self) -> tuple:
         """
         Get time domain data as arrays.
 
@@ -1312,7 +1312,7 @@ class TDIChannelData:
         return ret
 
     @property
-    def fd_data_numpy(self) -> NamedTuple:
+    def fd_data_numpy(self) -> tuple:
         """
         Get frequency domain data as arrays.
 
@@ -1333,7 +1333,7 @@ class TDIChannelData:
         return ret
 
     @property
-    def wd_data_numpy(self) -> NamedTuple:
+    def wd_data_numpy(self) -> tuple:
         """
         Get wavelet domain data as arrays.
 
@@ -1354,7 +1354,7 @@ class TDIChannelData:
         return ret
 
     @property
-    def fd_noise_power_density_numpy(self) -> NamedTuple:
+    def fd_noise_power_density_numpy(self) -> tuple:
         """
         Get frequency domain noise power spectral density as arrays.
 
@@ -1639,6 +1639,7 @@ class FDMichelsonConstantEqualArm:
             self._backend_impl = _FDMichelsonConstantEqualArmTaichi(self)
         else:
             raise ValueError(f"Unknown backend: {backend}")
+        self.backend = backend
 
         self.init_tdi_combination_model = self._backend_impl.init_tdi_combination_model
         self.update_tdi_response = self._backend_impl.update_tdi_response
