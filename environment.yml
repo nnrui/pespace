@@ -1,0 +1,37 @@
+name: pespace
+channels:
+  - conda-forge
+dependencies:
+  # python
+  - python = 3.12
+  - pip
+  # data analysis
+  - ipykernel
+  - bilby
+  - pycbc
+  - pandas
+  - numpy
+  - scipy
+  - matplotlib
+  - multinest
+  - pymultinest
+  - mpi4py
+  - mpich
+  # development tools
+  - pytest
+  - pytest-cov
+  - black
+  - mypy
+  - sphinx
+  # jax
+  - jax
+  - jaxlib
+  - blackjax
+  - numpyro
+  # used for taichi
+  - dill
+  - markdown-it-py
+  - mdurl
+  - rich
+  - pip:
+    - taichi
