@@ -5,6 +5,7 @@
 # use string literal types for foward reference in python scope.
 import weakref
 from abc import ABC, abstractmethod
+from collections import namedtuple
 
 import taichi as ti
 import taichi.math as tm
@@ -302,19 +303,24 @@ class InterferometerAntenna:
         pass
 
     @property
-    def tdi_response_array(self):
-        """Get the TDI response as a dictionary of NumPy complex arrays."""
-        if self.backend == "jax":
+    def tdi_response_numpy(self) -> tuple:
+        """Get the TDI response as a NamedTuple of complex arrays."""
+        if self.backend == 'taichi':
+            data_dict = field_to_complex_dict(self.tdi_response)
+            DataContent = namedtuple("DataContent", self.tdi_data.data_info.channels)
+            return DataContent(**data_dict)
+        elif self.backend == "jax":
             return self.tdi_response
-        return field_to_complex_dict(self.tdi_response)
 
     @property
-    def single_link_response_array(self):
-        """Get the single link response as a dictionary of NumPy complex arrays."""
+    def single_link_response_array(self) -> tuple:
+        """Get the single link response as a NamedTuple of complex arrays."""
+        if self.backend == 'taichi':
+            data_dict = field_to_complex_dict(self.single_link_response)
+            DataContent = namedtuple('DataContent', data_dict.keys())
+            return DataContent(**data_dict)
         if self.backend == "jax":
             return self.single_link_response
-        return field_to_complex_dict(self.single_link_response)
-
 
 class SingleLinkResponseModel(ABC):
     """Abstract base class for single link response models."""
@@ -418,8 +424,8 @@ class _FDResponseModelMarset2018Taichi(SingleLinkResponseModel):
         tc : float
             Coalescence time in seconds.
         """
-        pol_tensor = get_polarization_tensor_ssb(lam, beta, psi)  # matrix: 3*3
-        prop_direc = get_gw_propagation_unit_vector(lam, beta)  # vector: 3
+        pol_tensor = get_polarization_tensor_ssb_taichi(lam, beta, psi)  # matrix: 3*3
+        prop_direc = get_gw_propagation_unit_vector_taichi(lam, beta)  # vector: 3
 
         # the waveform_container uses the AOS layout, operating modes in the inner loop
         for i in self.detector.single_link_response:
