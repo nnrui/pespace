@@ -57,7 +57,7 @@ def _add_into_tdi_data(tdi_data: ti.template(), input: ti.template()):
         Input field to be added, must have same shape and channels as tdi_data.
     """
     for I in ti.grouped(tdi_data):  # dimensionality independent
-        for chan in ti.static(tdi_data.keys):  # beter performance for AOS layout
+        for chan in ti.static(tdi_data.keys):  # better performance for AOS layout
             tdi_data[I][chan] += input[I][chan]
 
 
@@ -268,7 +268,7 @@ class TDIChannelData:
         """
         if self._reset_flag:
             warnings.warn(
-                "You are setting `data_info`, whereas you have set TDI data of current "
+                "You are setting `data_info`, but you have set TDI data of current "
                 "instance previously. Setting `data_info` along may lead mismatch of "
                 "`data_info` and the stored data. Please check whether this is intentional."
             )
@@ -367,11 +367,11 @@ class TDIChannelData:
         """
         if self._reset_flag:
             warnings.warn(
-                "You are setting `td_data` with input array, whereas you have set TDI "
+                "You are setting `td_data` with input array, but you have set TDI "
                 "data of current instance previously. Please check whether this is "
                 "intentional.\n"
                 "In order to avoid potential errors, current instance is reset. Please "
-                "regenerate TDI data of other domian or noise behavior data if needed."
+                "regenerate TDI data of other domain or noise behavior data if needed."
             )
             self._reset()
 
@@ -386,7 +386,7 @@ class TDIChannelData:
         channels_num, samples_num = tdi_data_array.shape
         if not (len(channels) == channels_num):
             raise ValueError(
-                f"You set channenls with {channels}, while the length of first dimension "
+                f"You set channels with {channels}, while the length of first dimension "
                 f"of input tdi_data_array is {channels_num}."
             )
         if not (self.data_info.time_series_length == samples_num):
@@ -459,11 +459,11 @@ class TDIChannelData:
         """
         if self._reset_flag:
             warnings.warn(
-                "You are setting `fd_data` with input array, whereas you have set TDI "
+                "You are setting `fd_data` with input array, but you have set TDI "
                 "data of current instance previously. Please check whether this is "
                 "intentional.\n"
                 "In order to avoid potential errors, current instance is reset. Please "
-                "regenerate TDI data of other domian or noise behavior data if needed. "
+                "regenerate TDI data of other domain or noise behavior data if needed. "
             )
             self._reset()
 
@@ -478,7 +478,7 @@ class TDIChannelData:
         channels_num, samples_num = tdi_data_array.shape
         if not (len(channels) == channels_num):
             raise ValueError(
-                f"You set channenls with {channels}, while the length of first dimension "
+                f"You set channels with {channels}, while the length of first dimension "
                 f"of input array is {channels_num}."
             )
         if not (self.data_info.frequency_series_length == samples_num):
@@ -552,11 +552,11 @@ class TDIChannelData:
         """
         if self._reset_flag:
             warnings.warn(
-                "You are setting `td_data` with zero value, whereas you have probably "
-                "set TDI data of current instance previously. Please check whether this "
-                "is intertional. \n"
+                "You are setting `td_data` with zero value, but you have set TDI "
+                "data of current instance previously. Please check whether this is "
+                "intentional.\n"
                 "In order to avoid potential errors, current instance is reset. Please "
-                "regenerate TDI data of other domian or noise behavior data if needed. "
+                "regenerate TDI data of other domain or noise behavior data if needed. "
             )
             self._reset()
 
@@ -616,11 +616,11 @@ class TDIChannelData:
         """
         if self._reset_flag:
             warnings.warn(
-                "You are setting `fd_data` with zero value, whereas you have set TDI "
+                "You are setting `fd_data` with zero value, but you have set TDI "
                 "data of current instance previously. Please check whether this is "
                 "intentional.\n"
                 "In order to avoid potential errors, current instance is reset. Please "
-                "regenerate TDI data of other domian or noise behavior data if needed."
+                "regenerate TDI data of other domain or noise behavior data if needed."
             )
             self._reset()
 
@@ -638,7 +638,7 @@ class TDIChannelData:
             self.fd_data.fill(0.0)
         elif self.backend == "jax":
             self.frequency_samples = jnp.array(
-                np.astype(self.data_info.frequency_samples_array, self._np_cp)
+                np.astype(self.data_info.frequency_samples_array, self._np_fp)
             )
             data_zero = jnp.zeros(
                 (len(channels), self.data_info.frequency_series_length), dtype=complex
@@ -683,7 +683,7 @@ class TDIChannelData:
         """
         if (self.td_data is None) or (self.fd_data is not None):
             raise ValueError(
-                "Fourier transform cannot be excuted since the `td_data` is not set or "
+                "Fourier transform cannot be executed since the `td_data` is not set or "
                 "`fd_data` has been set previously."
             )
 
@@ -795,7 +795,7 @@ class TDIChannelData:
                 psd = available_noise_models[noise_model]
             else:
                 raise ValueError(
-                    f"{noise_model} is not a implemented noise model. \n"
+                    f"{noise_model} is not an implemented noise model. \n"
                     f"Current available noise models include {[*available_noise_models.keys()]}."
                 )
         elif isinstance(noise_model, FrequencyDomainNoiseModel):
@@ -809,8 +809,8 @@ class TDIChannelData:
             )
         if self.fd_noise_power_density is not None:
             warnings.warn(
-                "You are setting `fd_noise_power_density` for current instance, whereas "
-                "it have been set previously. It will be reset and updated, please make "
+                "You are setting `fd_noise_power_density` for current instance, but "
+                "it has been set previously. It will be reset and updated, please make "
                 "sure the updated noise power density is consistent with the stored TDI data."
             )
 
@@ -861,8 +861,8 @@ class TDIChannelData:
         seed : int, optional
             Seed for the random number generator for reproducible results. Default is None.
         output_type : str, optional
-            Output format, either "taichi" to reture ``taichi.StructField`` or "numpy"
-            to reture NamedTuple of arrays. Default is "taichi".
+            Output format, either "taichi" to return ``taichi.StructField`` or "numpy"
+            to return NamedTuple of arrays. Default is "taichi".
 
         Returns
         -------
@@ -1128,7 +1128,7 @@ class TDIChannelData:
 
             assert (_np_fp_input == _np_fp_cls) and (_np_cp_input == _np_cp_cls), (
                 f"Failed to recover TDIChannelData from file {filename}.\n"
-                "The numerical precision of stored data dose not match the settings "
+                "The numerical precision of stored data does not match the settings "
                 "of the current environment.\n"
                 f"The stored data have _np_fp={_np_fp_input}, and _np_cp={_np_cp_input}.\n"
                 f"While TDIChannelData in the current environment is initialized with "
@@ -1387,7 +1387,7 @@ class TDICombinationModel(ABC):
 @ti.data_oriented
 class TDMichelsonConstantEqualArm(TDICombinationModel):
     """
-    Time-domain Michelson TDI combination for constant equal-arm detectors (**UNCOMPLETE**).
+    Time-domain Michelson TDI combination for constant equal-arm detectors (**INCOMPLETE**).
 
     This class implements TDI combinations in the time domain for space-borne
     interferometers with constant and equal arm lengths. Supports both
@@ -1415,7 +1415,7 @@ class TDMichelsonConstantEqualArm(TDICombinationModel):
             If generation is not '1.5' or '2.0'.
         """
         self.generation = str(generation)
-        if self.generation == "1.5":  # TODO: improve for unconstant armlength
+        if self.generation == "1.5":  # TODO: improve for varying armlength
             self.max_num_delay = 3
         elif self.generation == "2.0":
             self.max_num_delay = 7
@@ -1462,7 +1462,7 @@ class TDMichelsonConstantEqualArm(TDICombinationModel):
         # temporarily store the single link response with delays in the loop
         delayed_response = ti.field(SingleLinkStructReal, shape=(self.max_num_delay,))
 
-        # displeasement of time samples after delays, in the range of [0, 1].
+        # displacement of time samples after delays, in the range of [0, 1].
         # constant for each delay in the case of equal-arm, can be computed and cached before the loop.
         # note the num_delay = idx + 1
         t_frac = ti.field(float, shape=(self.max_num_delay,))
@@ -1655,8 +1655,8 @@ class _FDMichelsonConstantEqualArmTaichi(TDICombinationModel):
         """
         Initialize with the detector instance (taichi).
 
-        Basic properties are binded with self.tdi_model (external interface class),
-        detector and _cached_field are binded with self (backend-dependent internal computation class).
+        Basic properties are bound with self.tdi_model (external interface class),
+        detector and _cached_field are bound with self (backend-dependent internal computation class).
         """
         self.detector = weakref.proxy(detector)
         self.detector.tdi_response = ti.Struct.field(
