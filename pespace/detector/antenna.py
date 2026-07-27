@@ -305,7 +305,7 @@ class InterferometerAntenna:
     @property
     def tdi_response_numpy(self) -> tuple:
         """Get the TDI response as a NamedTuple of complex arrays."""
-        if self.backend == 'taichi':
+        if self.backend == "taichi":
             data_dict = field_to_complex_dict(self.tdi_response)
             DataContent = namedtuple("DataContent", self.tdi_data.data_info.channels)
             return DataContent(**data_dict)
@@ -315,12 +315,13 @@ class InterferometerAntenna:
     @property
     def single_link_response_array(self) -> tuple:
         """Get the single link response as a NamedTuple of complex arrays."""
-        if self.backend == 'taichi':
+        if self.backend == "taichi":
             data_dict = field_to_complex_dict(self.single_link_response)
-            DataContent = namedtuple('DataContent', data_dict.keys())
+            DataContent = namedtuple("DataContent", data_dict.keys())
             return DataContent(**data_dict)
         if self.backend == "jax":
             return self.single_link_response
+
 
 class SingleLinkResponseModel(ABC):
     """Abstract base class for single link response models."""
