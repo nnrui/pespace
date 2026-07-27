@@ -5,8 +5,10 @@
 # use string literal types for foward reference in python scope.
 import warnings
 from dataclasses import dataclass, field, asdict
+from collections import namedtuple
 import weakref
 from abc import ABC, abstractmethod
+from typing import NamedTuple
 
 import numpy as np
 from numpy.typing import NDArray
@@ -15,115 +17,30 @@ import h5py
 import taichi as ti
 import taichi.math as tm
 
+try:
+    import jax
+    import jax.numpy as jnp
+
+    HAS_JAX = True
+except ImportError:
+    jax = None
+    jnp = None
+    HAS_JAX = False
+
+from ._jax_impl import JaxImportError
 from .noise import FrequencyDomainNoiseModel, available_noise_models
 from ..utils.utils import (
     linear_interpolate_kernel,
-    complex_numpy_array_dict_to_taichi_field,
-    taichi_field_to_complex_numpy_array_dict,
+    complex_dict_to_field,
+    field_to_complex_dict,
     ti_complex,
     SingleLinkStructReal,
 )
 from ..utils.constants import *
 
-# @ti.func
-# def _TDI_A_FD(
-#     z: ti_complex, singlelink_responses: SingleLinksStruct
-# ) -> ti_complex:
-#     """
-#     Function for computing A channel of TDI combination in frequency domain.
-
-#     Parameters:
-#     ===========
-#     z:
-#         Delay factor, exp(-1j*2*PI*f*arm_length_sec).
-#     singlelink_responses:
-#         Responses of each link.
-
-#     Returns:
-#     ========
-#     A channel without the generation prefactor.
-#     """
-#     return (
-#         singlelink_responses["link23"]
-#         + tm.cmul(z, singlelink_responses["link32"])
-#         + singlelink_responses["link21"]
-#         + tm.cmul(z, singlelink_responses["link12"])
-#         - tm.cmul(
-#             (ti_complex(1, 0) + z),
-#             (singlelink_responses["link13"]) + singlelink_responses["link31"],
-#         )
-#     ) / tm.sqrt(2)
-
-
-# @ti.func
-# def _TDI_E_FD(
-#     z: ti_complex, singlelink_responses: SingleLinksStruct
-# ) -> ti_complex:
-#     """
-#     Function for computing E channel of TDI combination in frequency domain.
-
-#     Parameters:
-#     ===========
-#     z:
-#         Delay factor, exp(-1j*2*PI*f*arm_length_sec).
-#     singlelink_responses:
-#         Responses of each link.
-
-#     Returns:
-#     ========
-#     E channel without the generation prefactor.
-#     """
-#     return (
-#         tm.cmul(
-#             (ti_complex(1, 0) - z),
-#             (singlelink_responses["link31"] - singlelink_responses["link13"]),
-#         )
-#         + tm.cmul(
-#             (z + ti_complex(2, 0)),
-#             (singlelink_responses["link32"] - singlelink_responses["link12"]),
-#         )
-#         + tm.cmul(
-#             (ti_complex(1, 0) + 2 * z),
-#             (singlelink_responses["link23"] - singlelink_responses["link21"]),
-#         )
-#     ) / tm.sqrt(6)
-
-
-# @ti.func
-# def _TDI_T_FD(
-#     z: ti_complex, singlelink_responses: SingleLinksStruct
-# ) -> ti_complex:
-#     """
-#     Function for computing T channel of TDI combination in frequency domain.
-
-#     Parameters:
-#     ===========
-#     z:
-#         Delay factor, exp(-1j*2*PI*f*arm_length_sec).
-#     singlelink_responses:
-#         Responses of each link.
-
-#     Returns:
-#     ========
-#     T channel without the generation prefactor.
-#     """
-#     return (
-#         tm.cmul(
-#             (
-#                 singlelink_responses["link12"]
-#                 - singlelink_responses["link21"]
-#                 + singlelink_responses["link23"]
-#                 - singlelink_responses["link32"]
-#                 + singlelink_responses["link31"]
-#                 - singlelink_responses["link13"]
-#             ),
-#             (ti_complex(1, 0) - z),
-#         )
-#     ) / tm.sqrt(3)
-
 
 @ti.kernel
-def _add_input_field_into_tdi_data(tdi_data: ti.template(), input: ti.template()):
+def _add_into_tdi_data(tdi_data: ti.template(), input: ti.template()):
     """
     Add the input into TDI data.
 
@@ -160,9 +77,9 @@ class DataInformation:
     start_time : float
         Time label for the first time sample, in seconds.
     minimum_frequency : float
-        Minimum frequency for the limited frequency band, in Hz.
+        Minimum frequency of the frequency band, in Hz.
     maximum_frequency : float
-        Maximum frequency for the limited frequency band, in Hz.
+        Maximum frequency of the frequency band, in Hz.
     sampling_frequency : float
         Sampling frequency, computed as 1/delta_time.
     delta_frequency : float
@@ -245,16 +162,16 @@ class DataInformation:
 class TDIChannelData:
     """Store and manipulate TDI channel data."""
 
-    def __init__(self, scaling: bool = False) -> None:
+    def __init__(self, scaling: bool = False, backend: str = "taichi") -> None:
         """
-        Initialize TDIChannelData instance.
-
         Parameters
         ----------
         scaling : bool, optional
             Whether to apply scaling to the data. Default is False.
             If False and using ``f32`` precision, a warning will be issued about
             potential numerical errors.
+        backend : str, optional
+            Computation backend, ``'taichi'`` (default) or ``'jax'``.
 
         Raises
         ------
@@ -262,28 +179,33 @@ class TDIChannelData:
             If scaling is False and default float precision is ``f32``.
         """
         self.scaling = scaling
-        if (not scaling) and (
-            ti.lang.impl.current_cfg().default_fp.to_string() == "f32"
-        ):
+        self.backend = backend
+        self._reset()
+
+        if backend == "jax":
+            if not HAS_JAX:
+                raise JaxImportError
+            is_f64_enabled = jax.config.jax_enable_x64
+        elif backend == "taichi":
+            is_f64_enabled = ti.lang.impl.current_cfg().default_fp.to_string() == "f64"
+        else:
+            raise ValueError(f"Invalid backend: {backend}")
+
+        if (not is_f64_enabled) and (not scaling):
             warnings.warn(
-                "The current default float precision is f32, but no scaling has been applied. "
-                "Please be aware of potential numerical errors or underflow issues. "
+                "The current default float precision is f32, but no scaling has "
+                "been applied. Please be aware of potential numerical errors or "
+                "underflow issues. "
             )
 
-        if ti.lang.impl.current_cfg().default_fp.to_string() == "f32":
+        if not is_f64_enabled:
             self._np_fp = np.float32
             self._np_cp = np.complex64
         else:
             self._np_fp = np.float64
             self._np_cp = np.complex128
 
-        self._initialize_state()
-
     def _reset(self) -> None:
-        """Reset the instance to initial state."""
-        self._initialize_state()
-
-    def _initialize_state(self) -> None:
         """Initialize all data fields to None."""
         self.time_samples = None
         self.frequency_samples = None
@@ -293,7 +215,7 @@ class TDIChannelData:
         self.fd_data = None
         self.wd_data = None
 
-        # self.td_noise_correlation_function = None
+        self.td_noise_auto_correlation_function = None
         self.fd_noise_power_density = None
         self.wd_noise_power_density = None
 
@@ -322,7 +244,7 @@ class TDIChannelData:
         maximum_frequency: float,
     ) -> None:
         """
-        Set data information for TDI channels.
+        Set data information.
 
         Parameters
         ----------
@@ -335,9 +257,9 @@ class TDIChannelData:
         start_time : float
             Time label for the first time sample, in seconds.
         minimum_frequency : float
-            Minimum frequency for the limited frequency band, in Hz.
+            Minimum frequency of the frequency band, in Hz.
         maximum_frequency : float
-            Maximum frequency for the limited frequency band, in Hz.
+            Maximum frequency of the frequency band, in Hz.
 
         Raises
         ------
@@ -359,7 +281,7 @@ class TDIChannelData:
             maximum_frequency,
         )
 
-    def _init_td_data(self) -> None:
+    def _init_td_data_taichi(self) -> None:
         """
         Initialize ``taichi.field`` for time domain data.
 
@@ -376,7 +298,7 @@ class TDIChannelData:
             shape=(self.data_info.time_series_length,),
         )
 
-    def _init_fd_data(self) -> None:
+    def _init_fd_data_taichi(self) -> None:
         """
         Initialize ``taichi.field`` for frequency domain data.
 
@@ -395,14 +317,13 @@ class TDIChannelData:
             shape=(self.data_info.frequency_series_length,),
         )
 
-    def _init_wd_data(self) -> None:
+    def _init_wd_data_taichi(self) -> None:
         """
         Initialize ``taichi.field`` for wavelet domain data.
 
         Raises
         ------
         NotImplementedError
-            This method is not yet implemented.
         """
         raise NotImplementedError()
 
@@ -433,9 +354,9 @@ class TDIChannelData:
         start_time : float, optional
             Time label for the first time sample, in seconds. Default is 0.0.
         minimum_frequency : float, optional
-            Minimum frequency for the limited frequency band, in Hz. Default is 1e-5.
+            Minimum frequency of the frequency band, in Hz. Default is 1e-5.
         maximum_frequency : float, optional
-            Maximum frequency for the limited frequency band, in Hz. Default is 0.1.
+            Maximum frequency of the frequency band, in Hz. Default is 0.1.
 
         Raises
         ------
@@ -447,7 +368,8 @@ class TDIChannelData:
         if self._reset_flag:
             warnings.warn(
                 "You are setting `td_data` with input array, whereas you have set TDI "
-                "data of current instance previously. Please check whether this is intertional.\n"
+                "data of current instance previously. Please check whether this is "
+                "intentional.\n"
                 "In order to avoid potential errors, current instance is reset. Please "
                 "regenerate TDI data of other domian or noise behavior data if needed."
             )
@@ -462,22 +384,32 @@ class TDIChannelData:
             maximum_frequency,
         )
         channels_num, samples_num = tdi_data_array.shape
-        if not len(channels) == channels_num:
+        if not (len(channels) == channels_num):
             raise ValueError(
                 f"You set channenls with {channels}, while the length of first dimension "
                 f"of input tdi_data_array is {channels_num}."
             )
-        if not self.data_info.time_series_length == samples_num:
+        if not (self.data_info.time_series_length == samples_num):
             raise ValueError(
                 f"The length of second dimension of input array is {samples_num}. It is "
                 f"different with the `time_series_length={self.data_info.time_series_length}` "
                 f"which is set according to the duration and delta_time by `int(duration//delta_time + 1)`."
             )
 
-        self._init_td_data()
-        self.td_data.from_numpy(
-            dict(zip(channels, np.astype(tdi_data_array, self._np_fp)))
-        )
+        if self.backend == "taichi":
+            self._init_td_data_taichi()
+            self.td_data.from_numpy(
+                dict(zip(channels, np.astype(tdi_data_array, self._np_fp)))
+            )  # The order in channels list must match the order in tdi_data_array
+        elif self.backend == "jax":
+            self.time_samples = jnp.array(
+                np.astype(self.data_info.time_samples_array, self._np_fp)
+            )
+            DataContent = namedtuple("DataContent", channels)
+            data_in = dict(
+                zip(channels, jnp.array(np.astype(tdi_data_array, self._np_fp)))
+            )  # The order in channels list must match the order in tdi_data_array
+            self.td_data = DataContent(**data_in)
 
         self._reset_flag = True
 
@@ -508,9 +440,9 @@ class TDIChannelData:
         start_time : float, optional
             Time label for the first time sample, in seconds. Default is 0.0.
         minimum_frequency : float, optional
-            Minimum frequency for the limited frequency band, in Hz. Default is 1e-5.
+            Minimum frequency of the frequency band, in Hz. Default is 1e-5.
         maximum_frequency : float, optional
-            Maximum frequency for the limited frequency band, in Hz. Default is 0.1.
+            Maximum frequency of the frequency band, in Hz. Default is 0.1.
 
         Raises
         ------
@@ -527,9 +459,9 @@ class TDIChannelData:
         """
         if self._reset_flag:
             warnings.warn(
-                "You are setting `fd_data` with input array, whereas you have probably "
-                "set TDI data of current instance previously. Please check whether this "
-                "is intertional. \n"
+                "You are setting `fd_data` with input array, whereas you have set TDI "
+                "data of current instance previously. Please check whether this is "
+                "intentional.\n"
                 "In order to avoid potential errors, current instance is reset. Please "
                 "regenerate TDI data of other domian or noise behavior data if needed. "
             )
@@ -544,12 +476,12 @@ class TDIChannelData:
             maximum_frequency,
         )
         channels_num, samples_num = tdi_data_array.shape
-        if not len(channels) == channels_num:
+        if not (len(channels) == channels_num):
             raise ValueError(
                 f"You set channenls with {channels}, while the length of first dimension "
                 f"of input array is {channels_num}."
             )
-        if not self.data_info.frequency_series_length == samples_num:
+        if not (self.data_info.frequency_series_length == samples_num):
             raise ValueError(
                 f"The length of second dimension of input array is {samples_num}. It is "
                 f"different with the `frequency_series_length={self.data_info.frequency_series_length}` "
@@ -558,21 +490,31 @@ class TDIChannelData:
                 f"before input. Please check the input again or open an issue."
             )
 
-        self._init_fd_data()
-        self.fd_data.from_numpy(
-            dict(
-                zip(
-                    channels,
-                    np.stack(
-                        (
-                            np.astype(tdi_data_array.real, self._np_fp),
-                            np.astype(tdi_data_array.imag, self._np_fp),
+        if self.backend == "taichi":
+            self._init_fd_data_taichi()
+            self.fd_data.from_numpy(
+                dict(
+                    zip(
+                        channels,
+                        np.stack(
+                            (
+                                np.astype(tdi_data_array.real, self._np_fp),
+                                np.astype(tdi_data_array.imag, self._np_fp),
+                            ),
+                            axis=-1,
                         ),
-                        axis=-1,
-                    ),
+                    )
                 )
             )
-        )
+        elif self.backend == "jax":
+            self.frequency_samples = jnp.array(
+                np.astype(self.data_info.frequency_samples_array, self._np_fp)
+            )
+            DataContent = namedtuple("DataContent", channels)
+            data_in = dict(
+                zip(channels, jnp.array(np.astype(tdi_data_array, self._np_cp)))
+            )
+            self.fd_data = DataContent(**data_in)
 
         self._reset_flag = True
 
@@ -599,9 +541,9 @@ class TDIChannelData:
         start_time : float, optional
             Time label for the first time sample, in seconds. Default is 0.0.
         minimum_frequency : float, optional
-            Minimum frequency for the limited frequency band, in Hz. Default is 1e-5.
+            Minimum frequency of the frequency band, in Hz. Default is 1e-5.
         maximum_frequency : float, optional
-            Maximum frequency for the limited frequency band, in Hz. Default is 0.1.
+            Maximum frequency of the frequency band, in Hz. Default is 0.1.
 
         Raises
         ------
@@ -627,8 +569,16 @@ class TDIChannelData:
             maximum_frequency,
         )
 
-        self._init_td_data()
-        self.td_data.fill(0.0)
+        if self.backend == "taichi":
+            self._init_td_data_taichi()
+            self.td_data.fill(0.0)
+        elif self.backend == "jax":
+            self.time_samples = jnp.array(
+                np.astype(self.data_info.time_samples_array, self._np_fp)
+            )
+            data_zero = jnp.zeros((len(channels), self.data_info.time_series_length))
+            DataContent = namedtuple("DataContent", channels)
+            self.td_data = DataContent(*data_zero)
 
         self._reset_flag = True
 
@@ -655,9 +605,9 @@ class TDIChannelData:
         start_time : float, optional
             Time label for the first time sample, in seconds. Default is 0.0.
         minimum_frequency : float, optional
-            Minimum frequency for the limited frequency band, in Hz. Default is 1e-5.
+            Minimum frequency of the frequency band, in Hz. Default is 1e-5.
         maximum_frequency : float, optional
-            Maximum frequency for the limited frequency band, in Hz. Default is 0.1.
+            Maximum frequency of the frequency band, in Hz. Default is 0.1.
 
         Raises
         ------
@@ -666,11 +616,11 @@ class TDIChannelData:
         """
         if self._reset_flag:
             warnings.warn(
-                "You are setting `fd_data` with zero value, whereas you have probably "
-                "set TDI data of current instance previously. Please check whether this "
-                "is intertional. \n"
+                "You are setting `fd_data` with zero value, whereas you have set TDI "
+                "data of current instance previously. Please check whether this is "
+                "intentional.\n"
                 "In order to avoid potential errors, current instance is reset. Please "
-                "regenerate TDI data of other domian or noise behavior data if needed. "
+                "regenerate TDI data of other domian or noise behavior data if needed."
             )
             self._reset()
 
@@ -683,8 +633,18 @@ class TDIChannelData:
             maximum_frequency,
         )
 
-        self._init_fd_data()
-        self.fd_data.fill(0.0)
+        if self.backend == "taichi":
+            self._init_fd_data_taichi()
+            self.fd_data.fill(0.0)
+        elif self.backend == "jax":
+            self.frequency_samples = jnp.array(
+                np.astype(self.data_info.frequency_samples_array, self._np_cp)
+            )
+            data_zero = jnp.zeros(
+                (len(channels), self.data_info.frequency_series_length), dtype=complex
+            )
+            DataContent = namedtuple("DataContent", channels)
+            self.fd_data = DataContent(*data_zero)
 
         self._reset_flag = True
 
@@ -695,7 +655,6 @@ class TDIChannelData:
         Raises
         ------
         NotImplementedError
-            This method is not yet implemented.
         """
         raise NotImplementedError()
 
@@ -708,7 +667,7 @@ class TDIChannelData:
 
         Parameters
         ----------
-        window : None, float, str, tuple, or NDArray, optional
+        window : None, float, str, tuple, or NDArray, optional.
             Window function to apply before FFT. See ``scipy.signal.get_window`` for details.
             If None, no windowing is applied. Default is None.
 
@@ -719,47 +678,52 @@ class TDIChannelData:
 
         Notes
         -----
-
         - time-shift of start time is not applied in current implementation.
-        - The FFT is normalized by dividing by the sampling frequency.
+        - The FFT is normalized by dividing of the sampling frequency.
         """
-
         if (self.td_data is None) or (self.fd_data is not None):
             raise ValueError(
                 "Fourier transform cannot be excuted since the `td_data` is not set or "
                 "`fd_data` has been set previously."
             )
+
+        if window is None:
+            weight = np.ones(self.data_info.time_series_length)
+        elif isinstance(window, np.ndarray):
+            weight = window
         else:
-            self._init_fd_data()
+            weight = signal.get_window(window, self.data_info.time_series_length)
 
-            if window is None:
-                weight = np.ones(self.data_info.time_series_length)
-            elif isinstance(window, np.ndarray):
-                weight = window
-            else:
-                weight = signal.get_window(window, self.data_info.time_series_length)
+        fd_data_numpy = dict.fromkeys(self.data_info.channels)
+        td_data_numpy = self.td_data.to_numpy()
 
-            fd_data_numpy = dict.fromkeys(self.data_info.channels)
-            td_data_numpy = self.td_data.to_numpy()
+        # start_time_shift = np.exp(
+        #     -1j
+        #     * 2
+        #     * PI
+        #     * self.data_info.time_samples_array[0]
+        #     * self.data_info.full_frequency_samples_array
+        # )
 
-            # start_time_shift = np.exp(
-            #     -1j
-            #     * 2
-            #     * PI
-            #     * self.data_info.time_samples_array[0]
-            #     * self.data_info.full_frequency_samples_array
-            # )
+        for chan in self.data_info.channels:
+            td_data_chan = td_data_numpy[chan]
+            windowed_data = td_data_chan * weight
+            fd_data_chan = np.fft.rfft(windowed_data)
+            # fd_data_chan *= start_time_shift / self.data_info.sampling_frequency
+            fd_data_chan /= self.data_info.sampling_frequency
+            fd_data_chan = fd_data_chan[self.data_info.frequency_mask_array]
+            fd_data_numpy[chan] = np.astype(fd_data_chan, self._np_cp)
 
-            for chan in self.data_info.channels:
-                td_data_chan = td_data_numpy[chan]
-                windowed_data = td_data_chan * weight
-                fd_data_chan = np.fft.rfft(windowed_data)
-                # fd_data_chan *= start_time_shift / self.data_info.sampling_frequency
-                fd_data_chan /= self.data_info.sampling_frequency
-                fd_data_chan = fd_data_chan[self.data_info.frequency_mask_array]
-                fd_data_numpy[chan] = np.astype(fd_data_chan, self._np_fp)
-
-            complex_numpy_array_dict_to_taichi_field(fd_data_numpy, self.fd_data)
+        if self.backend == "taichi":
+            self._init_fd_data_taichi()
+            complex_dict_to_field(fd_data_numpy, self.fd_data)
+        elif self.backend == "jax":
+            self.frequency_samples = jnp.array(
+                np.astype(self.data_info.frequency_samples_array, self._np_fp)
+            )
+            DataContent = namedtuple("DataContent", self.data_info.channels)
+            data_in = jax.tree.map(jnp.array, fd_data_numpy)
+            self.fd_data = DataContent(**data_in)
 
     def set_td_data_from_fd(
         self,
@@ -771,7 +735,6 @@ class TDIChannelData:
         Raises
         ------
         NotImplementedError
-            This method is not yet implemented.
         """
         raise NotImplementedError()
 
@@ -782,7 +745,6 @@ class TDIChannelData:
         Raises
         ------
         NotImplementedError
-            This method is not yet implemented.
         """
         raise NotImplementedError()
 
@@ -793,7 +755,6 @@ class TDIChannelData:
         Raises
         ------
         NotImplementedError
-            This method is not yet implemented.
         """
         raise NotImplementedError()
 
@@ -804,7 +765,6 @@ class TDIChannelData:
         Raises
         ------
         NotImplementedError
-            This method is not yet implemented.
         """
         raise NotImplementedError()
 
@@ -836,7 +796,7 @@ class TDIChannelData:
             else:
                 raise ValueError(
                     f"{noise_model} is not a implemented noise model. \n"
-                    f"Current available noise models including {[*available_noise_models.keys()]}."
+                    f"Current available noise models include {[*available_noise_models.keys()]}."
                 )
         elif isinstance(noise_model, FrequencyDomainNoiseModel):
             psd = noise_model
@@ -844,7 +804,7 @@ class TDIChannelData:
         if self.data_info is None:
             raise ValueError(
                 "The `data_info` has not yet set. Can not obtain `frequency_series_length` "
-                "to initialize `fd_noise_power_density` Please first set TDI data in any "
+                "to initialize `fd_noise_power_density`. Please first set TDI data in any "
                 "domain or call directly `set_data_info`."
             )
         if self.fd_noise_power_density is not None:
@@ -853,18 +813,28 @@ class TDIChannelData:
                 "it have been set previously. It will be reset and updated, please make "
                 "sure the updated noise power density is consistent with the stored TDI data."
             )
-        self.fd_noise_power_density = ti.Struct.field(
-            dict.fromkeys(self.data_info.channels, float),
-            shape=(self.data_info.frequency_series_length,),
+
+        psd_data = psd(
+            self.data_info.frequency_samples_array,
+            self.data_info.channels,
+            self.scaling,
+            **model_kwards,
         )
-        self.fd_noise_power_density.from_numpy(
-            psd(
-                self.data_info.frequency_samples_array,
-                self.data_info.channels,
-                self.scaling,
-                **model_kwards,
+        psd_dict = {
+            chan: np.astype(psd_data[chan], self._np_fp)
+            for chan in self.data_info.channels
+        }
+
+        if self.backend == "taichi":
+            self.fd_noise_power_density = ti.Struct.field(
+                dict.fromkeys(self.data_info.channels, float),
+                shape=(self.data_info.frequency_series_length,),
             )
-        )
+            self.fd_noise_power_density.from_numpy(psd_dict)
+        elif self.backend == "jax":
+            psd_dict_jax = jax.tree.map(jnp.array, psd_dict)
+            DataContent = namedtuple("DataContent", self.data_info.channels)
+            self.fd_noise_power_density = DataContent(**psd_dict_jax)
 
     def get_td_noise_realization(self):
         """
@@ -873,31 +843,30 @@ class TDIChannelData:
         Raises
         ------
         NotImplementedError
-            This method is not yet implemented.
         """
         raise NotImplementedError()
 
     def get_fd_noise_realization(
         self, seed=None, output_type: str = "taichi"
-    ) -> ti.StructField | dict[str, NDArray]:
+    ) -> ti.StructField | NamedTuple:
         """
         Generate a noise realization in frequency domain from the power spectral density.
 
         This method generates colored Gaussian noise in the frequency domain based on
         the stored noise power spectral density. The noise is generated as white noise
-        and then colored by multiplying with the square root of the PSD.
+        and then colored by multiplying with the square root of the psd.
 
         Parameters
         ----------
         seed : int, optional
             Seed for the random number generator for reproducible results. Default is None.
         output_type : str, optional
-            Output format, either "taichi" for ``taichi.StructField`` or "numpy" for dict of arrays.
-            Default is "taichi".
+            Output format, either "taichi" to reture ``taichi.StructField`` or "numpy"
+            to reture NamedTuple of arrays. Default is "taichi".
 
         Returns
         -------
-        ti.StructField or dict[str, NDArray]
+        ti.StructField or NamedTuple
             Noise realization in frequency domain. Format depends on ``output_type`` parameter.
 
         Raises
@@ -914,7 +883,7 @@ class TDIChannelData:
 
         Notes
         -----
-        To avoid directly modifying the stored tdi_data internally, which could potentially
+        To avoid directly modifying the stored tdi_data internally, which may accidentally
         lead to mismatch among data of different domains, this method only returns the
         generated noise data. Use ``add_into_fd_data`` to manually add the noise realization
         into the TDI data.
@@ -950,9 +919,10 @@ class TDIChannelData:
                 dict.fromkeys(self.data_info.channels, ti_complex),
                 shape=(self.data_info.frequency_series_length,),
             )
-            complex_numpy_array_dict_to_taichi_field(noise, ret)
+            complex_dict_to_field(noise, ret)
         elif output_type == "numpy":
-            ret = noise
+            DataContent = namedtuple("DataContent", self.data_info.channels)
+            ret = DataContent(**noise)
         else:
             raise ValueError(f"Unknown output_type: {output_type}")
 
@@ -965,67 +935,78 @@ class TDIChannelData:
         Raises
         ------
         NotImplementedError
-            This method is not yet implemented.
         """
         raise NotImplementedError()
 
-    def add_into_fd_data(self, input: ti.StructField | dict[str, NDArray]) -> None:
+    def add_into_fd_data(self, input: ti.StructField | NamedTuple) -> None:
         """
         Add input data into frequency domain TDI data.
 
         Parameters
         ----------
-        input : ti.StructField or dict[str, NDArray]
-            Input data to add. Can be either a ``taichi.StructField`` or a dictionary
-            of numpy arrays. Must have the same shape and channels as ``fd_data``.
+        input : ti.StructField or NamedTuple
+            Input data to add. If backend is ``taichi``, expect ``StructField`` as input.
+            If backend is``jax``, expect ``NamedTuple`` as input.
+            The input data must have the same shape and channels as ``fd_data``.
 
         Raises
         ------
         ValueError
             If input shape or channels do not match ``fd_data``.
         TypeError
-            If input type is not ``taichi.StructField`` or ``dict[str, NDArray]``.
+            If input type is not ``taichi.StructField`` for ``taichi`` backend,
+            or not ``Namedtuple`` for jax backend.
         """
-        if isinstance(input, ti.StructField):
-            if not input.shape == (self.data_info.frequency_series_length,):
+        if self.backend == "taichi":
+            if not isinstance(input, ti.StructField):
+                raise TypeError(
+                    f"Expected input to be taichi.StructField for taichi backend, but "
+                    f"got {type(input).__name__}."
+                )
+            if not (input.shape == (self.data_info.frequency_series_length,)):
                 raise ValueError(
                     "Cannot add the input StructField into the `fd_data`, since the shape "
                     "of input is different with the `fd_data`"
                 )
-            if not set(input.keys) == set(self.data_info.channels):
+            if not (set(input.keys) == set(self.data_info.channels)):
                 raise ValueError(
                     "Cannot add the input StructField into the `fd_data`, since the channnels "
                     "contained by input is different with the `fd_data`"
                 )
-            input_field = input
+            _add_into_tdi_data(self.fd_data, input)
 
-        elif isinstance(input, dict):
+        elif self.backend == "jax":
+            if not (isinstance(input, tuple) and hasattr(input, "_fields")):
+                raise TypeError(
+                    f"Expected input to be a NamedTuple instance for jax backend, but "
+                    f"got {type(input).__name__}."
+                )
             if not all(
                 [
-                    len(data) == self.data_info.frequency_series_length
-                    for _, data in input.items()
+                    data.shape == (self.data_info.frequency_series_length,)
+                    for data in input
                 ]
             ):
                 raise ValueError(
-                    "Cannot add the input dict of array into the `fd_data`, since there "
-                    "is at least one array in the input dict having different length with "
+                    "Cannot add the input NamedTuple into the `fd_data`, since there "
+                    "is at least one array in the input having different length with "
                     "the TDI data."
                 )
-            if not set(input.keys()) == set(self.data_info.channels):
+            if not (set(input._fields) == set(self.data_info.channels)):
                 raise ValueError(
-                    "Cannot add the input dict of array into the `fd_data`, since the channnels "
-                    "contained by input is different with the TDI data"
+                    "Cannot add the input NamedTuple of array into the `fd_data`, since "
+                    "the channnels contained by input is different with the TDI data."
                 )
-            input_field = ti.Struct.field(
-                dict.fromkeys(self.data_info.channels, ti_complex),
-                shape=(self.data_info.frequency_series_length,),
-            )
-            complex_numpy_array_dict_to_taichi_field(input, input_field)
+            DataContent = namedtuple("DataContent", self.data_info.channels)
+            data_dict = {
+                chan: getattr(self.fd_data, chan) + getattr(input, chan)
+                for chan in self.data_info.channels
+            }
+            data_dict_jax = jax.tree.map(jnp.array, data_dict)
+            self.fd_data = DataContent(**data_dict_jax)
 
         else:
-            raise TypeError("Unsupported type, expect ti.StructField or dict[NDArray]")
-
-        _add_input_field_into_tdi_data(self.fd_data, input_field)
+            raise ValueError(f"Invalid backend: {self.backend}")
 
     def add_into_wd_data(self) -> None:
         """
@@ -1034,23 +1015,22 @@ class TDIChannelData:
         Raises
         ------
         NotImplementedError
-            This method is not yet implemented.
         """
         raise NotImplementedError()
 
     def save_to_file(self, filename: str) -> None:
         """
-        Save the data stored in the instance to an HDF5 file.
+        Save the data of the instance to an hdf5 file.
 
         Parameters
         ----------
         filename : str
-            Path to the output HDF5 file.
+            Path to the output hdf5 file.
 
         Notes
         -----
-        The file will contain three groups:
-
+        The file will contain groups:
+        - class_attrs: including ``scaling``, ``backend``, ``_np_fp``, and ``_np_cp``
         - data_info: metadata about the TDI data
         - tdi_data: TDI data in various domains (``td_data``, ``fd_data``, ``wd_data``)
         - noise_data: noise power spectral densities
@@ -1066,6 +1046,24 @@ class TDIChannelData:
         ]
 
         with h5py.File(filename, "x") as file:
+            file.create_dataset("class_attrs/scaling", data=np.array(self.scaling))
+            file.create_dataset(
+                "class_attrs/backend",
+                data=np.array(self.backend, dtype=h5py.string_dtype(encoding="utf-8")),
+            )
+            file.create_dataset(
+                "class_attrs/_np_fp",
+                data=np.array(
+                    self._np_fp.__name__, dtype=h5py.string_dtype(encoding="utf-8")
+                ),
+            )
+            file.create_dataset(
+                "class_attrs/_np_cp",
+                data=np.array(
+                    self._np_cp.__name__, dtype=h5py.string_dtype(encoding="utf-8")
+                ),
+            )
+
             for key, data in asdict(self.data_info).items():
                 if key == "channels":
                     file.create_dataset(
@@ -1076,21 +1074,23 @@ class TDIChannelData:
                     file.create_dataset(f"data_info/{key}", data=np.array(data))
 
             for key in tdi_data:
-                data = getattr(self, key)
+                data = getattr(self, f"{key}_numpy")
                 if data is not None:
-                    for chan, chan_array in data.to_numpy().items():
+                    for chan in self.data_info.channels:
+                        chan_array = getattr(data, chan)
                         file.create_dataset(f"tdi_data/{key}/{chan}", data=chan_array)
 
             for key in noise_data:
-                data = getattr(self, key)
+                data = getattr(self, f"{key}_numpy")
                 if data is not None:
-                    for chan, chan_array in data.to_numpy().items():
+                    for chan in self.data_info.channels:
+                        chan_array = getattr(data, chan)
                         file.create_dataset(f"noise_data/{key}/{chan}", data=chan_array)
 
     @staticmethod
     def recover_from_file(filename: str) -> "TDIChannelData":
         """
-        Recover TDIChannelData instance from an HDF5 file.
+        Recover TDIChannelData instance from an hdf5 file.
 
         This method reconstructs a ``TDIChannelData`` instance from a file saved by
         the ``save_to_file`` method.
@@ -1098,7 +1098,7 @@ class TDIChannelData:
         Parameters
         ----------
         filename : str
-            Path to the input HDF5 file.
+            Path to the input hdf5 file.
 
         Returns
         -------
@@ -1112,12 +1112,29 @@ class TDIChannelData:
 
         Notes
         -----
-        For other data formats, use methods for setting from input arrays according
+        - For other data formats, use methods for setting from input arrays according
         to the domain of the data, such as ``set_td_data_from_input``, etc.
+        - The numerical precision should match the settings of the current environment.
         """
-        ret_cls = TDIChannelData()
-
         with h5py.File(filename, "r") as file:
+            scaling = file["class_attrs/scaling"][()].astype(bool)
+            backend = file["class_attrs/backend"][()].astype(str)
+            ret_cls = TDIChannelData(scaling=scaling, backend=backend)
+
+            _np_fp_input = file["class_attrs/_np_fp"][()].astype(str)
+            _np_cp_input = file["class_attrs/_np_cp"][()].astype(str)
+            _np_fp_cls = ret_cls._np_fp.__name__
+            _np_cp_cls = ret_cls._np_cp.__name__
+
+            assert (_np_fp_input == _np_fp_cls) and (_np_cp_input == _np_cp_cls), (
+                f"Failed to recover TDIChannelData from file {filename}.\n"
+                "The numerical precision of stored data dose not match the settings "
+                "of the current environment.\n"
+                f"The stored data have _np_fp={_np_fp_input}, and _np_cp={_np_cp_input}.\n"
+                f"While TDIChannelData in the current environment is initialized with "
+                f"_np_fp={_np_fp_cls}, and _np_cp={_np_cp_cls}."
+            )
+
             channels = tuple(file["data_info/channels"][()].astype(str))
             duration = float(file["data_info/duration"][()])
             delta_time = float(file["data_info/delta_time"][()])
@@ -1195,44 +1212,77 @@ class TDIChannelData:
 
             tdi_data_group = file["tdi_data"]
             if "td_data" in tdi_data_group:
-                ret_cls._init_td_data()
-                ret_cls.td_data.from_numpy(
-                    {
-                        chan: dataset[()]
-                        for chan, dataset in tdi_data_group["td_data"].items()
-                    }
-                )
+                data_dict = {
+                    chan: dataset[()]
+                    for chan, dataset in tdi_data_group["td_data"].items()
+                }
+                if ret_cls.backend == "taichi":
+                    ret_cls._init_td_data_taichi()
+                    ret_cls.td_data.from_numpy(data_dict)
+                elif ret_cls.backend == "jax":
+                    ret_cls.time_samples = jnp.array(
+                        np.astype(ret_cls.data_info.time_samples_array, ret_cls._np_fp)
+                    )
+                    DataContent = namedtuple("DataContent", ret_cls.data_info.channels)
+                    data_dict_jax = jax.tree.map(jnp.array, data_dict)
+                    ret_cls.td_data = DataContent(**data_dict_jax)
+                else:
+                    raise ValueError(f"Invalid backend: {backend}")
+
             if "fd_data" in tdi_data_group:
-                ret_cls._init_fd_data()
-                ret_cls.fd_data.from_numpy(
-                    {
-                        chan: dataset[()]
-                        for chan, dataset in tdi_data_group["fd_data"].items()
-                    }
-                )
+                data_dict = {
+                    chan: dataset[()]
+                    for chan, dataset in tdi_data_group["fd_data"].items()
+                }
+                if ret_cls.backend == "taichi":
+                    ret_cls._init_fd_data_taichi()
+                    complex_dict_to_field(data_dict, ret_cls.fd_data)
+                elif ret_cls.backend == "jax":
+                    ret_cls.frequency_samples = jnp.array(
+                        np.astype(
+                            ret_cls.data_info.frequency_samples_array, ret_cls._np_fp
+                        )
+                    )
+                    DataContent = namedtuple("DataContent", ret_cls.data_info.channels)
+                    data_dict_jax = jax.tree.map(jnp.array, data_dict)
+                    ret_cls.fd_data = DataContent(**data_dict_jax)
+                else:
+                    raise ValueError(f"Invalid backend: {backend}")
+
             if "wd_data" in tdi_data_group:
-                ret_cls._init_wd_data()
-                ret_cls.wd_data.from_numpy(
-                    {
-                        chan: dataset[()]
-                        for chan, dataset in tdi_data_group["wd_data"].items()
-                    }
-                )
+                data_dict = {
+                    chan: dataset[()]
+                    for chan, dataset in tdi_data_group["wd_data"].items()
+                }
+                if ret_cls.backend == "taichi":
+                    ret_cls._init_wd_data_taichi()
+                    ret_cls.wd_data.from_numpy(data_dict)
+                elif ret_cls.backend == "jax":
+                    pass # TODO
+                else:
+                    raise ValueError(f"Invalid backend: {backend}")
 
             noise_data_group = file["noise_data"]
             if "fd_noise_power_density" in noise_data_group:
-                ret_cls.fd_noise_power_density = ti.Struct.field(
-                    dict.fromkeys(ret_cls.data_info.channels, float),
-                    shape=(ret_cls.data_info.frequency_series_length,),
-                )
-                ret_cls.fd_noise_power_density.from_numpy(
-                    {
-                        chan: dataset[()]
-                        for chan, dataset in noise_data_group[
-                            "fd_noise_power_density"
-                        ].items()
-                    }
-                )
+                data_dict = {
+                    chan: dataset[()]
+                    for chan, dataset in noise_data_group[
+                        "fd_noise_power_density"
+                    ].items()
+                }
+                if ret_cls.backend == "taichi":
+                    ret_cls.fd_noise_power_density = ti.Struct.field(
+                        dict.fromkeys(ret_cls.data_info.channels, float),
+                        shape=(ret_cls.data_info.frequency_series_length,),
+                    )
+                    ret_cls.fd_noise_power_density.from_numpy(data_dict)
+                elif ret_cls.backend == "jax":
+                    DataContent = namedtuple("DataContent", ret_cls.data_info.channels)
+                    data_dict_jax = jax.tree.map(jnp.array, data_dict)
+                    ret_cls.fd_noise_power_density = DataContent(**data_dict_jax)
+                else:
+                    raise ValueError(f"Invalid backend: {backend}")
+
             if "wd_noise_power_density" in noise_data_group:
                 raise NotImplementedError()
 
@@ -1241,82 +1291,96 @@ class TDIChannelData:
         return ret_cls
 
     @property
-    def td_data_numpy(self) -> dict[str, NDArray]:
+    def td_data_numpy(self) -> NamedTuple:
         """
-        Get time domain data as numpy arrays.
+        Get time domain data as arrays.
 
         Returns
         -------
-        dict[str, NDArray]
-            Dictionary mapping channel names to time domain data arrays.
+        NamedTuple
+            NamedTuple mapping channel names to time domain data arrays.
         """
-        return self.td_data.to_numpy()
+        ret = None
+
+        if self.td_data is not None:
+            if self.backend == "taichi":
+                DataContent = namedtuple("DataContent", self.data_info.channels)
+                ret = DataContent(**self.td_data.to_numpy())
+            elif self.backend == "jax":
+                ret = self.td_data
+
+        return ret
 
     @property
-    def fd_data_numpy(self) -> dict[str, NDArray]:
+    def fd_data_numpy(self) -> NamedTuple:
         """
-        Get frequency domain data as complex numpy arrays.
+        Get frequency domain data as arrays.
 
         Returns
         -------
-        dict[str, NDArray]
-            Dictionary mapping channel names to complex frequency domain data arrays.
+        NamedTuple
+            NamedTuple mapping channel names to complex frequency domain data arrays.
         """
-        return taichi_field_to_complex_numpy_array_dict(self.fd_data)
+        ret = None
+
+        if self.fd_data is not None:
+            if self.backend == "taichi":
+                DataContent = namedtuple("DataContent", self.data_info.channels)
+                ret = DataContent(**field_to_complex_dict(self.fd_data))
+            elif self.backend == "jax":
+                ret = self.fd_data
+
+        return ret
 
     @property
-    def wd_data_numpy(self) -> dict[str, NDArray]:
+    def wd_data_numpy(self) -> NamedTuple:
         """
-        Get wavelet domain data as numpy arrays.
+        Get wavelet domain data as arrays.
 
         Returns
         -------
-        dict[str, NDArray]
-            Dictionary mapping channel names to wavelet domain data arrays.
+        NamedTuple
+            NamedTuple mapping channel names to wavelet domain data arrays.
         """
-        return self.wd_data.to_numpy()
+        ret = None
+
+        if self.wd_data is not None:
+            if self.backend == "taichi":
+                DataContent = namedtuple("DataContent", self.data_info.channels)
+                ret = DataContent(**self.wd_data.to_numpy())
+            elif self.backend == "jax":
+                ret = self.wd_data
+
+        return ret
 
     @property
-    def fd_noise_power_density_numpy(self) -> dict[str, NDArray]:
+    def fd_noise_power_density_numpy(self) -> NamedTuple:
         """
-        Get frequency domain noise power spectral density as numpy arrays.
+        Get frequency domain noise power spectral density as arrays.
 
         Returns
         -------
-        dict[str, NDArray]
-            Dictionary mapping channel names to noise PSD arrays.
+        NamedTuple
+            NamedTuple mapping channel names to noise psd arrays.
         """
-        return self.fd_noise_power_density.to_numpy()
+        ret = None
+
+        if self.fd_noise_power_density is not None:
+            if self.backend == "taichi":
+                DataContent = namedtuple("DataContent", self.data_info.channels)
+                ret = DataContent(**self.fd_noise_power_density.to_numpy())
+            elif self.backend == "jax":
+                ret = self.fd_noise_power_density
+
+        return ret
 
 
 class TDICombinationModel(ABC):
-    """
-    Abstract base class for TDI combination models.
-
-    This class defines the interface for TDI combination models that compute
-    TDI observables from single-link responses.
-    """
-
-    @property
-    @abstractmethod
-    def domain(self) -> str:
-        """
-        Get the domain of the TDI combination.
-
-        Returns
-        -------
-        str
-            Domain identifier, either 'td' (time domain) or 'fd' (frequency domain).
-        """
-        pass
+    """Abstract base class for TDI combination models."""
 
     @abstractmethod
     def update_tdi_response(self) -> None:
-        """
-        Update TDI response from single-link responses.
-
-        This method computes TDI observables from the detector's single-link responses.
-        """
+        """Update TDI response from single-link responses."""
         pass
 
 
@@ -1535,35 +1599,27 @@ class TDMichelsonConstantEqualArm(TDICombinationModel):
                 self.detector.tdi_response[i].Z = Z
 
 
-@ti.data_oriented
-class FDMichelsonConstantEqualArm(TDICombinationModel):
+class FDMichelsonConstantEqualArm:
     """
-    Frequency-domain Michelson TDI combination for constant equal-arm detectors.
+    Frequency-domain Michelson TDI combination with constant equal-arm approximation.
 
-    This class implements TDI combinations in the frequency domain for space-based
-    interferometers with constant and equal arm lengths. Supports both
-    generation 1.5 and 2.0 TDI, and both orthogonal (A, E, T) and
-    non-orthogonal (X, Y, Z) channel combinations.
+    Supports generation 1.5 and 2.0 TDI, orthogonal channels (A, E, T) and
+    non-orthogonal channels (X, Y, Z).
     """
 
     domain = "fd"
 
-    def __init__(self, generation="1.5", orthogonal=True):
+    def __init__(self, generation="1.5", orthogonal=True, backend="taichi"):
         """
-        Initialize frequency-domain Michelson TDI combination model.
-
         Parameters
         ----------
         generation : str, optional
-            TDI generation, either '1.5' or '2.0'. Default is '1.5'.
+            TDI generation, '1.5' or '2.0'. Default is '1.5'.
         orthogonal : bool, optional
-            Whether to use orthogonal channels (A, E, T) or non-orthogonal (X, Y, Z).
-            Default is True.
-
-        Raises
-        ------
-        ValueError
-            If generation is not '1.5' or '2.0'.
+            Whether to use orthogonal channels. If True, computating (A, E, T),
+            otherwise, computating (X, Y, Z). Default is True.
+        backend : str, optional
+            Computation backend, ``'taichi'`` (default) or ``'jax'``.
         """
         self.generation = str(generation)
         if not (self.generation == "1.5" or self.generation == "2.0"):
@@ -1575,21 +1631,36 @@ class FDMichelsonConstantEqualArm(TDICombinationModel):
         else:
             self.labels = ("X", "Y", "Z")
 
-        self.detector = None
-        self._cached_field = None
+        if backend == "jax":
+            from ._jax_impl._tdi_jax import _FDMichelsonConstantEqualArmJax
+
+            self._backend_impl = _FDMichelsonConstantEqualArmJax(self)
+        elif backend == "taichi":
+            self._backend_impl = _FDMichelsonConstantEqualArmTaichi(self)
+        else:
+            raise ValueError(f"Unknown backend: {backend}")
+
+        self.init_tdi_combination_model = self._backend_impl.init_tdi_combination_model
+        self.update_tdi_response = self._backend_impl.update_tdi_response
+
+
+@ti.data_oriented
+class _FDMichelsonConstantEqualArmTaichi(TDICombinationModel):
+    """Taichi backend for FDMichelsonConstantEqualArm."""
+
+    def __init__(self, tdi_model: FDMichelsonConstantEqualArm):
+        self.tdi_model = tdi_model
 
     def init_tdi_combination_model(self, detector: "InterferometerAntenna") -> None:
         """
-        Initialize the TDI combination model with a detector instance.
+        Initialize with the detector instance (taichi).
 
-        Parameters
-        ----------
-        detector : InterferometerAntenna
-            Detector instance to associate with this TDI model.
+        Basic properties are binded with self.tdi_model (external interface class),
+        detector and _cached_field are binded with self (backend-dependent internal computation class).
         """
         self.detector = weakref.proxy(detector)
         self.detector.tdi_response = ti.Struct.field(
-            dict.fromkeys(self.labels, ti_complex),
+            dict.fromkeys(self.tdi_model.labels, ti_complex),
             shape=(self.detector.tdi_data.data_info.frequency_series_length,),
         )
         self._cached_field = ti.Struct.field(
@@ -1603,22 +1674,22 @@ class FDMichelsonConstantEqualArm(TDICombinationModel):
         """
         Compute and cache frequency-dependent prefactors and delay factors.
 
-        This method computes and caches the delay factors :math:`\\mathrm{exp}(-i2\\pi fL)`
-        and generation-dependent prefactors for TDI computation.
+        Including the delay factors :math:`\\mathrm{exp}(-i2\\pi fL)`
+        and the generation-dependent prefactors.
         """
         for i in self._cached_field:
             delay_factor = tm.cexp(
                 -2.0
                 * PI
                 * self.detector.tdi_data.frequency_samples[i]
-                * self.detector.orbit_model.arm_length_sec
+                * self.detector.orbit_model.arm_length_sec(0.0)  # arm-length is assumed to be a constant # fmt: skip
                 * ti_complex([0.0, 1.0])
             )
 
             prefactor = ti_complex([0.0, 0.0])
-            if ti.static(self.generation == "1.5"):
+            if ti.static(self.tdi_model.generation == "1.5"):
                 prefactor = ti_complex([1.0, 0.0]) - tm.cpow(delay_factor, 2)
-            elif ti.static(self.generation == "2.0"):
+            elif ti.static(self.tdi_model.generation == "2.0"):
                 prefactor = (
                     ti_complex([1.0, 0.0])
                     - tm.cpow(delay_factor, 2)
@@ -1662,21 +1733,7 @@ class FDMichelsonConstantEqualArm(TDICombinationModel):
     def _get_Y_channel_response(
         delay_factor: ti.template(), singlelink_response: ti.template()
     ) -> ti_complex:
-        """
-        Compute Y channel of TDI combination in frequency domain.
-
-        Parameters
-        ----------
-        delay_factor : ti.template()
-            Delay factor, :math:`\\mathrm{exp}(-i2\\pi fL)`.
-        singlelink_response : ti.template()
-            Single-link responses for all six links.
-
-        Returns
-        -------
-        ti_complex
-            Y channel response without the generation prefactor.
-        """
+        """Compute Y channel of TDI combination in frequency domain."""
         return (
             singlelink_response["link21"]
             - singlelink_response["link23"]
@@ -1691,21 +1748,7 @@ class FDMichelsonConstantEqualArm(TDICombinationModel):
     def _get_Z_channel_response(
         delay_factor: ti.template(), singlelink_response: ti.template()
     ) -> ti_complex:
-        """
-        Compute Z channel of TDI combination in frequency domain.
-
-        Parameters
-        ----------
-        delay_factor : ti.template()
-            Delay factor, :math:`\\mathrm{exp}(-i2\\pi fL)`.
-        singlelink_response : ti.template()
-            Single-link responses for all six links.
-
-        Returns
-        -------
-        ti_complex
-            Z channel response without the generation prefactor.
-        """
+        """Compute Z channel of TDI combination in frequency domain."""
         return (
             singlelink_response["link32"]
             - singlelink_response["link31"]
@@ -1734,7 +1777,7 @@ class FDMichelsonConstantEqualArm(TDICombinationModel):
                 prefactor,
                 self._get_Z_channel_response(delay_factor, singlelink_response),
             )
-            if ti.static(self.orthogonal):
+            if ti.static(self.tdi_model.orthogonal):
                 A = (Z - X) / tm.sqrt(2.0)
                 E = (X - 2.0 * Y + Z) / tm.sqrt(6.0)
                 T = (X + Y + Z) / tm.sqrt(3.0)
