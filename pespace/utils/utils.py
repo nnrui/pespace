@@ -10,7 +10,6 @@ from numpy.typing import NDArray
 
 from .constants import *
 
-
 ti_complex = ti.types.vector(2, float)
 SingleLinkStructComplex = ti.types.struct(
     link12=ti_complex,
@@ -59,7 +58,7 @@ def next_power_of_2(n: ti.u32) -> ti.u32:
 
 
 @ti.func
-def sinc_taichi(x: float) -> float:
+def ti_sinc(x: float) -> float:
     """Compute the sinc function: sin(x)/x.
 
     Parameters
@@ -130,8 +129,7 @@ INTERPOLATE_KERNELS = {
 }
 
 
-
-def taichi_field_to_complex_numpy_array_dict(
+def field_to_complex_dict(
     field_container: ti.Field,
 ) -> dict[str, NDArray]:
     """Convert a Taichi field to a dictionary of complex NumPy arrays.
@@ -155,7 +153,7 @@ def taichi_field_to_complex_numpy_array_dict(
     )
 
 
-def complex_numpy_array_dict_to_taichi_field(
+def complex_dict_to_field(
     array_dict: dict[str, NDArray],
     field_container: ti.Field,
 ) -> None:
