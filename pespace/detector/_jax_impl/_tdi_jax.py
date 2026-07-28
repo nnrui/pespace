@@ -129,4 +129,4 @@ class _FDMichelsonConstantEqualArmJax(TDICombinationModel):
             self.tdi_model.orthogonal,
         )
         DataContent = namedtuple("DataContent", self.tdi_model.labels)
-        self.detector.tdi_response = DataContent(*tdi_response)
+        self.detector.tdi_response = DataContent(*jnp.moveaxis(tdi_response, -1, 0))

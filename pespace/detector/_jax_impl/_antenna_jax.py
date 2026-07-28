@@ -1,5 +1,6 @@
 """Computing detector single link response with jax."""
 
+from __future__ import annotations
 from collections import namedtuple
 import weakref
 
@@ -142,13 +143,14 @@ class _FDResponseModelMarset2018Jax(SingleLinkResponseModel):
             k_x2_x3 = prop_direc @ (det_vecs.x2 + det_vecs.x3)  # scalar
             k_x3_x1 = prop_direc @ (det_vecs.x3 + det_vecs.x1)  # scalar
 
-            pi_f_L = PI * fi * arm_sec  # scalar
-            sinc32 = jnp.sinc(pi_f_L * (1.0 - k_n1))  # scalar
-            sinc23 = jnp.sinc(pi_f_L * (1.0 + k_n1))  # scalar
-            sinc13 = jnp.sinc(pi_f_L * (1.0 - k_n2))  # scalar
-            sinc31 = jnp.sinc(pi_f_L * (1.0 + k_n2))  # scalar
-            sinc21 = jnp.sinc(pi_f_L * (1.0 - k_n3))  # scalar
-            sinc12 = jnp.sinc(pi_f_L * (1.0 + k_n3))  # scalar
+            f_L = fi * arm_sec  # scalar
+            # Note jnp.sinc is the normalized sinc: sin(pi*x)/(pi*x)!
+            sinc32 = jnp.sinc(f_L * (1.0 - k_n1))  # scalar
+            sinc23 = jnp.sinc(f_L * (1.0 + k_n1))  # scalar
+            sinc13 = jnp.sinc(f_L * (1.0 - k_n2))  # scalar
+            sinc31 = jnp.sinc(f_L * (1.0 + k_n2))  # scalar
+            sinc21 = jnp.sinc(f_L * (1.0 - k_n3))  # scalar
+            sinc12 = jnp.sinc(f_L * (1.0 + k_n3))  # scalar
 
             common_exp = -PI * fi * 1j  # complex
             exp12 = jnp.exp(common_exp * (arm_sec + k_x1_x2))  # complex
@@ -165,7 +167,7 @@ class _FDResponseModelMarset2018Jax(SingleLinkResponseModel):
             response = jnp.stack(
                 [link12, link21, link23, link32, link31, link13], axis=-1
             )
-            prefactor = -pi_f_L * 1j
+            prefactor = -PI * f_L * 1j
             response *= prefactor
             return response
 
@@ -202,7 +204,7 @@ class _FDResponseModelMarset2018Jax(SingleLinkResponseModel):
         tc : float
             Coalescence time in seconds.
         """
-        self.detector.single_link_response = self.get_response_jit(
+        links = self.get_response_jit(
             self.detector.orbit_model,
             self.detector.tdi_data.frequency_samples,
             waveform,
@@ -211,3 +213,7 @@ class _FDResponseModelMarset2018Jax(SingleLinkResponseModel):
             psi,
             tc,
         )
+        DataContent = namedtuple(
+            "DataContent", ("link12", "link21", "link23", "link32", "link31", "link13")
+        )
+        self.detector.single_link_response = DataContent(*jnp.moveaxis(links, -1, 0))
