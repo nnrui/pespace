@@ -1599,6 +1599,7 @@ class TDMichelsonConstantEqualArm(TDICombinationModel):
                 self.detector.tdi_response[i].Z = Z
 
 
+@TDICombinationModel.register
 class FDMichelsonConstantEqualArm:
     """
     Frequency-domain Michelson TDI combination with constant equal-arm approximation.

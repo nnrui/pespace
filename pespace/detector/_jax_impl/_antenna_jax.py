@@ -69,7 +69,7 @@ class _FDResponseModelMarset2018Jax(SingleLinkResponseModel):
     :meth:`update_single_link_response` is a wrapper that calls :meth:`get_response_jit`
     and stores the result onto the detector object. This mutates detector state and
     therefore cannot be jit-compiled. It is mainly used to maintain a consistent interface
-    with the original taichi-based :class:`SingleLinkResponseModel`.
+    with the original taichi-based :class:`pespace.detector.antenna._FDResponseModelMarset2018Taichi`.
 
     :meth:`get_response_jit` is a pure jax static method. All required data is passed-in
     as arguments, without side effects.

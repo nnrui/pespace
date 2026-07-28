@@ -344,6 +344,7 @@ class SingleLinkResponseModel(ABC):
         pass
 
 
+@SingleLinkResponseModel.register
 class FDResponseModelMarset2018:
     """
     Frequency domain response model based on
