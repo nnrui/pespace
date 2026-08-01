@@ -909,9 +909,9 @@ class TDIChannelData:
             if np.mod(self.data_info.time_series_length, 2) == 0:
                 im[-1] = 0.0
                 re[-1] = 0.0
-            noise_chan = (re + 1j * im)[
-                self.data_info.frequency_mask_array
-            ] * self.fd_noise_power_density_numpy[chan] ** 0.5
+            noise_chan = (re + 1j * im)[self.data_info.frequency_mask_array] * getattr(
+                self.fd_noise_power_density_numpy, chan
+            ) ** 0.5
             noise[chan] = np.astype(noise_chan, self._np_cp)
 
         if output_type == "taichi":

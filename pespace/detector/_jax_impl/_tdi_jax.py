@@ -22,8 +22,8 @@ class _FDMichelsonConstantEqualArmJax(TDICombinationModel):
     interface with the original taichi-based
     :class:`pespace.detector.tdi._FDMichelsonConstantEqualArmTaichi`.
 
-    :meth:`get_combination_jit` is a pure jax static method. All required data is
-    passed-in as arguments, without side effects.
+    :meth:`get_combination_jit` reads static ``tdi_model.orthogonal`` and
+    ``_cached_data`` from ``self``, it need to be captured via closure for jit.
     """
 
     def __init__(self, tdi_model) -> None:
@@ -68,21 +68,18 @@ class _FDMichelsonConstantEqualArmJax(TDICombinationModel):
 
         self._cached_data = CachedData(prefactor=prefactor, delay_factor=delay_factor)
 
-    @staticmethod
-    def get_combination_jit(single_link_response, static_factors, orthogonal):
+    def get_combination_jit(self, single_link_response):
         """
-        Compute TDI combination from single-link responses (jit-able).
+        Compute TDI combination from single-link responses.
+
+        Orthogonal flag and cached prefactors are read from ``self`` and need to be
+        captured by closure for JIT compilation.
 
         Parameters
         ----------
         single_link_response : jnp.ndarray
             Single-link responses, shape ``(N_freq, 6)``, with
             (link12, link21, link23, link32, link31, link13) per bin.
-        static_factors : NamedTuple
-            NamedTuple with fields ``prefactor`` and ``delay_factor``, pre-computed and
-            cached by :meth:`_set_cached_data`.
-        orthogonal : bool
-            If True, return orthogonal channels (A, E, T), otherwise return (X, Y, Z).
 
         Returns
         -------
@@ -91,6 +88,8 @@ class _FDMichelsonConstantEqualArmJax(TDICombinationModel):
             The last axis corresponds to ``('A', 'E', 'T')`` if ``orthogonal`` is True,
             otherwise ``('X', 'Y', 'Z')``.
         """
+        orthogonal = self.tdi_model.orthogonal
+        static_factors = self._cached_data
 
         def _comb_at_fi(links, prefactor, delay_factor):
             # column order: link12, link21, link23, link32, link31, link13
@@ -123,10 +122,6 @@ class _FDMichelsonConstantEqualArmJax(TDICombinationModel):
         It mutates detector state and therefore cannot be jit-compiled, used mainly to
         maintain a consistent interface with the previous taichi implementation.
         """
-        tdi_response = self.get_combination_jit(
-            self.detector.single_link_response,
-            self._cached_data,
-            self.tdi_model.orthogonal,
-        )
+        tdi_response = self.get_combination_jit(self.detector.single_link_response)
         DataContent = namedtuple("DataContent", self.tdi_model.labels)
         self.detector.tdi_response = DataContent(*jnp.moveaxis(tdi_response, -1, 0))

@@ -72,27 +72,20 @@ class _FDResponseModelMarset2018Jax(SingleLinkResponseModel):
     therefore cannot be jit-compiled. It is mainly used to maintain a consistent interface
     with the original taichi-based :class:`pespace.detector.antenna._FDResponseModelMarset2018Taichi`.
 
-    :meth:`get_response_jit` is a pure jax static method. All required data is passed-in
-    as arguments, without side effects.
+    :meth:`get_response_jit` reads static orbit model and frequency samples from ``self.detector``.
+    It can be used in jit-able functions of jax via closure.
     """
 
     def init_single_link_response_model(self, detector: InterferometerAntenna) -> None:
         """Binding the instance of `InterferometerAntenna`."""
         self.detector = weakref.proxy(detector)
 
-    @staticmethod
-    def get_response_jit(orbit, freqs, waveform, lam, beta, psi, tc):
-        """Compute single-link responses (pure function, jit-able).
-
-        All required data is passed-in explicitly as arguments; no external state is
-        read or written.
+    def get_response_jit(self, waveform, lam, beta, psi, tc):
+        """
+        Compute single-link responses, jit-able via closure over ``self``.
 
         Parameters
         ----------
-        orbit : OrbitModel with jax-backend
-            Jax-based orbit model providing constellation vectors and arm lengths.
-        freqs : jnp.ndarray
-            Frequency samples in Hz, shape ``(N_freqs,)``.
         waveform : jnp.ndarray
             Waveform array; shape ``(N_freqs, 3)``, (hp, hc, tf) per bin for single mode,
             or ``(N_freqs, N_modes, 3)`` for higher modes.
@@ -107,6 +100,9 @@ class _FDResponseModelMarset2018Jax(SingleLinkResponseModel):
             Single-link responses, shape ``(N_freq, 6)``,
             with (link12, link21, link23, link32, link31, link13) per bin.
         """
+        orbit = self.detector.orbit_model
+        freqs = self.detector.tdi_data.frequency_samples
+
         pol_tensor = get_polarization_tensor_ssb_jax(lam, beta, psi)  # matrix: 3*3
         prop_direc = get_gw_propagation_unit_vector_jax(lam, beta)  # vector: 3
 
@@ -205,8 +201,6 @@ class _FDResponseModelMarset2018Jax(SingleLinkResponseModel):
             Coalescence time in seconds.
         """
         links = self.get_response_jit(
-            self.detector.orbit_model,
-            self.detector.tdi_data.frequency_samples,
             waveform,
             lam,
             beta,

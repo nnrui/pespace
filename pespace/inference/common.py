@@ -1,9 +1,4 @@
-"""
-Common utilities for parameter estimation.
-
-This module provides core computational functions for likelihood evaluation, including
-the Whittle likelihood computation using taichi-lang for GPU acceleration.
-"""
+"""Common utilities for parameter estimation."""
 
 import taichi as ti
 

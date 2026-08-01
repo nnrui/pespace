@@ -48,7 +48,7 @@ class LikelihoodBilbyInterface(Likelihood):
             Detector instance(s) for computing detector responses. Each detector must
             have ``tdi_data`` and ``update_detector_response`` attributes/methods.
         channels : tuple of str
-            TDI channels to use for likelihood computation. Must be a subset of
+            TDI channels used in the likelihood computation. Must be a subset of
             ('A', 'E', 'T'). Common choices are ('A', 'E', 'T') or ('A', 'E').
 
         Raises

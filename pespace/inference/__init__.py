@@ -1,1 +1,1 @@
-"""Utilities for Bayesian inference and parameter estimation."""
+"""Utilities for Bayesian parameter estimation."""
