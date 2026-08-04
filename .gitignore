@@ -6,6 +6,7 @@ outdir*/
 *.out
 *.json
 output/
+tmp/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
