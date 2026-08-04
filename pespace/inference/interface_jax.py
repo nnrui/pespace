@@ -28,7 +28,7 @@ def noise_weighted_inner_product(observed_data, response_data, psd, df):
         Value for the Whittle log-likelihood, summed over all axes.
     """
     residual = observed_data - response_data
-    log_l = jnp.sum(jnp.real(residual * residual.conj) / psd)
+    log_l = jnp.sum(jnp.real(residual * residual.conj()) / psd)
     return -2.0 * df * log_l
 
 
