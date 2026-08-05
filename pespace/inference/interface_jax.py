@@ -5,6 +5,15 @@ from collections import namedtuple
 
 import jax.numpy as jnp
 
+#: Response parameters consumed by :meth:`WhittleLikelihoodJax.log_likelihood`
+#: (a fixed set; waveform parameters are appended from the waveform interface).
+_RESPONSE_PARAMETERS = (
+    "ecliptic_longitude",
+    "ecliptic_latitude",
+    "polarization",
+    "coalescence_time",
+)
+
 
 def noise_weighted_inner_product(observed_data, response_data, psd, df):
     """
@@ -35,7 +44,9 @@ def noise_weighted_inner_product(observed_data, response_data, psd, df):
 class WhittleLikelihoodJax:
     """The Whittle likelihood computation with jax."""
 
-    def __init__(self, waveform_func, detector, channels) -> None:
+    def __init__(
+        self, waveform_func, detector, channels, waveform_parameter_names=()
+    ) -> None:
         """
         Parameters
         ----------
@@ -49,6 +60,14 @@ class WhittleLikelihoodJax:
         channels : tuple of str
             TDI channels used in likelihood computation. Must be a subset of
             ('A', 'E', 'T'). Common choices are ('A', 'E', 'T') or ('A', 'E').
+        waveform_parameter_names : tuple of str, optional
+            Names of the waveform parameters consumed by ``waveform_func``.
+            Together with the fixed response parameters
+            (``ecliptic_longitude``, ``ecliptic_latitude``, ``polarization``,
+            ``coalescence_time``) they define the ``params_type`` namedtuple
+            accepted by :meth:`log_likelihood`.  When a waveform object with a
+            ``required_parameters`` attribute becomes available, this is
+            populated from it; defaults to ``()``.
 
         Raises
         ------
@@ -88,6 +107,13 @@ class WhittleLikelihoodJax:
         self.waveform_func = waveform_func
         self.detector = detector
         self.channels = tuple(channels)
+        self.waveform_parameter_names = tuple(waveform_parameter_names)
+
+        # Build the namedtuple type accepted by log_likelihood.  Its fields are
+        # the fixed response parameters followed by the waveform parameters, in
+        # that order; field names are the likelihood-namespace parameter names.
+        self.parameter_names = _RESPONSE_PARAMETERS + self.waveform_parameter_names
+        self.params_type = namedtuple("LikelihoodParams", self.parameter_names)
 
         self._static_data = None
         self._prepare_static_data()
