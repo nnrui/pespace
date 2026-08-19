@@ -9,7 +9,7 @@ at every tempering level:
   unconstrained space prepared by :class:`NumpyroPriorSamplerBase` (the prior
   bijections and the inverse mapping back to physical parameters are handled
   by the base class).  The per-particle ``step_size`` is tuned with a
-  feedback scheme (algo ``tuning_ft``) and the shared
+  feedback scheme based on the realised squared-jump distance, and the shared
   ``inverse_mass_matrix`` is re-estimated from the particle variance.
 - :class:`BlackjaxSMCwithIRMH` mutates the particles with an independent
   Metropolis-Hastings kernel directly in the physical parameter space; the
@@ -23,6 +23,7 @@ the particles (evaluated on the ``x + x**2`` transform), capped by
 """
 
 import logging
+import math
 from typing import Callable
 
 import jax
@@ -55,6 +56,32 @@ except ImportError:
 __all__ = ["BlackjaxSMCwithNUTS", "BlackjaxSMCwithIRMH"]
 
 
+def _num_particles(particles) -> int:
+    """Number of particles, read off the leading axis of the pytree."""
+    return jax.tree.leaves(particles)[0].shape[0]
+
+
+def _stack_particles(particles) -> jnp.ndarray:
+    """Ravel each particle into a row of an ``(n_particles, dim)`` matrix."""
+    return jax.vmap(lambda particle: ravel_pytree(particle)[0])(particles)
+
+
+def _lag1_corr(previous: jnp.ndarray, current: jnp.ndarray) -> jnp.ndarray:
+    """Component-wise lag-1 correlation on the ``x + x**2`` transform.
+
+    The transform makes the criterion insensitive to the sign of the
+    components (following the HSMC move-length criterion).
+    """
+    previous = previous + previous**2
+    current = current + current**2
+    previous = previous - jnp.mean(previous, axis=0)
+    current = current - jnp.mean(current, axis=0)
+    denominator = jnp.sqrt(
+        jnp.sum(previous**2, axis=0) * jnp.sum(current**2, axis=0)
+    )
+    return jnp.sum(previous * current, axis=0) / (denominator + 1e-16)
+
+
 class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
     """Shared machinery for adaptive-tempered SMC with self-tuned kernels.
 
@@ -71,13 +98,14 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         The inner MCMC kernel and its state initialiser.
     ``_params_to_likelihood``
         Maps one particle to the likelihood-namespace parameter dict.
+    ``_mutation_seed``
+        Chooses the population seeding the decorrelation rounds (the tuning
+        round's result is kept or discarded).
     """
 
     # Mutation stopping rule (algo ``move_steps``): keep mutating while at
-    # least ``_MIN_CORRELATED_FRACTION`` of the components still have a
-    # running lag-1 autocorrelation above ``_CORRELATION_THRESHOLD``.
-    _CORRELATION_THRESHOLD = 0.1
-    _MIN_CORRELATED_FRACTION = 0.1
+    # least ``min_correlated_fraction`` of the components still have a
+    # running lag-1 autocorrelation above ``correlation_threshold``.
     _DEFAULT_MAX_MOVES = 12
 
     # Type annotations, avoid initialize these hooks with None in __init__ of base class,
@@ -95,12 +123,16 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         seed: int = 0,
         target_ess: float = 0.8,
         max_num_moves: int | None = None,
+        correlation_threshold: float = 0.1,
+        min_correlated_fraction: float = 0.3,
     ) -> None:
         super().__init__(likelihood, prior, seed)
         self.target_ess = float(target_ess)
         self.max_num_moves = (
             self._DEFAULT_MAX_MOVES if max_num_moves is None else int(max_num_moves)
         )
+        self.correlation_threshold = float(correlation_threshold)
+        self.min_correlated_fraction = float(min_correlated_fraction)
 
         # Ravel/unravel utilities shared by both samplers; the template fixes
         # the pytree structure and the flattened dimension.
@@ -109,48 +141,26 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         self._dim = int(self._dim.shape[0])
 
     # ------------------------------------------------------------------
-    # shared primitives
+    # mutation rounds
     # ------------------------------------------------------------------
-    @staticmethod
-    def _num_particles(particles) -> int:
-        """Number of particles, read off the leading axis of the pytree."""
-        return jax.tree.leaves(particles)[0].shape[0]
-
-    def _stack(self, particles) -> jnp.ndarray:
-        """Ravel each particle into a row of an ``(n_particles, dim)`` matrix."""
-        return jax.vmap(lambda particle: ravel_pytree(particle)[0])(particles)
-
-    @staticmethod
-    def _lag1_corr(previous: jnp.ndarray, current: jnp.ndarray) -> jnp.ndarray:
-        """Component-wise lag-1 correlation on the ``x + x**2`` transform.
-
-        The transform makes the criterion insensitive to the sign of the
-        components (following the HSMC move-length criterion).
-        """
-        previous = previous + previous**2
-        current = current + current**2
-        previous = previous - jnp.mean(previous, axis=0)
-        current = current - jnp.mean(current, axis=0)
-        denominator = jnp.sqrt(
-            jnp.sum(previous**2, axis=0) * jnp.sum(current**2, axis=0)
-        )
-        return jnp.sum(previous * current, axis=0) / (denominator + 1e-16)
-
     def _mutate_until_decorrelated(
         self, rng_key, particles, parameters, tempering_param
     ):
         """Mutate the particles at the current temperature until decorrelation.
 
-        The first mutation round doubles as the tuning round: the per-particle
-        kernel parameters (e.g. the NUTS step sizes) are updated from its
-        realised performance before the remaining rounds.
+        The first mutation round is the tuning round: it probes the kernel
+        performance and updates the per-particle parameters (e.g. the NUTS
+        step sizes).  Its result is kept or discarded by ``_mutation_seed``,
+        so that all the actual mutation rounds of one tempering level can
+        share a single kernel.
         """
         move_key, tune_key, rest_key = jax.random.split(rng_key, 3)
         previous = particles
-        particles, info = self._mutate(move_key, particles, parameters, tempering_param)
+        probe, info = self._mutate(move_key, particles, parameters, tempering_param)
         parameters = self._tune_per_particle(
-            tune_key, parameters, previous, particles, info
+            tune_key, parameters, previous, probe, info
         )
+        particles = self._mutation_seed(previous, probe, parameters)
         return (
             self._decorrelate(rest_key, particles, parameters, tempering_param),
             parameters,
@@ -162,23 +172,23 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         Implements the ``move_steps`` rule: start from a running correlation
         product of ones and multiply it by the lag-1 correlation between
         successive populations after every mutation round, until fewer than
-        ``_MIN_CORRELATED_FRACTION`` of the components remain correlated.
+        ``min_correlated_fraction`` of the components remain correlated.
         """
-        init = (rng_key, particles, self._stack(particles), jnp.ones(self._dim), 0)
+        init = (rng_key, particles, _stack_particles(particles), jnp.ones(self._dim), 0)
 
         def cond(carry):
             _, _, _, correlations, num_moves = carry
-            still_correlated = jnp.mean(correlations > self._CORRELATION_THRESHOLD)
+            still_correlated = jnp.mean(correlations > self.correlation_threshold)
             return (num_moves < self.max_num_moves) & (
-                still_correlated >= self._MIN_CORRELATED_FRACTION
+                still_correlated >= self.min_correlated_fraction
             )
 
         def body(carry):
             key, particles, previous, correlations, num_moves = carry
             key, subkey = jax.random.split(key)
             particles, _ = self._mutate(subkey, particles, parameters, tempering_param)
-            current = self._stack(particles)
-            correlations = correlations * self._lag1_corr(previous, current)
+            current = _stack_particles(particles)
+            correlations = correlations * _lag1_corr(previous, current)
             return key, particles, current, correlations, num_moves + 1
 
         _, particles, _, _, _ = jax.lax.while_loop(cond, body, init)
@@ -200,9 +210,9 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
             tempered_logposterior,
             shared_step,
             1,
-            self._num_particles(particles),
+            _num_particles(particles),
         )
-        keys = jax.random.split(rng_key, self._num_particles(particles))
+        keys = jax.random.split(rng_key, _num_particles(particles))
         return update_fn(keys, particles, unshared)
 
     # ------------------------------------------------------------------
@@ -224,8 +234,18 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         """Re-fit the shared kernel parameters to the resampled cloud."""
         raise NotImplementedError
 
-    def _tune_per_particle(self, key, parameters, previous, particles, info):
+    def _tune_per_particle(self, key, parameters, previous, probe, info):
         """Tune the per-particle kernel parameters after one mutation round."""
+        raise NotImplementedError
+
+    def _mutation_seed(self, previous, probe, parameters):
+        """Return the population seeding the decorrelation rounds.
+
+        Samplers whose tuning round changes the kernel parameters discard
+        the probe and return ``previous`` (all actual mutation rounds then
+        share one kernel); samplers whose tuning round is a no-op keep the
+        probe.
+        """
         raise NotImplementedError
 
     # ------------------------------------------------------------------
@@ -305,9 +325,7 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         """Convert the final population into a physical-parameter dict."""
         physical = jax.vmap(self._params_to_likelihood)(particles)
         log_likelihoods = jax.vmap(self._loglikelihood_fn)(particles)
-        weights = jnp.ones(self._num_particles(particles)) / self._num_particles(
-            particles
-        )
+        weights = jnp.ones(_num_particles(particles)) / _num_particles(particles)
         output = self._format_output(physical, log_likelihoods, weights=weights)
         output["log_evidence"] = float(np.asarray(log_evidence))
         return output
@@ -321,13 +339,12 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
     prior bijections and the inverse transform back to physical parameters
     are handled by the base class).
 
-    At every tempering level the per-particle ``step_size`` is tuned with a
-    feedback scheme (algo ``tuning_ft``): particles are reweighted by a
-    realised squared-jump measure (trajectory-length-normalised,
-    acceptance-corrected Mahalanobis distance), their step sizes are
-    perturbed in log space, and the reweighted population is resampled.  The
-    shared ``inverse_mass_matrix`` is re-estimated from the particle
-    variance.
+    At every tempering level the per-particle ``step_size`` is tuned by a
+    feedback scheme: the particles are reweighted by a realised squared-jump
+    measure (trajectory-length-normalised, acceptance-corrected squared
+    Mahalanobis distance), the surviving step sizes are resampled and then
+    jittered multiplicatively in log space.  The shared
+    ``inverse_mass_matrix`` is re-estimated from the particle variance.
 
     Parameters
     ----------
@@ -344,14 +361,26 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
     max_num_moves : int, optional
         Upper bound on the number of mutation rounds per tempering level.
         Default is 12.
-    step_size_min, step_size_max : float, optional
-        Bounds of the log-uniform distribution the initial per-particle step
-        sizes are drawn from.  Defaults are 1e-3 and 1e-1.
+    correlation_threshold : float, optional
+        Lag-1 autocorrelation threshold of the mutation stopping rule.
+        Default is 0.1.
+    min_correlated_fraction : float, optional
+        Fraction of components allowed to stay correlated before the
+        mutation rounds stop.  Default is 0.3.
+    log_step_size_range : tuple, optional
+        ``(low, high)`` bounds of the log-uniform distribution the initial
+        per-particle step sizes are drawn from (in log space).  Default is
+        ``(log 1e-3, log 1e-1)``.
+    tuning_alpha_frac : float, optional
+        Floor of the reweighting measure in the step-size feedback tuning,
+        expressed as a fraction of the mean realised measure (keeps the
+        floor a non-dominant term).  Default is 0.1.
+    tuning_sigma_log : float, optional
+        Log-space perturbation scale applied to the resampled step sizes.
+        Default is 0.2.
     """
 
     _DEFAULT_MAX_MOVES = 12
-    _FT_ALPHA = 0.1  # floor added to the jump-measure weights (tuning_ft)
-    _FT_SIGMA_LOG = 0.2  # log-space perturbation scale (tuning_ft)
 
     def __init__(
         self,
@@ -360,12 +389,29 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
         seed: int = 0,
         target_ess: float = 0.8,
         max_num_moves: int | None = None,
-        step_size_min: float = 1e-3,
-        step_size_max: float = 1e-1,
+        correlation_threshold: float = 0.1,
+        min_correlated_fraction: float = 0.3,
+        log_step_size_range: tuple = (math.log(1e-3), math.log(1e-1)),
+        tuning_alpha_frac: float = 0.1,
+        tuning_sigma_log: float = 0.2,
     ) -> None:
-        super().__init__(likelihood, prior, seed, target_ess, max_num_moves)
-        self.step_size_min = float(step_size_min)
-        self.step_size_max = float(step_size_max)
+        super().__init__(
+            likelihood,
+            prior,
+            seed,
+            target_ess,
+            max_num_moves,
+            correlation_threshold,
+            min_correlated_fraction,
+        )
+        low, high = log_step_size_range
+        if not low < high:
+            raise ValueError(
+                "log_step_size_range must be a (low, high) tuple with low < high."
+            )
+        self.log_step_size_range = (float(low), float(high))
+        self.tuning_alpha_frac = float(tuning_alpha_frac)
+        self.tuning_sigma_log = float(tuning_sigma_log)
 
         self._logprior_fn = self.logprior_fn
         self._loglikelihood_fn = self.loglikelihood_fn
@@ -377,11 +423,12 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
         return self._sample_initial_position(key, (num_particles,))
 
     def _initial_parameters(self, key, particles):
+        low, high = self.log_step_size_range
         log_step_size = jax.random.uniform(
             key,
-            (self._num_particles(particles),),
-            minval=jnp.log(self.step_size_min),
-            maxval=jnp.log(self.step_size_max),
+            (_num_particles(particles),),
+            minval=low,
+            maxval=high,
         )
         inverse_mass_matrix = inverse_mass_matrix_from_particles(particles)[None, ...]
         return {
@@ -405,37 +452,46 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
             ],
         }
 
-    def _tune_per_particle(self, key, parameters, previous, particles, info):
-        """Feedback-tune the per-particle step sizes (algo ``tuning_ft``).
+    def _tune_per_particle(self, key, parameters, previous, probe, info):
+        """Feedback-tune the per-particle step sizes.
 
-        The realised squared jump (Mahalanobis distance between the pre- and
-        post-mutation positions, divided by the NUTS trajectory length and
-        scaled by the acceptance rate) is used to reweight the particle step
-        sizes, which are then jittered multiplicatively in log space and
-        resampled from the reweighted population.
+        The realised squared jump (squared Mahalanobis distance between the
+        pre- and post-mutation positions, divided by the NUTS trajectory
+        length and scaled by the acceptance rate) reweights the particle step
+        sizes; the resampled values are then jittered multiplicatively in log
+        space, so that duplicates of the same particle receive independent
+        perturbations.
         """
-        start = self._stack(previous)
-        end = self._stack(particles)
+        start = _stack_particles(previous)
+        end = _stack_particles(probe)
         inverse_mass_diag = jnp.diag(parameters["inverse_mass_matrix"][0])
         trajectory_length = jnp.ravel(info.num_integration_steps)
         acceptance = jnp.ravel(info.acceptance_rate)
 
-        measure = jnp.sqrt(jnp.sum((start - end) ** 2 / inverse_mass_diag, axis=-1))
+        measure = jnp.sum((start - end) ** 2 / inverse_mass_diag, axis=-1)
         measure = measure / trajectory_length * acceptance
 
-        perturb_key, resample_key = jax.random.split(key)
-        perturbed = parameters["step_size"] * jnp.exp(
-            self._FT_SIGMA_LOG
-            * jax.random.normal(perturb_key, parameters["step_size"].shape)
-        )
-        weights = self._FT_ALPHA + measure
+        resample_key, perturb_key = jax.random.split(key)
+        floor = self.tuning_alpha_frac * jnp.mean(measure)
+        weights = floor + measure
         selection = resampling.systematic(
             resample_key, weights / jnp.sum(weights), parameters["step_size"].shape[0]
         )
+        step_size = parameters["step_size"][selection]
+        step_size = step_size * jnp.exp(
+            self.tuning_sigma_log * jax.random.normal(perturb_key, step_size.shape)
+        )
         return {
-            "step_size": perturbed[selection],
+            "step_size": step_size,
             "inverse_mass_matrix": parameters["inverse_mass_matrix"],
         }
+
+    def _mutation_seed(self, previous, probe, parameters):
+        # the tuning round changed the step sizes; discard its result so that
+        # every actual mutation round of this tempering level shares the same
+        # (tuned) kernel.
+        del probe, parameters
+        return previous
 
 
 class BlackjaxSMCwithIRMH(_TunedAdaptiveTemperedSMC):
@@ -461,6 +517,12 @@ class BlackjaxSMCwithIRMH(_TunedAdaptiveTemperedSMC):
     max_num_moves : int, optional
         Upper bound on the number of mutation rounds per tempering level.
         Default is 100.
+    correlation_threshold : float, optional
+        Lag-1 autocorrelation threshold of the mutation stopping rule.
+        Default is 0.1.
+    min_correlated_fraction : float, optional
+        Fraction of components allowed to stay correlated before the
+        mutation rounds stop.  Default is 0.3.
     covariance_regularization : float, optional
         Diagonal regularization added to the fitted proposal covariance.
         Default is 1e-6.
@@ -475,9 +537,19 @@ class BlackjaxSMCwithIRMH(_TunedAdaptiveTemperedSMC):
         seed: int = 0,
         target_ess: float = 0.8,
         max_num_moves: int | None = None,
+        correlation_threshold: float = 0.1,
+        min_correlated_fraction: float = 0.3,
         covariance_regularization: float = 1e-6,
     ) -> None:
-        super().__init__(likelihood, prior, seed, target_ess, max_num_moves)
+        super().__init__(
+            likelihood,
+            prior,
+            seed,
+            target_ess,
+            max_num_moves,
+            correlation_threshold,
+            min_correlated_fraction,
+        )
         self.covariance_regularization = float(covariance_regularization)
 
         self._logprior_fn = self.logprior_physical_fn
@@ -523,9 +595,15 @@ class BlackjaxSMCwithIRMH(_TunedAdaptiveTemperedSMC):
         del parameters
         return self._fitted_proposal(particles)
 
-    def _tune_per_particle(self, key, parameters, previous, particles, info):
-        del key, previous, particles, info
+    def _tune_per_particle(self, key, parameters, previous, probe, info):
+        del key, previous, probe, info
         return parameters
+
+    def _mutation_seed(self, previous, probe, parameters):
+        # the tuning round is a no-op for IRMH, so its result is a genuine
+        # mutation round and seeds the decorrelation rounds.
+        del previous, parameters
+        return probe
 
     def _fitted_proposal(self, particles):
         """Gaussian proposal parameters fitted to the current particle cloud."""
