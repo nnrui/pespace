@@ -1,14 +1,8 @@
 """Base classes for sampler interfaces.
 
-This module provides the shared machinery for all sampler backends in
-:mod:`pespace.inference.sampler`:
-
-- :class:`SamplerBase`: framework-agnostic abstract base class.  It stores the
-  likelihood and the user-declared prior dictionary *as-is* (without parsing
-  it) and defines the pure density / initial-position interfaces handed to
-  the sampler kernels.
-- :class:`NumpyroPriorSamplerBase`: base class for samplers whose priors are
-  declared through numpyro distributions.  It parses the prior dictionary
+- :class:`SamplerBase`: framework-agnostic abstract base class.
+- :class:`NumpyroPriorSamplerBase`: base class for samplers where the priors are
+  declared through numpyro distributions. It parses the prior dictionary
   into numpyro distribution instances, builds per-parameter bijections to an
   unconstrained space (handling bounded priors natively for gradient-based
   kernels), and constructs the pure log-prior / log-likelihood functions used
@@ -16,7 +10,6 @@ This module provides the shared machinery for all sampler backends in
 """
 
 import inspect
-import logging
 from abc import ABC, abstractmethod
 
 import jax
@@ -28,37 +21,30 @@ try:
     from numpyro.distributions import transforms
 
     _NUMPYRO_AVAILABLE = True
-except ImportError:  # pragma: no cover - exercised when numpyro is absent
+except ImportError:  # pragma: no cover
     dist = None
     transforms = None
     _NUMPYRO_AVAILABLE = False
 
-_LOGGER = logging.getLogger(__name__)
-
 
 class SamplerBase(ABC):
-    """Framework-agnostic abstract base class for samplers.
+    """Framework-agnostic abstract base class for samplers."""
 
-    Parameters
-    ----------
-    likelihood : object
-        Likelihood instance providing a pure
-        ``log_likelihood(params) -> scalar`` method.  Concrete samplers may
-        additionally require ``parameter_names`` and ``params_type``
-        attributes on the likelihood (see :class:`NumpyroPriorSamplerBase`).
-    prior : dict
-        User-declared prior specification.  Stored *as-is*; concrete
-        subclasses (e.g. :class:`NumpyroPriorSamplerBase`) are responsible for
-        parsing it into the probability objects they understand.
-    seed : int, optional
-        Seed for the JAX random number generator.  Default is 0.
-    """
-
-    def __init__(self, likelihood, prior: dict, seed: int = 0) -> None:
+    def __init__(self, likelihood, prior_dict: dict, seed: int = 0) -> None:
+        """
+        Parameters
+        ----------
+        likelihood : object
+            Likelihood instance providing a pure ``log_likelihood(params) -> scalar`` method.
+        prior_dict : dict
+            Input prior specification.
+        seed : int, optional
+            Seed for the random number generator. Default is 0.
+        """
         self.likelihood = likelihood
-        self.prior = prior
+        self.prior_dict = prior_dict
         self.seed = seed
-        self.rng_key = jax.random.key(seed)
+        self.rng_key = jax.random.PRNGKey(seed)
 
     @abstractmethod
     def logprior_fn(self, position) -> jnp.ndarray:
@@ -109,38 +95,47 @@ class SamplerBase(ABC):
 
 
 class NumpyroPriorSamplerBase(SamplerBase):
-    """Base class for samplers using numpyro-declared priors.
+    """
+    Base class for samplers using priors specified with build-in distributions in numpyro.
 
-    Parses the user prior dictionary into numpyro distributions and works in
-    an *unconstrained* parameter space: every sampled parameter is mapped to
-    the real line through ``numpyro.distributions.transforms.biject_to(
-    prior.support)``, so bounded priors are handled natively for both
-    gradient-free (RMH) and gradient-based (HMC/NUTS) mutation kernels.
+    The input prior dictionary is parsed into numpyro distributions which provide
+    facilities to map parameters in limited ranges to the unbounded real domain for
+    better supporting gradient-based (HMC/NUTS) kernels in samplers.
 
-    Prior declaration
-    -----------------
+    Notes
+    -----
     The ``prior`` dictionary maps parameter names to specifications.  Three
-    kinds of entries are supported::
+    kinds of entries are supported:
 
-        # (1) independent sampled priors (enter the sampling dimension)
-        'chirp_mass': {'distribution': 'Uniform', 'low': 5e5, 'high': 2e6},
-        'chi_1':      {'distribution': 'Normal', 'loc': 0.0, 'scale': 0.5},
+        (1) independent sampled priors (enter the sampling dimension)
+        "param_name": {"distribution": "dist_name", **dist_params},
+        e.g.,
+        "chirp_mass": {"distribution": "Uniform", "low": 5e5, "high": 2e6},
+        "chi_1": {"distribution": "Normal", "loc": 0.0, "scale": 0.5},
 
-        # (2) derived parameters (computed from sampled/derived ones,
-        #     not sampled; optional 'jacobian' injects the reparam log|J|)
-        'm1':         {'transform': lambda mc, q: mc * (1 + q)**0.2 / q**0.6},
-        'm2':         {'transform': <callable>, 'jacobian': <callable>},
+        (2) derived parameters (computed from sampled/derived ones, not sampled;
+        optional "jacobian" injects the reparam log|J|)
+        "param_name": {"transform": <callable>, "from": ("param_1", ...), "jacobian": <callable>},
+        ("param_name_1", "param_name_2"): {"transform": <callable>, "from": ("param_1", ...), "jacobian": <callable>},
+        e.g.
+        "symmetric_mass_ratio": {"transform": eta_from_mass1_mass2, "from": ("mass_1", "mass_2")},
+        ("mass_1", "mass_2"): {"transform": component_mass_from_Mtotal_q, "from": ("total_mass", "mass_ratio")},
 
-        # (3) fixed parameters
-        'coalescence_time': {'distribution': 'Delta', 'v': 0.0},
-        'x0':               {'fixed': 1.0},
 
-    Dictionary insertion order defines the sampled-parameter order.  The
-    likelihood-namespace parameter names (provided by ``likelihood.
-    parameter_names``) need not coincide with the prior-namespace keys: they
-    are assembled from sampled + derived + fixed parameters and validated on
-    construction (a ``ValueError`` is raised if the prior does not provide
-    every parameter the likelihood requires).
+        (3) fixed parameters
+        "param_name": {"distribution": "Delta", "v": 0.0},
+        "param_name": {"fixed": 1.0},
+        e.g.,
+        "coalescence_time": {"distribution": "Delta", "v": 0.0},
+        "coalescence_time": {"fixed": 0.0},
+
+    Dictionary insertion order defines the parameter order. The parameters obtained by
+    transform must be specified after the original parameters from which they are derived.
+
+    Parameters specified in prior dictionary need to satisfy:
+        - All parameters required by likelihood computation are covered.
+        - Unused parameters that required by neither the likelihood nor transform will
+          be discarded, and a warning will be thrown.
     """
 
     def __init__(self, likelihood, prior: dict, seed: int = 0) -> None:
@@ -185,7 +180,7 @@ class NumpyroPriorSamplerBase(SamplerBase):
 
     def _parse_prior_spec(self) -> None:
         """Split the prior dictionary into sampled / derived / fixed entries."""
-        for name, spec in self.prior.items():
+        for name, spec in self.prior_dict.items():
             if not isinstance(spec, dict):
                 raise ValueError(
                     f"Prior entry for '{name}' must be a dict, got "
@@ -296,7 +291,15 @@ class NumpyroPriorSamplerBase(SamplerBase):
 
     def _build_likelihood_params(self, z: dict) -> dict:
         """Assemble the likelihood-namespace parameter dict from unconstrained ``z``."""
-        params = dict(self._constrained_params(z))
+        return self._likelihood_params_from_physical(self._constrained_params(z))
+
+    def _likelihood_params_from_physical(self, x: dict) -> dict:
+        """Assemble the likelihood-namespace parameter dict from physical ``x``.
+
+        ``x`` must provide the sampled parameters in their constrained
+        (physical) domain; derived and fixed parameters are added here.
+        """
+        params = dict(x)
         for name, fn in self.derived_transforms.items():
             inputs = self.derived_inputs[name]
             if inputs is None:
@@ -310,6 +313,21 @@ class NumpyroPriorSamplerBase(SamplerBase):
     def loglikelihood_fn(self, z: dict) -> jnp.ndarray:
         """Log-likelihood (pure JAX), delegating to the likelihood object."""
         params = self._build_likelihood_params(z)
+        return self.likelihood.log_likelihood(self.likelihood.params_type(**params))
+
+    def logprior_physical_fn(self, x: dict) -> jnp.ndarray:
+        """Joint log-prior in the physical space (no Jacobian correction)."""
+        logp = jnp.zeros(())
+        for name, prior in self.sampled_priors.items():
+            log_prob = jnp.where(
+                prior.support(x[name]), prior.log_prob(x[name]), -jnp.inf
+            )
+            logp = logp + log_prob
+        return logp
+
+    def loglikelihood_physical_fn(self, x: dict) -> jnp.ndarray:
+        """Log-likelihood for parameters given in the physical space."""
+        params = self._likelihood_params_from_physical(x)
         return self.likelihood.log_likelihood(self.likelihood.params_type(**params))
 
     def _sample_initial_position(self, key, sample_shape: tuple = ()) -> dict:
@@ -328,6 +346,22 @@ class NumpyroPriorSamplerBase(SamplerBase):
         """Draw initial position(s) in the unconstrained space."""
         self.rng_key, key = jax.random.split(self.rng_key)
         return self._sample_initial_position(key, sample_shape)
+
+    def _sample_initial_position_physical(self, key, sample_shape: tuple = ()) -> dict:
+        """Draw initial positions in the physical space from a given key.
+
+        Pure-JAX helper (no mutable state), usable inside ``jax.pmap``.
+        """
+        keys = jax.random.split(key, len(self.sampled_priors))
+        return {
+            name: prior.sample(keys[i], sample_shape)
+            for i, (name, prior) in enumerate(self.sampled_priors.items())
+        }
+
+    def initial_position_physical(self, sample_shape: tuple = ()) -> dict:
+        """Draw initial position(s) in the physical space."""
+        self.rng_key, key = jax.random.split(self.rng_key)
+        return self._sample_initial_position_physical(key, sample_shape)
 
     def _to_physical(self, z_particles: dict) -> dict:
         """Map batched unconstrained particles to physical (likelihood-namespace)

@@ -1,40 +1,337 @@
-"""SMC sampler interface based on blackjax.
+"""Adaptive-tempered SMC samplers with automatically tuned inner kernels.
 
-:class:`BlackjaxSMC` runs :func:`blackjax.adaptive_tempered_smc` on the
-unconstrained space provided by :class:`NumpyroPriorSamplerBase`, supporting
-several mutation kernels (RMH / HMC / NUTS) and automatic tuning of the inner
-kernel parameters (pretuning / inner-kernel tuning).  The inference loop is a
-pure-JAX ``jax.lax.while_loop`` (terminating when the tempering parameter
-reaches 1), which is the prerequisite for the optional ``jax.pmap``
-multi-chain backend (Phase 4).
+Two samplers are provided, both running an adaptive-tempered SMC loop built
+from blackjax primitives (ESS-based tempering, systematic resampling) with an
+inner mutation kernel whose parameters are re-tuned from the particle cloud
+at every tempering level:
+
+- :class:`BlackjaxSMCwithNUTS` mutates the particles with NUTS on the
+  unconstrained space prepared by :class:`NumpyroPriorSamplerBase` (the prior
+  bijections and the inverse mapping back to physical parameters are handled
+  by the base class).  The per-particle ``step_size`` is tuned with a
+  feedback scheme (algo ``tuning_ft``) and the shared
+  ``inverse_mass_matrix`` is re-estimated from the particle variance.
+- :class:`BlackjaxSMCwithIRMH` mutates the particles with an independent
+  Metropolis-Hastings kernel directly in the physical parameter space; the
+  Gaussian proposal ``mean`` / ``covariance`` are re-fitted to the particle
+  cloud and the output is already physical.
+
+For both samplers the number of mutation rounds per tempering level is
+determined automatically from the inter-generation lag-1 autocorrelation of
+the particles (evaluated on the ``x + x**2`` transform), capped by
+``max_num_moves``.
 """
 
 import logging
+from typing import Callable
 
 import jax
 import jax.numpy as jnp
+import numpy as np
+from jax.flatten_util import ravel_pytree
+from jax.scipy.special import logsumexp
 
 from .base import NumpyroPriorSamplerBase
 
 try:
     import blackjax
-    import blackjax.smc.resampling as resampling
-    from blackjax.mcmc import random_walk
-    from blackjax.smc.pretuning import build_pretune
+    from blackjax.smc import resampling
+    from blackjax.smc.base import update_and_take_last
+    from blackjax.smc.ess import ess_solver
+    from blackjax.smc.from_mcmc import unshared_parameters_and_step_fn
+    from blackjax.smc.solver import dichotomy
+    from blackjax.smc.tuning.from_particles import (
+        inverse_mass_matrix_from_particles,
+        particles_covariance_matrix,
+        particles_means,
+    )
 except ImportError:
     logging.error(
-        "blackjax is not installed by default, if the blackjax sampler "
-        "interface is needed, please install blackjax manually."
+        "blackjax (with `blackjax.irmh` and `blackjax.smc.tuning`) is not "
+        "installed by default, please install blackjax manually."
     )
     raise
 
+__all__ = ["BlackjaxSMCwithNUTS", "BlackjaxSMCwithIRMH"]
 
-class BlackjaxSMC(NumpyroPriorSamplerBase):
-    """Adaptive-tempered SMC sampler using blackjax.
+
+class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
+    """Shared machinery for adaptive-tempered SMC with self-tuned kernels.
+
+    Concrete samplers provide the inner mutation kernel and its tuning rule;
+    this base class implements the tempering loop and the autocorrelation-
+    based mutation stopping rule.
+
+    Hooks expected from subclasses (set in ``__init__``):
+
+    ``_logprior_fn`` / ``_loglikelihood_fn``
+        Space-specific log-density functions used by the tempered kernel and
+        the mutation rounds.
+    ``_mcmc_step_fn`` / ``_mcmc_init_fn``
+        The inner MCMC kernel and its state initialiser.
+    ``_params_to_likelihood``
+        Maps one particle to the likelihood-namespace parameter dict.
+    """
+
+    # Mutation stopping rule (algo ``move_steps``): keep mutating while at
+    # least ``_MIN_CORRELATED_FRACTION`` of the components still have a
+    # running lag-1 autocorrelation above ``_CORRELATION_THRESHOLD``.
+    _CORRELATION_THRESHOLD = 0.1
+    _MIN_CORRELATED_FRACTION = 0.1
+    _DEFAULT_MAX_MOVES = 12
+
+    # Type annotations, avoid initialize these hooks with None in __init__ of base class,
+    # as that would cause complains of type checker.
+    _logprior_fn: Callable
+    _loglikelihood_fn: Callable
+    _mcmc_step_fn: Callable
+    _mcmc_init_fn: Callable
+    _params_to_likelihood: Callable
+
+    def __init__(
+        self,
+        likelihood,
+        prior,
+        seed: int = 0,
+        target_ess: float = 0.8,
+        max_num_moves: int | None = None,
+    ) -> None:
+        super().__init__(likelihood, prior, seed)
+        self.target_ess = float(target_ess)
+        self.max_num_moves = (
+            self._DEFAULT_MAX_MOVES if max_num_moves is None else int(max_num_moves)
+        )
+
+        # Ravel/unravel utilities shared by both samplers; the template fixes
+        # the pytree structure and the flattened dimension.
+        template = self._sample_initial_position(jax.random.PRNGKey(0), ())
+        self._dim, self._unflatten_fn = ravel_pytree(template)
+        self._dim = int(self._dim.shape[0])
+
+    # ------------------------------------------------------------------
+    # shared primitives
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _num_particles(particles) -> int:
+        """Number of particles, read off the leading axis of the pytree."""
+        return jax.tree.leaves(particles)[0].shape[0]
+
+    def _stack(self, particles) -> jnp.ndarray:
+        """Ravel each particle into a row of an ``(n_particles, dim)`` matrix."""
+        return jax.vmap(lambda particle: ravel_pytree(particle)[0])(particles)
+
+    @staticmethod
+    def _lag1_corr(previous: jnp.ndarray, current: jnp.ndarray) -> jnp.ndarray:
+        """Component-wise lag-1 correlation on the ``x + x**2`` transform.
+
+        The transform makes the criterion insensitive to the sign of the
+        components (following the HSMC move-length criterion).
+        """
+        previous = previous + previous**2
+        current = current + current**2
+        previous = previous - jnp.mean(previous, axis=0)
+        current = current - jnp.mean(current, axis=0)
+        denominator = jnp.sqrt(
+            jnp.sum(previous**2, axis=0) * jnp.sum(current**2, axis=0)
+        )
+        return jnp.sum(previous * current, axis=0) / (denominator + 1e-16)
+
+    def _mutate_until_decorrelated(
+        self, rng_key, particles, parameters, tempering_param
+    ):
+        """Mutate the particles at the current temperature until decorrelation.
+
+        The first mutation round doubles as the tuning round: the per-particle
+        kernel parameters (e.g. the NUTS step sizes) are updated from its
+        realised performance before the remaining rounds.
+        """
+        move_key, tune_key, rest_key = jax.random.split(rng_key, 3)
+        previous = particles
+        particles, info = self._mutate(move_key, particles, parameters, tempering_param)
+        parameters = self._tune_per_particle(
+            tune_key, parameters, previous, particles, info
+        )
+        return (
+            self._decorrelate(rest_key, particles, parameters, tempering_param),
+            parameters,
+        )
+
+    def _decorrelate(self, rng_key, particles, parameters, tempering_param):
+        """Apply mutation rounds until the particle population decorrelates.
+
+        Implements the ``move_steps`` rule: start from a running correlation
+        product of ones and multiply it by the lag-1 correlation between
+        successive populations after every mutation round, until fewer than
+        ``_MIN_CORRELATED_FRACTION`` of the components remain correlated.
+        """
+        init = (rng_key, particles, self._stack(particles), jnp.ones(self._dim), 0)
+
+        def cond(carry):
+            _, _, _, correlations, num_moves = carry
+            still_correlated = jnp.mean(correlations > self._CORRELATION_THRESHOLD)
+            return (num_moves < self.max_num_moves) & (
+                still_correlated >= self._MIN_CORRELATED_FRACTION
+            )
+
+        def body(carry):
+            key, particles, previous, correlations, num_moves = carry
+            key, subkey = jax.random.split(key)
+            particles, _ = self._mutate(subkey, particles, parameters, tempering_param)
+            current = self._stack(particles)
+            correlations = correlations * self._lag1_corr(previous, current)
+            return key, particles, current, correlations, num_moves + 1
+
+        _, particles, _, _, _ = jax.lax.while_loop(cond, body, init)
+        return particles
+
+    def _mutate(self, rng_key, particles, parameters, tempering_param):
+        """One mutation round: a single kernel step for every particle."""
+
+        def tempered_logposterior(position):
+            return self._logprior_fn(
+                position
+            ) + tempering_param * self._loglikelihood_fn(position)
+
+        unshared, shared_step = unshared_parameters_and_step_fn(
+            parameters, self._mcmc_step_fn
+        )
+        update_fn, _ = update_and_take_last(
+            self._mcmc_init_fn,
+            tempered_logposterior,
+            shared_step,
+            1,
+            self._num_particles(particles),
+        )
+        keys = jax.random.split(rng_key, self._num_particles(particles))
+        return update_fn(keys, particles, unshared)
+
+    # ------------------------------------------------------------------
+    # hooks implemented by the concrete samplers
+    # ------------------------------------------------------------------
+    def _initial_particles(self, key, num_particles):
+        """Draw the initial particle population."""
+        raise NotImplementedError
+
+    def _initial_parameters(self, key, particles):
+        """Initial inner-kernel parameters."""
+        raise NotImplementedError
+
+    def _resample_parameters(self, parameters, indices):
+        """Resample the per-particle kernel parameters with their particles."""
+        raise NotImplementedError
+
+    def _fit_shared_parameters(self, parameters, particles):
+        """Re-fit the shared kernel parameters to the resampled cloud."""
+        raise NotImplementedError
+
+    def _tune_per_particle(self, key, parameters, previous, particles, info):
+        """Tune the per-particle kernel parameters after one mutation round."""
+        raise NotImplementedError
+
+    # ------------------------------------------------------------------
+    # inference loop
+    # ------------------------------------------------------------------
+    def run(self, num_particles: int = 200) -> dict:
+        """Run the adaptive-tempered SMC sampler.
+
+        Parameters
+        ----------
+        num_particles : int, optional
+            Number of SMC particles.  Default is 200.
+
+        Returns
+        -------
+        dict
+            Physical-space samples keyed by parameter name, plus
+            ``'log_likelihood'``, normalized importance ``'weights'`` and the
+            log-evidence ``'log_evidence'``.
+        """
+        self.rng_key, key = jax.random.split(self.rng_key)
+        particles, log_evidence = self._run(key, int(num_particles))
+        return self._finalize(particles, log_evidence)
+
+    def _run(self, key, num_particles):
+        """Reweight-resample-mutate loop, terminating at tempering parameter 1.
+
+        Each iteration computes the ESS-optimal tempering increment,
+        reweights and resamples the particles, re-fits the shared kernel
+        parameters to the resampled cloud and mutates the particles at the
+        new temperature until they decorrelate.  The particles carry uniform
+        weights after resampling; the normalising-constant increments are
+        accumulated into the log-evidence.
+        """
+        batched_loglikelihood = jax.vmap(self._loglikelihood_fn)
+        init_key, loop_key = jax.random.split(key)
+        particles = self._initial_particles(init_key, num_particles)
+        parameters = self._initial_parameters(loop_key, particles)
+
+        def cond(carry):
+            return carry[2] < 1.0
+
+        def body(carry):
+            key, particles, tempering_param, parameters, log_evidence = carry
+            key, delta_key, resample_key, move_key = jax.random.split(key, 4)
+            delta = ess_solver(
+                batched_loglikelihood,
+                particles,
+                self.target_ess,
+                1.0 - tempering_param,
+                dichotomy,
+            )
+            tempering_param = tempering_param + delta
+            log_weights = delta * batched_loglikelihood(particles)
+            log_evidence = (
+                log_evidence + logsumexp(log_weights) - jnp.log(num_particles)
+            )
+            indices = resampling.systematic(
+                resample_key,
+                jnp.exp(log_weights - logsumexp(log_weights)),
+                num_particles,
+            )
+            particles = jax.tree.map(lambda p: p[indices], particles)
+            parameters = self._resample_parameters(parameters, indices)
+            parameters = self._fit_shared_parameters(parameters, particles)
+            particles, parameters = self._mutate_until_decorrelated(
+                move_key, particles, parameters, tempering_param
+            )
+            return key, particles, tempering_param, parameters, log_evidence
+
+        _, particles, _, _, log_evidence = jax.lax.while_loop(
+            cond, body, (loop_key, particles, 0.0, parameters, 0.0)
+        )
+        return particles, log_evidence
+
+    def _finalize(self, particles, log_evidence) -> dict:
+        """Convert the final population into a physical-parameter dict."""
+        physical = jax.vmap(self._params_to_likelihood)(particles)
+        log_likelihoods = jax.vmap(self._loglikelihood_fn)(particles)
+        weights = jnp.ones(self._num_particles(particles)) / self._num_particles(
+            particles
+        )
+        output = self._format_output(physical, log_likelihoods, weights=weights)
+        output["log_evidence"] = float(np.asarray(log_evidence))
+        return output
+
+
+class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
+    """Adaptive-tempered SMC with a NUTS mutation kernel.
+
+    NUTS requires an unbounded domain, so sampling happens on the
+    unconstrained space prepared by :class:`NumpyroPriorSamplerBase` (the
+    prior bijections and the inverse transform back to physical parameters
+    are handled by the base class).
+
+    At every tempering level the per-particle ``step_size`` is tuned with a
+    feedback scheme (algo ``tuning_ft``): particles are reweighted by a
+    realised squared-jump measure (trajectory-length-normalised,
+    acceptance-corrected Mahalanobis distance), their step sizes are
+    perturbed in log space, and the reweighted population is resampled.  The
+    shared ``inverse_mass_matrix`` is re-estimated from the particle
+    variance.
 
     Parameters
     ----------
-    likelihood : WhittleLikelihoodJax
+    likelihood : object
         Likelihood instance providing ``log_likelihood``, ``parameter_names``
         and ``params_type``.
     prior : dict
@@ -42,459 +339,199 @@ class BlackjaxSMC(NumpyroPriorSamplerBase):
         :class:`pespace.inference.sampler.base.NumpyroPriorSamplerBase`.
     seed : int, optional
         Seed for the JAX random number generator.  Default is 0.
-    mutation_kernel : {'rmh', 'hmc', 'nuts'}, optional
-        Mutation kernel used to move the particles inside the tempering loop.
-        ``'rmh'`` is the robust gradient-free baseline (additive-step random
-        walk); ``'hmc'`` / ``'nuts'`` operate on the unconstrained space and
-        require a differentiable log-density.  Default is ``'rmh'``.
-    mcmc_parameters : dict, optional
-        Initial parameters passed to the mutation kernel.  Each value must be
-        an array whose leading dimension is 1 (shared by all particles) or
-        ``num_particles`` (per-particle).  Sensible defaults are derived per
-        kernel when not given.
-    tuning_method : {'none', 'pretuning', 'inner_kernel_tuning',
-        'pretuning+inner_kernel_tuning'}, optional
-        Automatic tuning of the inner-kernel parameters.  ``'none'`` keeps the
-        (possibly adapted) parameters fixed; ``'pretuning'`` (default) adapts
-        particle-wise step sizes; ``'inner_kernel_tuning'`` re-estimates the
-        kernel parameters (e.g. the mass matrix) at every tempering step;
-        ``'pretuning+inner_kernel_tuning'`` combines both.
     target_ess : float, optional
-        Target effective sample size ratio for the adaptive tempering
-        schedule.  Default is 0.5.
-    num_mcmc_steps : int, optional
-        Number of MCMC steps applied to each particle per tempering
-        iteration.  Default is 10.
-    resampling_fn : callable, optional
-        Blackjax resampling function.  Default is ``resampling.systematic``.
-    pretune_config : dict, optional
-        Extra keyword arguments for
-        :func:`blackjax.smc.pretuning.build_pretune` (e.g. ``alpha``,
-        ``sigma_parameters``, ``natural_parameters``,
-        ``positive_parameters``).
+        Target ESS ratio of the adaptive tempering schedule.  Default is 0.8.
+    max_num_moves : int, optional
+        Upper bound on the number of mutation rounds per tempering level.
+        Default is 12.
+    step_size_min, step_size_max : float, optional
+        Bounds of the log-uniform distribution the initial per-particle step
+        sizes are drawn from.  Defaults are 1e-3 and 1e-1.
     """
 
-    _KERNELS = ("rmh", "hmc", "nuts")
-    _TUNING = (
-        "none",
-        "pretuning",
-        "inner_kernel_tuning",
-        "pretuning+inner_kernel_tuning",
-    )
+    _DEFAULT_MAX_MOVES = 12
+    _FT_ALPHA = 0.1  # floor added to the jump-measure weights (tuning_ft)
+    _FT_SIGMA_LOG = 0.2  # log-space perturbation scale (tuning_ft)
 
     def __init__(
         self,
         likelihood,
         prior,
         seed: int = 0,
-        mutation_kernel: str = "rmh",
-        mcmc_parameters: dict | None = None,
-        tuning_method: str = "pretuning",
-        target_ess: float = 0.5,
-        num_mcmc_steps: int = 10,
-        resampling_fn=None,
-        pretune_config: dict | None = None,
-        nuts_max_num_doublings: int = 10,
+        target_ess: float = 0.8,
+        max_num_moves: int | None = None,
+        step_size_min: float = 1e-3,
+        step_size_max: float = 1e-1,
     ) -> None:
-        super().__init__(likelihood, prior, seed)
+        super().__init__(likelihood, prior, seed, target_ess, max_num_moves)
+        self.step_size_min = float(step_size_min)
+        self.step_size_max = float(step_size_max)
 
-        if mutation_kernel not in self._KERNELS:
-            raise ValueError(
-                f"mutation_kernel must be one of {self._KERNELS}, "
-                f"got '{mutation_kernel}'."
-            )
-        if tuning_method not in self._TUNING:
-            raise ValueError(
-                f"tuning_method must be one of {self._TUNING}, "
-                f"got '{tuning_method}'."
-            )
-        self.mutation_kernel = mutation_kernel
-        self.tuning_method = tuning_method
-        self.target_ess = target_ess
-        self.num_mcmc_steps = num_mcmc_steps
-        self.resampling_fn = resampling_fn or resampling.systematic
-        self.pretune_config = dict(pretune_config or {})
-        self.nuts_max_num_doublings = int(nuts_max_num_doublings)
+        self._logprior_fn = self.logprior_fn
+        self._loglikelihood_fn = self.loglikelihood_fn
+        self._mcmc_step_fn = blackjax.nuts.build_kernel()
+        self._mcmc_init_fn = blackjax.nuts.init
+        self._params_to_likelihood = self._build_likelihood_params
 
-        self._mcmc_step_fn, self._mcmc_init_fn, default_parameters = (
-            self._build_mcmc_kernel(mutation_kernel)
+    def _initial_particles(self, key, num_particles):
+        return self._sample_initial_position(key, (num_particles,))
+
+    def _initial_parameters(self, key, particles):
+        log_step_size = jax.random.uniform(
+            key,
+            (self._num_particles(particles),),
+            minval=jnp.log(self.step_size_min),
+            maxval=jnp.log(self.step_size_max),
         )
-        self.mcmc_parameters = (
-            default_parameters if mcmc_parameters is None else dict(mcmc_parameters)
-        )
-
-    # ------------------------------------------------------------------
-    # kernel factory
-    # ------------------------------------------------------------------
-    def _build_mcmc_kernel(self, name: str):
-        """Return ``(mcmc_step_fn, mcmc_init_fn, default_parameters)``.
-
-        The step function must have the signature
-        ``(rng_key, state, logdensity_fn, **step_parameters)`` expected by
-        blackjax's SMC machinery (parameters are unpacked from
-        ``mcmc_parameters``).
-        """
-        dim = len(self.parameter_names)
-        if name == "rmh":
-            additive_step = random_walk.build_additive_step()
-
-            def kernel(rng_key, state, logdensity_fn, sigma=None, **_):
-                if sigma is None:  # pragma: no cover - SMC always passes sigma
-                    sigma = jnp.array([0.5])
-                random_step = random_walk.normal(sigma)
-                return additive_step(rng_key, state, logdensity_fn, random_step)
-
-            default = {"sigma": jnp.array([0.5])}
-            return kernel, blackjax.rmh.init, default
-
-        if name == "hmc":
-            default = {
-                "step_size": jnp.array([1e-2]),
-                "inverse_mass_matrix": jnp.eye(dim)[None],
-                "num_integration_steps": jnp.array([10]),
-            }
-            return blackjax.hmc.build_kernel(), blackjax.hmc.init, default
-
-        if name == "nuts":
-            # max_num_doublings must be a static Python int (it sizes an array),
-            # so it is bound here instead of being passed through the SMC
-            # mcmc_parameters machinery (which would make it a tracer).
-            base_kernel = blackjax.nuts.build_kernel()
-            max_doublings = self.nuts_max_num_doublings
-
-            def kernel(rng_key, state, logdensity_fn, step_size=None, inverse_mass_matrix=None, **_):
-                return base_kernel(
-                    rng_key,
-                    state,
-                    logdensity_fn,
-                    step_size,
-                    inverse_mass_matrix,
-                    max_num_doublings=max_doublings,
-                )
-
-            default = {
-                "step_size": jnp.array([1e-2]),
-                "inverse_mass_matrix": jnp.eye(dim)[None],
-            }
-            return kernel, blackjax.nuts.init, default
-
-        raise ValueError(f"Unknown mutation kernel '{name}'.")
-
-    # ------------------------------------------------------------------
-    # tuning
-    # ------------------------------------------------------------------
-    def _build_pretune(self, num_particles: int):
-        """Build a ``pretune_fn`` for the configured mutation kernel.
-
-        Blackjax's default chain-mixing measure is the ESJD normalised by the
-        inverse mass matrix, so it only applies to ``hmc``/``nuts``.  For the
-        gradient-free ``rmh`` kernel a unit-mass-matrix ESJD is used instead.
-        """
-        cfg = self.pretune_config
-        measure_factory = None
-        if self.mutation_kernel == "rmh":
-            sigma_parameters = cfg.get(
-                "sigma_parameters", {"sigma": jnp.array(0.5)}
-            )
-            natural = cfg.get("natural_parameters", [])
-            positive = cfg.get("positive_parameters", ["sigma"])
-            from blackjax.smc.pretuning import esjd
-
-            dim = len(self.parameter_names)
-            measure_factory = lambda state: esjd(jnp.eye(dim)[None])
-        elif self.mutation_kernel == "hmc":
-            sigma_parameters = cfg.get(
-                "sigma_parameters",
-                {
-                    "step_size": jnp.array(1e-2),
-                    "num_integration_steps": jnp.array(2),
-                },
-            )
-            natural = cfg.get("natural_parameters", ["num_integration_steps"])
-            positive = cfg.get("positive_parameters", ["step_size"])
-        else:  # nuts
-            sigma_parameters = cfg.get(
-                "sigma_parameters", {"step_size": jnp.array(1e-2)}
-            )
-            natural = cfg.get("natural_parameters", [])
-            positive = cfg.get("positive_parameters", ["step_size"])
-
-        kwargs = dict(
-            mcmc_init_fn=self._mcmc_init_fn,
-            mcmc_step_fn=self._mcmc_step_fn,
-            alpha=cfg.get("alpha", 1),
-            n_particles=num_particles,
-            sigma_parameters=sigma_parameters,
-            natural_parameters=natural,
-            positive_parameters=positive,
-        )
-        if measure_factory is not None:
-            kwargs["performance_of_chain_measure_factory"] = measure_factory
-        return build_pretune(**kwargs)
-
-    def _build_inner_update_fn(self, combined: bool):
-        """Return an ``mcmc_parameter_update_fn`` for inner-kernel tuning.
-
-        For ``hmc``/``nuts`` the inverse mass matrix is re-estimated from the
-        particle covariance; for ``rmh`` the (scalar) proposal scale is kept
-        fixed.
-        """
-        from blackjax.smc.tuning.from_particles import (
-            inverse_mass_matrix_from_particles,
-        )
-
-        kernel = self.mutation_kernel
-        if combined:
-            # state is StateWithParameterOverride
-            def update_fn(key, state, info):
-                particles = state.sampler_state.particles
-                if kernel in ("hmc", "nuts"):
-                    return {"inverse_mass_matrix": inverse_mass_matrix_from_particles(particles)}
-                return {}
-        else:
-            def update_fn(key, state, info):
-                particles = state.particles
-                if kernel in ("hmc", "nuts"):
-                    return {"inverse_mass_matrix": inverse_mass_matrix_from_particles(particles)}
-                return {}
-        return update_fn
-
-    def _pretune_initial_parameters(self, num_particles: int) -> dict:
-        """Per-particle initial parameters for pretuning.
-
-        Pretuning assigns a value to each inner chain, so the tuned parameters
-        must already carry a per-particle leading dimension at initialisation;
-        otherwise the ``jax.lax.while_loop`` carry type would change shape
-        after the first pretuning step.
-        """
-        n = num_particles
-        if self.mutation_kernel == "rmh":
-            sigma = float(jnp.ravel(self.mcmc_parameters["sigma"])[0])
-            return {"sigma": jnp.full((n,), sigma)}
-        if self.mutation_kernel == "hmc":
-            step = float(jnp.ravel(self.mcmc_parameters["step_size"])[0])
-            integ = int(jnp.ravel(self.mcmc_parameters["num_integration_steps"])[0])
-            return {
-                "inverse_mass_matrix": self.mcmc_parameters["inverse_mass_matrix"],
-                "step_size": jnp.full((n,), step),
-                "num_integration_steps": jnp.full((n,), integ, dtype=jnp.int32),
-            }
-        # nuts
-        step = float(jnp.ravel(self.mcmc_parameters["step_size"])[0])
+        inverse_mass_matrix = inverse_mass_matrix_from_particles(particles)[None, ...]
         return {
-            "inverse_mass_matrix": self.mcmc_parameters["inverse_mass_matrix"],
-            "step_size": jnp.full((n,), step),
+            "step_size": jnp.exp(log_step_size),
+            "inverse_mass_matrix": inverse_mass_matrix,
         }
 
-    def _build_smc(self, num_particles: int, num_mcmc_steps: int):
-        """Construct the (possibly tuned) sampling algorithm.
+    def _resample_parameters(self, parameters, indices):
+        """Resample the per-particle step sizes with their particles."""
+        return {
+            "step_size": parameters["step_size"][indices],
+            "inverse_mass_matrix": parameters["inverse_mass_matrix"],
+        }
 
-        Returns ``(smc, is_tuned)`` where ``is_tuned`` indicates that the
-        state carries a ``sampler_state`` attribute.
+    def _fit_shared_parameters(self, parameters, particles):
+        """Re-estimate the shared inverse mass matrix from the resampled cloud."""
+        return {
+            "step_size": parameters["step_size"],
+            "inverse_mass_matrix": inverse_mass_matrix_from_particles(particles)[
+                None, ...
+            ],
+        }
+
+    def _tune_per_particle(self, key, parameters, previous, particles, info):
+        """Feedback-tune the per-particle step sizes (algo ``tuning_ft``).
+
+        The realised squared jump (Mahalanobis distance between the pre- and
+        post-mutation positions, divided by the NUTS trajectory length and
+        scaled by the acceptance rate) is used to reweight the particle step
+        sizes, which are then jittered multiplicatively in log space and
+        resampled from the reweighted population.
         """
-        base_kwargs = dict(
-            logprior_fn=self.logprior_fn,
-            loglikelihood_fn=self.loglikelihood_fn,
-            mcmc_step_fn=self._mcmc_step_fn,
-            mcmc_init_fn=self._mcmc_init_fn,
-            resampling_fn=self.resampling_fn,
-            num_mcmc_steps=num_mcmc_steps,
-            target_ess=self.target_ess,
+        start = self._stack(previous)
+        end = self._stack(particles)
+        inverse_mass_diag = jnp.diag(parameters["inverse_mass_matrix"][0])
+        trajectory_length = jnp.ravel(info.num_integration_steps)
+        acceptance = jnp.ravel(info.acceptance_rate)
+
+        measure = jnp.sqrt(jnp.sum((start - end) ** 2 / inverse_mass_diag, axis=-1))
+        measure = measure / trajectory_length * acceptance
+
+        perturb_key, resample_key = jax.random.split(key)
+        perturbed = parameters["step_size"] * jnp.exp(
+            self._FT_SIGMA_LOG
+            * jax.random.normal(perturb_key, parameters["step_size"].shape)
         )
-
-        if self.tuning_method == "none":
-            smc = blackjax.adaptive_tempered_smc(
-                mcmc_parameters=self.mcmc_parameters, **base_kwargs
-            )
-            return smc, False
-
-        if self.tuning_method == "pretuning":
-            pretune = self._build_pretune(num_particles)
-            smc = blackjax.pretuning(
-                blackjax.adaptive_tempered_smc,
-                initial_parameter_value=self._pretune_initial_parameters(num_particles),
-                pretune_fn=pretune,
-                **base_kwargs,
-            )
-            return smc, True
-
-        if self.tuning_method == "inner_kernel_tuning":
-            smc = blackjax.inner_kernel_tuning(
-                blackjax.adaptive_tempered_smc,
-                mcmc_parameter_update_fn=self._build_inner_update_fn(combined=False),
-                initial_parameter_value=self.mcmc_parameters,
-                **base_kwargs,
-            )
-            return smc, True
-
-        # pretuning + inner_kernel_tuning
-        pretune = self._build_pretune(num_particles)
-
-        def pretuning_factory(
-            logprior_fn,
-            loglikelihood_fn,
-            mcmc_step_fn,
-            mcmc_init_fn,
-            mcmc_parameters,
-            resampling_fn,
-            num_mcmc_steps,
-            initial_parameter_value,
-            target_ess,
-        ):
-            return blackjax.pretuning(
-                blackjax.adaptive_tempered_smc,
-                logprior_fn=logprior_fn,
-                loglikelihood_fn=loglikelihood_fn,
-                mcmc_step_fn=mcmc_step_fn,
-                mcmc_init_fn=mcmc_init_fn,
-                resampling_fn=resampling_fn,
-                num_mcmc_steps=num_mcmc_steps,
-                initial_parameter_value=initial_parameter_value,
-                pretune_fn=pretune,
-                target_ess=target_ess,
-            )
-
-        smc = blackjax.inner_kernel_tuning(
-            pretuning_factory,
-            mcmc_parameter_update_fn=self._build_inner_update_fn(combined=True),
-            initial_parameter_value=self._pretune_initial_parameters(num_particles),
-            smc_returns_state_with_parameter_override=True,
-            **base_kwargs,
+        weights = self._FT_ALPHA + measure
+        selection = resampling.systematic(
+            resample_key, weights / jnp.sum(weights), parameters["step_size"].shape[0]
         )
-        return smc, True
+        return {
+            "step_size": perturbed[selection],
+            "inverse_mass_matrix": parameters["inverse_mass_matrix"],
+        }
 
-    # ------------------------------------------------------------------
-    # inference loop
-    # ------------------------------------------------------------------
-    @staticmethod
-    def _run_loop(smc, key, state, tuned: bool):
-        """Pure-JAX adaptive-tempering loop terminating at ``tempering_param >= 1``."""
 
-        if tuned:
+class BlackjaxSMCwithIRMH(_TunedAdaptiveTemperedSMC):
+    """Adaptive-tempered SMC with an independent MH mutation kernel.
 
-            def cond(carry):
-                _, s = carry
-                return s.sampler_state.tempering_param < 1.0
+    Sampling is performed directly in the physical parameter space, so the
+    output is already physical and needs no post-processing.  The Gaussian
+    proposal ``mean`` / ``covariance`` are re-fitted to the particle cloud at
+    every tempering level.
 
-        else:
+    Parameters
+    ----------
+    likelihood : object
+        Likelihood instance providing ``log_likelihood``, ``parameter_names``
+        and ``params_type``.
+    prior : dict
+        Prior declaration, see
+        :class:`pespace.inference.sampler.base.NumpyroPriorSamplerBase`.
+    seed : int, optional
+        Seed for the JAX random number generator.  Default is 0.
+    target_ess : float, optional
+        Target ESS ratio of the adaptive tempering schedule.  Default is 0.8.
+    max_num_moves : int, optional
+        Upper bound on the number of mutation rounds per tempering level.
+        Default is 100.
+    covariance_regularization : float, optional
+        Diagonal regularization added to the fitted proposal covariance.
+        Default is 1e-6.
+    """
 
-            def cond(carry):
-                _, s = carry
-                return s.tempering_param < 1.0
+    _DEFAULT_MAX_MOVES = 100
 
-        def body(carry):
-            k, s = carry
-            k, subkey = jax.random.split(k)
-            new_s, _info = smc.step(subkey, s)
-            return k, new_s
-
-        return jax.lax.while_loop(cond, body, (key, state))
-
-    # ------------------------------------------------------------------
-    # public API
-    # ------------------------------------------------------------------
-    def run(
+    def __init__(
         self,
-        num_particles: int = 200,
-        num_mcmc_steps: int | None = None,
-        num_chains: int = 1,
-        parallel_backend: str | None = None,
-    ) -> dict:
-        """Run the adaptive-tempered SMC sampling.
+        likelihood,
+        prior,
+        seed: int = 0,
+        target_ess: float = 0.8,
+        max_num_moves: int | None = None,
+        covariance_regularization: float = 1e-6,
+    ) -> None:
+        super().__init__(likelihood, prior, seed, target_ess, max_num_moves)
+        self.covariance_regularization = float(covariance_regularization)
 
-        Parameters
-        ----------
-        num_particles : int, optional
-            Number of SMC particles.  Default is 200.
-        num_mcmc_steps : int, optional
-            Number of MCMC mutation steps per tempering iteration.  Defaults
-            to the value given at construction.
-        num_chains : int, optional
-            Number of independent SMC runs.  ``1`` runs a single chain.
-            ``> 1`` requires ``parallel_backend``.
-        parallel_backend : {'cpu-pmap', 'gpu-pmap', None}, optional
-            Multi-chain parallel backend (Phase 4).  Default is None.
+        self._logprior_fn = self.logprior_physical_fn
+        self._loglikelihood_fn = self.loglikelihood_physical_fn
+        self._irmh_kernel = blackjax.irmh.build_kernel()
+        self._mcmc_step_fn = self._irmh_step_fn
+        self._mcmc_init_fn = blackjax.irmh.init
+        self._params_to_likelihood = self._likelihood_params_from_physical
 
-        Returns
-        -------
-        dict
-            Dictionary of numpy arrays keyed by physical parameter name, plus
-            ``'log_likelihood'`` and importance ``'weights'`` (normalized).
-        """
-        steps = self.num_mcmc_steps if num_mcmc_steps is None else num_mcmc_steps
-        if num_chains > 1:
-            if parallel_backend is None:
-                raise ValueError(
-                    "num_chains > 1 requires a parallel_backend ('cpu-pmap' or "
-                    "'gpu-pmap')."
-                )
-            return self._run_pmap(num_particles, steps, num_chains, parallel_backend)
-        return self._run_single(num_particles, steps)
+    def _irmh_step_fn(self, rng_key, state, logdensity_fn, mean, covariance):
+        """IRMH kernel with a shared Gaussian proposal ``N(mean, covariance)``."""
 
-    def _run_single(self, num_particles: int, num_mcmc_steps: int) -> dict:
-        smc, tuned = self._build_smc(num_particles, num_mcmc_steps)
-        self.rng_key, key = jax.random.split(self.rng_key)
-        state = smc.init(self.initial_position((num_particles,)), rng_key=None)
-        _, final_state = self._run_loop(smc, key, state, tuned)
-        return self._finalize(final_state, tuned)
-
-    def _run_pmap(self, num_particles, num_mcmc_steps, num_chains, parallel_backend):
-        """Run ``num_chains`` independent SMC runs with ``jax.pmap``.
-
-        Each device executes one full adaptive-tempered SMC run (different
-        rng key / initial particles).  Particle-level parallelism is provided
-        inside the SMC kernel (``vmap`` / ``lax.map``) and is orthogonal to
-        this chain-level ``pmap``, so the two do not conflict: on CPU each
-        chain runs on its own core (likelihood vectorisation stays on that
-        core), while on GPU the likelihood vectorisation runs on the GPU.
-        The per-device final states are merged into a single physical
-        parameter dict.
-        """
-        from jax import devices
-
-        if parallel_backend not in ("cpu-pmap", "gpu-pmap"):
-            raise ValueError(
-                f"parallel_backend must be 'cpu-pmap' or 'gpu-pmap', got "
-                f"'{parallel_backend}'."
-            )
-        n_devices = len(devices())
-        if n_devices < num_chains:
-            raise ValueError(
-                f"parallel_backend='{parallel_backend}' requires at least "
-                f"{num_chains} devices but {n_devices} are available. For CPU "
-                "pmap, call numpyro.set_host_device_count(N) before the first "
-                "JAX operation (e.g. before constructing the sampler)."
+        def proposal_distribution(key):
+            return self._unflatten_fn(
+                jax.random.multivariate_normal(key, mean, covariance)
             )
 
-        smc, tuned = self._build_smc(num_particles, num_mcmc_steps)
+        def proposal_logdensity(_proposal_state, current_state):
+            # blackjax subtracts ``proposal_logdensity_fn(new_state,
+            # prev_state)`` from the energy of the new state; evaluating the
+            # independent proposal density at the *current* position recovers
+            # the standard IMH acceptance ratio ``p(x') q(x) / p(x) q(x')``.
+            return jax.scipy.stats.multivariate_normal.logpdf(
+                ravel_pytree(current_state.position)[0], mean, covariance
+            )
 
-        def run_chain(key):
-            particles = self._sample_initial_position(key, (num_particles,))
-            state = smc.init(particles, rng_key=None)
-            _, final = self._run_loop(smc, key, state, tuned)
-            return final
-
-        self.rng_key, key = jax.random.split(self.rng_key)
-        keys = jax.random.split(key, num_chains)
-        finals = jax.pmap(run_chain)(keys)
-        if tuned:
-            finals = finals.sampler_state
-        return self._finalize_pmap(finals)
-
-    def _finalize_pmap(self, finals) -> dict:
-        """Merge per-device final SMC states into a physical-parameter dict."""
-        particles = finals.particles  # dict name -> (num_chains, num_particles, ...)
-        weights = finals.weights  # (num_chains, num_particles)
-        physical = jax.vmap(jax.vmap(self._build_likelihood_params))(particles)
-        log_likelihoods = jax.vmap(jax.vmap(self.loglikelihood_fn))(particles)
-        physical = {k: v.reshape((-1,) + v.shape[2:]) for k, v in physical.items()}
-        return self._format_output(
-            physical, log_likelihoods.reshape(-1), weights=weights.reshape(-1)
+        return self._irmh_kernel(
+            rng_key, state, logdensity_fn, proposal_distribution, proposal_logdensity
         )
 
-    def _finalize(self, final_state, tuned: bool) -> dict:
-        """Convert the final SMC state into a physical-parameter dict."""
-        state = final_state.sampler_state if tuned else final_state
-        physical = self._to_physical(state.particles)
-        log_likelihoods = jax.vmap(self.loglikelihood_fn)(state.particles)
-        return self._format_output(physical, log_likelihoods, weights=state.weights)
+    def _initial_particles(self, key, num_particles):
+        return self._sample_initial_position_physical(key, (num_particles,))
+
+    def _initial_parameters(self, key, particles):
+        del key
+        return self._fitted_proposal(particles)
+
+    def _resample_parameters(self, parameters, indices):
+        del indices
+        return parameters
+
+    def _fit_shared_parameters(self, parameters, particles):
+        del parameters
+        return self._fitted_proposal(particles)
+
+    def _tune_per_particle(self, key, parameters, previous, particles, info):
+        del key, previous, particles, info
+        return parameters
+
+    def _fitted_proposal(self, particles):
+        """Gaussian proposal parameters fitted to the current particle cloud."""
+        covariance = particles_covariance_matrix(particles)
+        covariance = covariance + self.covariance_regularization * jnp.eye(self._dim)
+        return {
+            "mean": particles_means(particles)[None, ...],
+            "covariance": covariance[None, ...],
+        }
