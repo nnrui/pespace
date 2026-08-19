@@ -30,7 +30,7 @@ except ImportError:  # pragma: no cover
 class SamplerBase(ABC):
     """Framework-agnostic abstract base class for samplers."""
 
-    def __init__(self, likelihood, prior_dict: dict, seed: int = 0) -> None:
+    def __init__(self, likelihood, prior_dict: dict, rkey_seed: int = 0) -> None:
         """
         Parameters
         ----------
@@ -43,8 +43,7 @@ class SamplerBase(ABC):
         """
         self.likelihood = likelihood
         self.prior_dict = prior_dict
-        self.seed = seed
-        self.rng_key = jax.random.PRNGKey(seed)
+        self.rng_key = jax.random.key(rkey_seed)
 
     @abstractmethod
     def logprior_fn(self, position) -> jnp.ndarray:
