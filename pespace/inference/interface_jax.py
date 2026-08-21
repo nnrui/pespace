@@ -5,15 +5,6 @@ from collections import namedtuple
 
 import jax.numpy as jnp
 
-#: Response parameters consumed by :meth:`WhittleLikelihoodJax.log_likelihood`
-#: (a fixed set; waveform parameters are appended from the waveform interface).
-_RESPONSE_PARAMETERS = (
-    "ecliptic_longitude",
-    "ecliptic_latitude",
-    "polarization",
-    "coalescence_time",
-)
-
 
 def noise_weighted_inner_product(observed_data, response_data, psd, df):
     """
@@ -44,15 +35,15 @@ def noise_weighted_inner_product(observed_data, response_data, psd, df):
 class WhittleLikelihoodJax:
     """The Whittle likelihood computation with jax."""
 
-    def __init__(
-        self, waveform_func, detector, channels, waveform_parameter_names=()
-    ) -> None:
+    def __init__(self, waveform, detector, channels) -> None:
         """
         Parameters
         ----------
-        waveform_func : callable
-            Callable for waveform generation, should be jit-able and grad-able,
-            with the signature ``waveform_func(freq, params) -> jnp.ndarray``.
+        waveform : WaveformRippleBase
+            Waveform interface instance for waveform generation, the function of waveform
+            computation should be jit-able and grad-able.
+            Its ``frequencies`` should match the ``frequency_samples`` of the TDI data
+            of all detectors.
         detector : InterferometerAntenna or tuple of InterferometerAntenna
             Detector instance(s) for computing detector responses, should be
             configured with ``backend='jax'``, with frequency-domain TDI data
@@ -60,17 +51,11 @@ class WhittleLikelihoodJax:
         channels : tuple of str
             TDI channels used in likelihood computation. Must be a subset of
             ('A', 'E', 'T'). Common choices are ('A', 'E', 'T') or ('A', 'E').
-        waveform_parameter_names : tuple of str, optional
-            Names of the waveform parameters consumed by ``waveform_func``.
-            Together with the fixed response parameters
-            (``ecliptic_longitude``, ``ecliptic_latitude``, ``polarization``,
-            ``coalescence_time``) they define the ``params_type`` namedtuple
-            accepted by :meth:`log_likelihood`.  When a waveform object with a
-            ``required_parameters`` attribute becomes available, this is
-            populated from it; defaults to ``()``.
 
         Raises
         ------
+        TypeError
+            If ``waveform`` is not a :class:`WaveformRippleBase` instance.
         ValueError
             - If any detector does not use ``backend='jax'``;
             - If any channel in ``channels`` is not one of orthogonal 'A', 'E', or 'T';
@@ -80,13 +65,19 @@ class WhittleLikelihoodJax:
 
         Notes
         -----
-        - In current implementation, we use customized functions in ripple to get
-          the ``tf`` returned, and used the AoS structure where the returned array has
-          the shape ``(N_freq, 3)`` stacking ``(h_plus, h_cross, tf)`` per frequency
-          bin.
-        - The coalescence time shift is applied in the response computation. Thus, the
-          coalescence time should be set to zero in waveform computation.
+        - The waveform computation function returns the AoS structure where the array has
+          the shape ``(N_freq, 3)`` stacking ``(h_plus, h_cross, tf)`` per frequency bin.
+        - The coalescence time shift is applied in the response computation.
+          Thus, the coalescence time should be set to zero in the waveform
+          computation.
         """
+        if not isinstance(waveform, WaveformRippleBase):
+            raise TypeError(
+                "WhittleLikelihoodJax requires the waveform to be a "
+                "WaveformRippleBase instance, but got "
+                f"{type(waveform).__name__}."
+            )
+
         if not isinstance(detector, tuple):
             detector = (detector,)
 
@@ -96,6 +87,13 @@ class WhittleLikelihoodJax:
                     "WhittleLikelihoodJax requires all detectors configured with backend='jax', "
                     f"but got backend={det.backend} for detector={det.name}."
                 )
+            if not jnp.array_equal(
+                det.tdi_data.frequency_samples, waveform.frequencies
+            ):
+                raise ValueError(
+                    "The waveform frequencies should match the frequency samples "
+                    f"of the TDI data for detector={det.name}."
+                )
 
         unsupported_chans = [chan for chan in channels if chan not in ("A", "E", "T")]
         if any(unsupported_chans):
@@ -104,18 +102,21 @@ class WhittleLikelihoodJax:
                 f"{unsupported_chans} are not supported currently."
             )
 
-        self.waveform_func = waveform_func
+        self.waveform = waveform
         self.detector = detector
         self.channels = tuple(channels)
-        self.waveform_parameter_names = tuple(waveform_parameter_names)
 
-        # Build the namedtuple type accepted by log_likelihood.  Its fields are
-        # the fixed response parameters followed by the waveform parameters, in
-        # that order; field names are the likelihood-namespace parameter names.
-        self.parameter_names = _RESPONSE_PARAMETERS + self.waveform_parameter_names
-        self.params_type = namedtuple("LikelihoodParams", self.parameter_names)
+        response_params = (
+            "ecliptic_longitude",
+            "ecliptic_latitude",
+            "polarization",
+            "coalescence_time",
+        )
+        self.params_tuple = namedtuple(
+            "LikelihoodParams", (*waveform.required_params, *response_params)
+        )
 
-        self._static_data = None
+        self._static_data = ()
         self._prepare_static_data()
 
     def _prepare_static_data(self):
@@ -198,7 +199,7 @@ class WhittleLikelihoodJax:
 
         self._static_data = tuple(static_data)
 
-    def log_likelihood(self, params: tuple) -> float:
+    def log_likelihood(self, params) -> float:
         """
         log-likelihood evaluation with jax.
 
@@ -216,8 +217,7 @@ class WhittleLikelihoodJax:
         """
         logl = 0.0
         for det, det_data in zip(self.detector, self._static_data):
-            freqs = det.tdi_data.frequency_samples
-            wf = self.waveform_func(freqs, params)
+            wf = self.waveform(params)
             links = det.response_model._backend_impl.get_response_jit(
                 wf,
                 params.ecliptic_longitude,

@@ -83,9 +83,10 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
 
     Hooks expected from subclasses (set in ``__init__``):
 
-    ``_logprior_fn`` / ``_loglikelihood_fn``
-        Space-specific log-density functions used by the tempered kernel and
-        the mutation rounds.
+    The generic interfaces (``logprior_fn`` / ``loglikelihood_fn`` /
+    ``logdensity_fn`` / ``initial_position``) are bound on the instance to
+    the space-specific implementations (unbounded or physical) before
+    sampling.
     ``_mcmc_step_fn`` / ``_mcmc_init_fn``
         The inner MCMC kernel and its state initialiser.
     ``_params_to_likelihood``
@@ -98,8 +99,6 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
 
     # Type annotations, avoid initialize these hooks with None in __init__ of base class,
     # as that would cause complains of type checker.
-    _logprior_fn: Callable
-    _loglikelihood_fn: Callable
     _mcmc_step_fn: Callable
     _mcmc_init_fn: Callable
     _params_to_likelihood: Callable
@@ -129,7 +128,7 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         # is derived from the sampler's key stream (never create a fresh key),
         # so that no key is ever consumed twice.
         self.rng_key, template_key = jax.random.split(self.rng_key)
-        template = self._sample_initial_position(template_key, ())
+        template = self._sample_initial_position_unbounded(template_key, ())
         self._dim, self._unflatten_fn = ravel_pytree(template)
         self._dim = int(self._dim.shape[0])
 
@@ -171,9 +170,9 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         """One mutation round: a single kernel step for every particle."""
 
         def tempered_logposterior(position):
-            return self._logprior_fn(
+            return self.logprior_fn(position) + tempering_param * self.loglikelihood_fn(
                 position
-            ) + tempering_param * self._loglikelihood_fn(position)
+            )
 
         unshared, shared_step = unshared_parameters_and_step_fn(
             parameters, self._mcmc_step_fn
@@ -231,7 +230,7 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         )
         particles = self._initial_particles(init_key_1, self.num_particles)
         mcmc_params = self._initial_mcmc_parameters(init_key_2, particles)
-        batched_loglikelihood = jax.vmap(self._loglikelihood_fn)
+        batched_loglikelihood = jax.vmap(self.loglikelihood_fn)
         particles, log_evidence = self._inference_loop(
             loop_key, particles, mcmc_params, batched_loglikelihood
         )
@@ -289,9 +288,9 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
     def _finalize(self, particles, log_evidence) -> dict:
         """Convert the final population into a physical-parameter dict."""
         physical = jax.vmap(self._params_to_likelihood)(particles)
-        log_likelihoods = jax.vmap(self._loglikelihood_fn)(particles)
+        log_likelihoods = jax.vmap(self.loglikelihood_fn)(particles)
         weights = jnp.ones(self.num_particles) / self.num_particles
-        output = self._format_output(physical, log_likelihoods, weights=weights)
+        output = self.format_output(physical, log_likelihoods, weights=weights)
         output["log_evidence"] = float(np.asarray(log_evidence))
         return output
 
@@ -315,8 +314,8 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
     Parameters
     ----------
     likelihood : object
-        Likelihood instance providing ``log_likelihood``, ``parameter_names``
-        and ``params_type``.
+        Likelihood instance providing ``log_likelihood`` and the
+        ``params_tuple`` namedtuple type of the likelihood parameters.
     prior : dict
         Prior declaration, see
         :class:`pespace.inference.sampler.base.NumpyroPriorSamplerBase`.
@@ -383,14 +382,19 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
         self.tuning_alpha_frac = float(tuning_alpha_frac)
         self.tuning_sigma_log = float(tuning_sigma_log)
 
-        self._logprior_fn = self.logprior_fn
-        self._loglikelihood_fn = self.loglikelihood_fn
+        # NUTS is gradient-based: bind the generic density interface to the
+        # unbounded-space functions (setattr keeps strict type checkers quiet
+        # about the differing parameter names).
+        setattr(self, "logprior_fn", self.logprior_unbounded_fn)
+        setattr(self, "loglikelihood_fn", self.loglikelihood_unbounded_fn)
+        setattr(self, "logdensity_fn", self.logdensity_unbounded_fn)
+        setattr(self, "initial_position", self.initial_position_unbounded)
         self._mcmc_step_fn = blackjax.nuts.build_kernel()
         self._mcmc_init_fn = blackjax.nuts.init
-        self._params_to_likelihood = self._build_likelihood_params
+        self._params_to_likelihood = self._likelihood_params_from_unbounded
 
     def _initial_particles(self, key, num_particles):
-        return self._sample_initial_position(key, (num_particles,))
+        return self._sample_initial_position_unbounded(key, (num_particles,))
 
     def _initial_mcmc_parameters(self, key, particles):
         low, high = self.log_step_size_range
@@ -472,8 +476,8 @@ class BlackjaxSMCwithIRMH(_TunedAdaptiveTemperedSMC):
     Parameters
     ----------
     likelihood : object
-        Likelihood instance providing ``log_likelihood``, ``parameter_names``
-        and ``params_type``.
+        Likelihood instance providing ``log_likelihood`` and the
+        ``params_tuple`` namedtuple type of the likelihood parameters.
     prior : dict
         Prior declaration, see
         :class:`pespace.inference.sampler.base.NumpyroPriorSamplerBase`.
@@ -523,8 +527,13 @@ class BlackjaxSMCwithIRMH(_TunedAdaptiveTemperedSMC):
         )
         self.covariance_regularization = float(covariance_regularization)
 
-        self._logprior_fn = self.logprior_physical_fn
-        self._loglikelihood_fn = self.loglikelihood_physical_fn
+        # IRMH is not gradient-based and samples directly in the physical
+        # space: bind the generic density interface to the physical-space
+        # functions.
+        setattr(self, "logprior_fn", self.logprior_physical_fn)
+        setattr(self, "loglikelihood_fn", self.loglikelihood_physical_fn)
+        setattr(self, "logdensity_fn", self.logdensity_physical_fn)
+        setattr(self, "initial_position", self.initial_position_physical)
         self._irmh_kernel = blackjax.irmh.build_kernel()
         self._mcmc_step_fn = self._irmh_step_fn
         self._mcmc_init_fn = blackjax.irmh.init

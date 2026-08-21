@@ -5,10 +5,10 @@ class JaxImportError(ImportError):
     depending on the target hardware (CPU or GPU).
     """
 
-    _MESSAGE = (
+    _message = (
         "jax is required for backend='jax', but it is not installed by default.\n"
         "Install jax manually according to your hardware.\n"
     )
 
-    def __init__(self, message: str | None = None) -> None:
-        super().__init__(message if message is not None else self._MESSAGE)
+    def __init__(self):
+        super().__init__(self._message)
