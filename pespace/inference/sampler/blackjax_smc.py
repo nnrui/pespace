@@ -84,9 +84,8 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
     Hooks expected from subclasses (set in ``__init__``):
 
     The generic interfaces (``logprior_fn`` / ``loglikelihood_fn`` /
-    ``logdensity_fn`` / ``initial_position``) are bound on the instance to
-    the space-specific implementations (unbounded or physical) before
-    sampling.
+    ``logdensity_fn``) are bound on the instance to the space-specific
+    implementations (unbounded or physical) before sampling.
     ``_mcmc_step_fn`` / ``_mcmc_init_fn``
         The inner MCMC kernel and its state initialiser.
     ``_params_to_likelihood``
@@ -108,8 +107,8 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         likelihood,
         prior,
         rkey_seed: int = 0,
-        num_particles: int = 200,
-        target_ess: float = 0.8,
+        num_particles: int = 4096,
+        target_ess: float = 0.5,
         max_num_moves: int | None = None,
         correlation_threshold: float = 0.1,
         min_correlated_fraction: float = 0.3,
@@ -124,13 +123,11 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         self.min_correlated_fraction = float(min_correlated_fraction)
 
         # Ravel/unravel utilities shared by both samplers; the template fixes
-        # the pytree structure and the flattened dimension.  The template key
-        # is derived from the sampler's key stream (never create a fresh key),
-        # so that no key is ever consumed twice.
-        self.rng_key, template_key = jax.random.split(self.rng_key)
-        template = self._sample_initial_position_unbounded(template_key, ())
-        self._dim, self._unflatten_fn = ravel_pytree(template)
-        self._dim = int(self._dim.shape[0])
+        # the pytree structure and the flattened dimension.
+        self.rng_key, test_key = jax.random.split(self.rng_key)
+        test_sample = self._sample_priors_unbounded(test_key, ())
+        sample_data, self._unflatten_fn = ravel_pytree(test_sample)
+        self._dim = int(sample_data.shape[0])
 
     # ------------------------------------------------------------------
     # mutation rounds
@@ -202,13 +199,11 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         """Resample the per-particle kernel parameters with their particles."""
         raise NotImplementedError
 
-    def _tune_inner_mcmc_parameters(self, key, particles, parameters, tempering_param):
+    def _tune_mcmc_parameters(self, key, particles, parameters, tempering_param):
         """Tune the inner kernel parameters before the mutation rounds.
 
-        Returns ``(particles, parameters)``.  Kernels that need a
-        performance measurement may advance the particles with one MCMC
-        move; kernels whose parameters only depend on the particle cloud
-        leave them unchanged.
+        Returns the tuned ``parameters``; tuning never modifies the
+        particles (any probe move is discarded).
         """
         raise NotImplementedError
 
@@ -272,7 +267,7 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
             )
             particles = jax.tree.map(lambda p: p[indices], particles)
             mcmc_params = self._resample_mcmc_parameters(mcmc_params, indices)
-            particles, mcmc_params = self._tune_inner_mcmc_parameters(
+            mcmc_params = self._tune_mcmc_parameters(
                 tune_key, particles, mcmc_params, tempering_param
             )
             particles = self._mutate_until_decorrelated(
@@ -315,12 +310,12 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
     ----------
     likelihood : object
         Likelihood instance providing ``log_likelihood`` and the
-        ``params_tuple`` namedtuple type of the likelihood parameters.
+        ``likelihood_param_type`` namedtuple type of the likelihood parameters.
     prior : dict
         Prior declaration, see
         :class:`pespace.inference.sampler.base.NumpyroPriorSamplerBase`.
-    seed : int, optional
-        Seed for the JAX random number generator.  Default is 0.
+    rkey_seed : int, optional
+        Seed for the JAX random number generator key.  Default is 0.
     num_particles : int, optional
         Number of SMC particles.  Default is 200.
     target_ess : float, optional
@@ -353,9 +348,9 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
         self,
         likelihood,
         prior,
-        seed: int = 0,
-        num_particles: int = 200,
-        target_ess: float = 0.8,
+        rkey_seed: int = 0,
+        num_particles: int = 4096,
+        target_ess: float = 0.5,
         max_num_moves: int | None = None,
         correlation_threshold: float = 0.1,
         min_correlated_fraction: float = 0.3,
@@ -366,7 +361,7 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
         super().__init__(
             likelihood,
             prior,
-            seed,
+            rkey_seed,
             num_particles,
             target_ess,
             max_num_moves,
@@ -388,13 +383,12 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
         setattr(self, "logprior_fn", self.logprior_unbounded_fn)
         setattr(self, "loglikelihood_fn", self.loglikelihood_unbounded_fn)
         setattr(self, "logdensity_fn", self.logdensity_unbounded_fn)
-        setattr(self, "initial_position", self.initial_position_unbounded)
         self._mcmc_step_fn = blackjax.nuts.build_kernel()
         self._mcmc_init_fn = blackjax.nuts.init
         self._params_to_likelihood = self._likelihood_params_from_unbounded
 
     def _initial_particles(self, key, num_particles):
-        return self._sample_initial_position_unbounded(key, (num_particles,))
+        return self._sample_priors_unbounded(key, (num_particles,))
 
     def _initial_mcmc_parameters(self, key, particles):
         low, high = self.log_step_size_range
@@ -417,20 +411,21 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
             "inverse_mass_matrix": parameters["inverse_mass_matrix"],
         }
 
-    def _tune_inner_mcmc_parameters(self, key, particles, parameters, tempering_param):
+    def _tune_mcmc_parameters(self, key, particles, parameters, tempering_param):
         """Tune the inner kernel from one measured MCMC move.
 
-        The move advances the particles and doubles as the measurement
-        step: its realised squared-jump measure reweights the particle step
-        sizes, which are resampled first and then jittered multiplicatively
-        in log space (so duplicates receive independent perturbations); the
-        shared inverse mass matrix is re-estimated from the pre-move
-        particle cloud.
+        The move is a pure measurement step: its realised squared-jump
+        measure reweights the particle step sizes, which are resampled
+        first and then jittered multiplicatively in log space (so
+        duplicates receive independent perturbations); the probe particles
+        are discarded and the shared inverse mass matrix is re-estimated
+        from the pre-move particle cloud.  The actual mutation is performed
+        afterwards by ``_mutate_until_decorrelated``.
         """
         move_key, resample_key, perturb_key = jax.random.split(key, 3)
         previous = particles
-        particles, info = self._mutate(move_key, particles, parameters, tempering_param)
-        measure = self._perf_metric(parameters, previous, particles, info)
+        probe, info = self._mutate(move_key, particles, parameters, tempering_param)
+        measure = self._perf_metric(parameters, previous, probe, info)
 
         weights = self.tuning_alpha_frac * jnp.mean(measure) + measure
         selection = resampling.systematic(
@@ -444,7 +439,7 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
         )
 
         inverse_mass_matrix = inverse_mass_matrix_from_particles(previous)[None, ...]
-        return particles, {
+        return {
             "step_size": step_size,
             "inverse_mass_matrix": inverse_mass_matrix,
         }
@@ -477,12 +472,12 @@ class BlackjaxSMCwithIRMH(_TunedAdaptiveTemperedSMC):
     ----------
     likelihood : object
         Likelihood instance providing ``log_likelihood`` and the
-        ``params_tuple`` namedtuple type of the likelihood parameters.
+        ``likelihood_param_type`` namedtuple type of the likelihood parameters.
     prior : dict
         Prior declaration, see
         :class:`pespace.inference.sampler.base.NumpyroPriorSamplerBase`.
-    seed : int, optional
-        Seed for the JAX random number generator.  Default is 0.
+    rkey_seed : int, optional
+        Seed for the JAX random number generator key.  Default is 0.
     num_particles : int, optional
         Number of SMC particles.  Default is 200.
     target_ess : float, optional
@@ -507,9 +502,9 @@ class BlackjaxSMCwithIRMH(_TunedAdaptiveTemperedSMC):
         self,
         likelihood,
         prior,
-        seed: int = 0,
-        num_particles: int = 200,
-        target_ess: float = 0.8,
+        rkey_seed: int = 0,
+        num_particles: int = 4096,
+        target_ess: float = 0.5,
         max_num_moves: int | None = None,
         correlation_threshold: float = 0.1,
         min_correlated_fraction: float = 0.3,
@@ -518,7 +513,7 @@ class BlackjaxSMCwithIRMH(_TunedAdaptiveTemperedSMC):
         super().__init__(
             likelihood,
             prior,
-            seed,
+            rkey_seed,
             num_particles,
             target_ess,
             max_num_moves,
@@ -533,7 +528,6 @@ class BlackjaxSMCwithIRMH(_TunedAdaptiveTemperedSMC):
         setattr(self, "logprior_fn", self.logprior_physical_fn)
         setattr(self, "loglikelihood_fn", self.loglikelihood_physical_fn)
         setattr(self, "logdensity_fn", self.logdensity_physical_fn)
-        setattr(self, "initial_position", self.initial_position_physical)
         self._irmh_kernel = blackjax.irmh.build_kernel()
         self._mcmc_step_fn = self._irmh_step_fn
         self._mcmc_init_fn = blackjax.irmh.init
@@ -542,26 +536,28 @@ class BlackjaxSMCwithIRMH(_TunedAdaptiveTemperedSMC):
     def _irmh_step_fn(self, rng_key, state, logdensity_fn, mean, covariance):
         """IRMH kernel with a shared Gaussian proposal ``N(mean, covariance)``."""
 
-        def proposal_distribution(key):
+        def sample_proposal(key):
             return self._unflatten_fn(
                 jax.random.multivariate_normal(key, mean, covariance)
             )
 
-        def proposal_logdensity(_proposal_state, current_state):
-            # blackjax subtracts ``proposal_logdensity_fn(new_state,
-            # prev_state)`` from the energy of the new state; evaluating the
-            # independent proposal density at the *current* position recovers
-            # the standard IMH acceptance ratio ``p(x') q(x) / p(x) q(x')``.
+        def proposal_logdensity(from_state, to_state):
+            # blackjax calls this as ``(new_state, prev_state)``; the density
+            # of the ``from_state -> to_state`` transition is the proposal
+            # density at the destination ``to_state`` for an independent
+            # proposal, so ``from_state`` is ignored and the standard IMH
+            # acceptance ratio ``p(x') q(x) / p(x) q(x')`` is recovered.
+            del from_state
             return jax.scipy.stats.multivariate_normal.logpdf(
-                ravel_pytree(current_state.position)[0], mean, covariance
+                ravel_pytree(to_state.position)[0], mean, covariance
             )
 
         return self._irmh_kernel(
-            rng_key, state, logdensity_fn, proposal_distribution, proposal_logdensity
+            rng_key, state, logdensity_fn, sample_proposal, proposal_logdensity
         )
 
     def _initial_particles(self, key, num_particles):
-        return self._sample_initial_position_physical(key, (num_particles,))
+        return self._sample_priors_physical(key, (num_particles,))
 
     def _initial_mcmc_parameters(self, key, particles):
         del key
@@ -571,11 +567,11 @@ class BlackjaxSMCwithIRMH(_TunedAdaptiveTemperedSMC):
         del indices
         return parameters
 
-    def _tune_inner_mcmc_parameters(self, key, particles, parameters, tempering_param):
+    def _tune_mcmc_parameters(self, key, particles, parameters, tempering_param):
         # the proposal is fitted from the particles before the level's
         # mutation; no measurement move is needed.
         del key, parameters, tempering_param
-        return particles, self._fitted_proposal(particles)
+        return self._fitted_proposal(particles)
 
     def _fitted_proposal(self, particles):
         """Gaussian proposal parameters fitted to the current particle cloud."""

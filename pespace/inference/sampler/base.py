@@ -58,17 +58,17 @@ class SamplerBase(ABC):
             Likelihood instance providing a pure ``log_likelihood(params) -> scalar`` method.
         prior_dict : dict
             Input prior specification.
-        seed : int, optional
-            Seed for the random number generator. Default is 0.
+        rkey_seed : int, optional
+            Seed for the random number generator key. Default is 0.
         """
         self.likelihood = likelihood
         self.prior_dict = prior_dict
         self.rng_key = jax.random.key(rkey_seed)
 
     def logprior_fn(self, position) -> jnp.ndarray:
-        """Joint log-prior density (pure JAX, scalar).
+        """Joint log-prior density (pure JAX, return a scalar).
 
-        Generic interface: concrete samplers bind this name to the
+        Generic interface: concrete samplers should bind this name to the
         space-specific implementation (unbounded or physical) on the
         instance before sampling.
         """
@@ -78,9 +78,9 @@ class SamplerBase(ABC):
         )
 
     def loglikelihood_fn(self, position) -> jnp.ndarray:
-        """Log-likelihood (pure JAX, scalar).
+        """Log-likelihood (pure JAX, return a scalar).
 
-        Generic interface: concrete samplers bind this name to the
+        Generic interface: concrete samplers should bind this name to the
         space-specific implementation (unbounded or physical) on the
         instance before sampling.
         """
@@ -91,26 +91,8 @@ class SamplerBase(ABC):
         )
 
     def logdensity_fn(self, position) -> jnp.ndarray:
-        """Log-posterior density up to a constant (pure JAX, scalar)."""
+        """Log-posterior density up to a normalization constant (pure JAX, return a scalar)."""
         return self.logprior_fn(position) + self.loglikelihood_fn(position)
-
-    def initial_position(self, sample_shape: tuple = ()) -> tuple:
-        """Draw initial position(s).
-
-        Generic interface: concrete samplers bind this name to the
-        space-specific implementation (unbounded or physical) on the
-        instance before sampling.
-        """
-        raise NotImplementedError(
-            "The generic initial-position interface is not bound. Bind it to "
-            "initial_position_unbounded or initial_position_physical on the "
-            "instance."
-        )
-
-    @abstractmethod
-    def run(self, *args, **kwargs) -> dict:
-        """Start the sampling and return the results as a dictionary."""
-        ...
 
     @staticmethod
     def format_output(particles, log_likelihoods, weights=None) -> dict:
@@ -141,6 +123,11 @@ class SamplerBase(ABC):
         if weights is not None:
             output["weights"] = np.asarray(weights)
         return output
+
+    @abstractmethod
+    def run(self, *args, **kwargs) -> dict:
+        """Performing the sampling run."""
+        ...
 
 
 class NumpyroPriorSamplerBase(SamplerBase):
@@ -194,33 +181,20 @@ class NumpyroPriorSamplerBase(SamplerBase):
         self.fixed_params = {}  # name -> array (fixed parameter)
         self.derived_params = {}  # output name(s) -> (callable, *input names)
         self._parse_prior_dict()
-
-        # Particle positions are namedtuples whose fields are the sampled
-        # parameters; the likelihood input namedtuple is the likelihood's
-        # ``params_tuple``, whose fields define the required parameters.
-        self.position_type = namedtuple("Particle", list(self.sampled_params))
-        self.likelihood_parameter_names = tuple(self.likelihood.params_tuple._fields)
-
+        self._validate_parameters()
         self.bijects = {
-            name: transforms.biject_to(prior.support)
+            name: transforms.biject_to(prior.support) # mapping unbounded parameters to physical parameters # fmt: skip
             for name, prior in self.sampled_params.items()
         }
 
-        self._validate_parameters()
-
-        # Fail fast: evaluate the unbounded log-density once on a prior draw.
-        # This also triggers JIT compilation outside the sampling loop.
-        test_position = self.initial_position_unbounded()
-        test_value = self.logdensity_unbounded_fn(test_position)
-        if not jnp.isfinite(test_value):
-            raise ValueError(
-                f"Log-density evaluated to {test_value} at a prior draw. "
-                "Check the likelihood setup and prior specification."
-            )
+        # Particle positions are namedtuples whose fields are the sampled
+        # parameters; the likelihood input namedtuple is the likelihood's
+        # ``likelihood_param_type``, whose fields define the required parameters.
+        self.sampled_param_type = namedtuple("SampledParams", list(self.sampled_params))
 
     @staticmethod
     def _require_numpyro() -> None:
-        """Raise if numpyro is unavailable (used lazily by subclasses)."""
+        """Raise if numpyro is unavailable."""
         if not _NUMPYRO_AVAILABLE:
             raise ImportError(
                 "numpyro is not installed; it is required by "
@@ -261,13 +235,19 @@ class NumpyroPriorSamplerBase(SamplerBase):
                         f"The 'from' key of derived parameter '{name}' must "
                         "be a non-empty sequence of parameter names."
                     )
-                outputs = (name,) if isinstance(name, str) else tuple(name)
-                if not all(isinstance(k, str) for k in outputs):
+                if not isinstance(name, (str, tuple)):
                     raise ValueError(
-                        f"Derived parameter key '{name}' must be a string or "
-                        "a tuple of parameter-name strings."
+                        f"Derived parameter key '{name}' must be a str or a "
+                        f"tuple of str, got {type(name).__name__}."
                     )
-                self.derived_params[outputs] = (fn, *inputs)
+                if isinstance(name, tuple) and (
+                    not name or not all(isinstance(k, str) for k in name)
+                ):
+                    raise ValueError(
+                        f"Derived parameter key '{name}' must be a non-empty "
+                        "tuple of parameter-name strings."
+                    )
+                self.derived_params[name] = (fn, *inputs)
             elif "fixed" in spec:
                 self.fixed_params[name] = np.asarray(spec["fixed"])
             else:
@@ -315,7 +295,7 @@ class NumpyroPriorSamplerBase(SamplerBase):
                     )
                 declared.add(name)
 
-        required = set(self.likelihood_parameter_names)
+        required = set(self.likelihood.likelihood_param_type._fields)
         missing = required - declared
         if missing:
             raise ValueError(
@@ -344,11 +324,8 @@ class NumpyroPriorSamplerBase(SamplerBase):
 
     def _to_physical_params(self, z):
         """Restore constrained sampled parameters from unconstrained ``z``."""
-        return self.position_type(
-            **{
-                name: self.bijects[name](getattr(z, name))
-                for name in self.sampled_params
-            }
+        return self.sampled_param_type(
+            **{name: self.bijects[name](getattr(z, name)) for name in z._fields}
         )
 
     def _likelihood_params_from_unbounded(self, z):
@@ -361,25 +338,27 @@ class NumpyroPriorSamplerBase(SamplerBase):
         ``x`` must provide the sampled parameters in their constrained
         (physical) domain; derived and fixed parameters are added here.
 
-        A transform declared under a tuple key may return several parameters
-        at once (as a tuple/list matching the key order, or as a dict);
-        single-name transforms return the parameter value directly.
+        A transform declared under a tuple key returns several parameters at
+        once (a tuple/list matching the key order); a single-name transform
+        returns the parameter value directly.
         """
         params = {name: getattr(x, name) for name in x._fields}
         for outputs, (fn, *inputs) in self.derived_params.items():
             result = fn(**{k: params[k] for k in inputs})
-            if len(outputs) == 1:
-                params[outputs[0]] = result
-            elif isinstance(result, dict):
-                for out in outputs:
-                    params[out] = result[out]
-            else:
+            if isinstance(outputs, str):
+                params[outputs] = result
+            elif isinstance(outputs, tuple):
                 for out, value in zip(outputs, result):
                     params[out] = value
+            else:
+                raise TypeError(
+                    f"Derived parameter key must be a str or a tuple of "
+                    f"str, got {type(outputs).__name__}."
+                )
         for name, value in self.fixed_params.items():
             params[name] = value
-        return self.likelihood.params_tuple(
-            **{k: params[k] for k in self.likelihood_parameter_names}
+        return self.likelihood.likelihood_param_type(
+            **{k: params[k] for k in self.likelihood.likelihood_param_type._fields}
         )
 
     def loglikelihood_unbounded_fn(self, z) -> jnp.ndarray:
@@ -407,39 +386,39 @@ class NumpyroPriorSamplerBase(SamplerBase):
         """Log-posterior density up to a constant in the physical space."""
         return self.logprior_physical_fn(x) + self.loglikelihood_physical_fn(x)
 
-    def _sample_initial_position_unbounded(self, key, sample_shape: tuple = ()):
+    def _sample_priors_unbounded(self, key, shape: tuple = ()):
         """Draw initial positions in the unconstrained space from a given key.
 
         Pure-JAX helper (no mutable state), usable inside ``jax.pmap``.
         """
         keys = jax.random.split(key, len(self.sampled_params))
         x = {
-            name: prior.sample(keys[i], sample_shape)
+            name: prior.sample(keys[i], shape)
             for i, (name, prior) in enumerate(self.sampled_params.items())
         }
-        return self.position_type(
+        return self.sampled_param_type(
             **{name: self.bijects[name].inv(x[name]) for name in x}
         )
 
-    def initial_position_unbounded(self, sample_shape: tuple = ()):
+    def initial_position_unbounded(self, shape: tuple = ()):
         """Draw initial position(s) in the unbounded space."""
         self.rng_key, key = jax.random.split(self.rng_key)
-        return self._sample_initial_position_unbounded(key, sample_shape)
+        return self._sample_priors_unbounded(key, shape)
 
-    def _sample_initial_position_physical(self, key, sample_shape: tuple = ()):
+    def _sample_priors_physical(self, key, shape: tuple = ()):
         """Draw initial positions in the physical space from a given key.
 
         Pure-JAX helper (no mutable state), usable inside ``jax.pmap``.
         """
         keys = jax.random.split(key, len(self.sampled_params))
-        return self.position_type(
+        return self.sampled_param_type(
             **{
-                name: prior.sample(keys[i], sample_shape)
+                name: prior.sample(keys[i], shape)
                 for i, (name, prior) in enumerate(self.sampled_params.items())
             }
         )
 
-    def initial_position_physical(self, sample_shape: tuple = ()):
+    def initial_position_physical(self, shape: tuple = ()):
         """Draw initial position(s) in the physical space."""
         self.rng_key, key = jax.random.split(self.rng_key)
-        return self._sample_initial_position_physical(key, sample_shape)
+        return self._sample_priors_physical(key, shape)

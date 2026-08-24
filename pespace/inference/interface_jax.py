@@ -112,7 +112,7 @@ class WhittleLikelihoodJax:
             "polarization",
             "coalescence_time",
         )
-        self.params_tuple = namedtuple(
+        self.likelihood_param_type = namedtuple(
             "LikelihoodParams", (*waveform.required_params, *response_params)
         )
 
