@@ -2,8 +2,9 @@
 
 from collections import namedtuple
 
-
 import jax.numpy as jnp
+
+from ..waveform.interface_ripple import WaveformRippleBase
 
 
 def noise_weighted_inner_product(observed_data, response_data, psd, df):

@@ -37,7 +37,7 @@ try:
     import blackjax
     from blackjax.smc import resampling
     from blackjax.smc.base import update_and_take_last
-    from blackjax.smc.ess import ess_solver
+    from blackjax.smc.ess import log_ess
     from blackjax.smc.from_mcmc import unshared_parameters_and_step_fn
     from blackjax.smc.solver import dichotomy
     from blackjax.smc.tuning.from_particles import (
@@ -105,7 +105,7 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
     def __init__(
         self,
         likelihood,
-        prior,
+        prior_dict,
         rkey_seed: int = 0,
         num_particles: int = 4096,
         target_ess: float = 0.5,
@@ -113,7 +113,7 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         correlation_threshold: float = 0.1,
         min_correlated_fraction: float = 0.3,
     ) -> None:
-        super().__init__(likelihood, prior, rkey_seed)
+        super().__init__(likelihood, prior_dict, rkey_seed)
         self.num_particles = int(num_particles)
         self.target_ess = float(target_ess)
         self.max_num_moves = (
@@ -248,15 +248,20 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         def body(carry):
             key, particles, tempering_param, mcmc_params, log_evidence = carry
             key, resample_key, tune_key, move_key = jax.random.split(key, 4)
-            delta = ess_solver(
-                batched_loglikelihood,
-                particles,
-                self.target_ess,
-                1.0 - tempering_param,
-                dichotomy,
-            )
+
+            loglikelihoods = batched_loglikelihood(particles)
+            # Solve for the ESS-optimal tempering increment, mirroring
+            # ``blackjax.smc.ess.ess_solver`` but reusing the likelihood
+            # population evaluated above (instead of re-evaluating it).
+            target_val = jnp.log(self.num_particles * self.target_ess)
+
+            def fun_to_solve(delta):
+                log_weights = jnp.nan_to_num(delta * loglikelihoods)
+                return log_ess(log_weights) - target_val
+
+            delta = dichotomy(fun_to_solve, 0.0, 1.0 - tempering_param)
             tempering_param = tempering_param + delta
-            log_weights = delta * batched_loglikelihood(particles)
+            log_weights = delta * loglikelihoods
             log_evidence = (
                 log_evidence + logsumexp(log_weights) - jnp.log(self.num_particles)
             )
@@ -347,7 +352,7 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
     def __init__(
         self,
         likelihood,
-        prior,
+        prior_dict,
         rkey_seed: int = 0,
         num_particles: int = 4096,
         target_ess: float = 0.5,
@@ -360,7 +365,7 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
     ) -> None:
         super().__init__(
             likelihood,
-            prior,
+            prior_dict,
             rkey_seed,
             num_particles,
             target_ess,
@@ -501,7 +506,7 @@ class BlackjaxSMCwithIRMH(_TunedAdaptiveTemperedSMC):
     def __init__(
         self,
         likelihood,
-        prior,
+        prior_dict,
         rkey_seed: int = 0,
         num_particles: int = 4096,
         target_ess: float = 0.5,
@@ -512,7 +517,7 @@ class BlackjaxSMCwithIRMH(_TunedAdaptiveTemperedSMC):
     ) -> None:
         super().__init__(
             likelihood,
-            prior,
+            prior_dict,
             rkey_seed,
             num_particles,
             target_ess,
