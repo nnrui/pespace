@@ -9,6 +9,9 @@
   by the sampler kernels.
 """
 
+import inspect
+import json
+import os
 from abc import ABC, abstractmethod
 from collections import namedtuple
 
@@ -50,7 +53,9 @@ def _build_distribution(spec: dict) -> dist.Distribution:
 class SamplerBase(ABC):
     """Framework-agnostic abstract base class for samplers."""
 
-    def __init__(self, likelihood, prior_dict: dict, rkey_seed: int = 0) -> None:
+    def __init__(
+        self, likelihood, prior_dict: dict, rkey_seed: int = 0, label=None, outdir=None
+    ) -> None:
         """
         Parameters
         ----------
@@ -60,10 +65,24 @@ class SamplerBase(ABC):
             Input prior specification.
         rkey_seed : int, optional
             Seed for the random number generator key. Default is 0.
+        label : str, optional
+            Label attached to the sampling run, converted to ``str``. The
+            default None becomes the string ``"None"``.
+        outdir : str, optional
+            Output directory. Default is None, which resolves to an
+            ``outdir_{label}`` directory under the current working directory
+            where the calling script runs (``os.getcwd()``); the directory is
+            created if it does not exist.
         """
         self.likelihood = likelihood
         self.prior_dict = prior_dict
-        self.rng_key = jax.random.key(rkey_seed)
+        self.rkey_seed = rkey_seed
+        self.rng_key = jax.random.key(self.rkey_seed)
+        self.label = str(label)
+        if outdir is None:
+            outdir = os.path.join(os.getcwd(), f"outdir_{self.label}")
+            os.makedirs(outdir, exist_ok=True)
+        self.outdir = outdir
 
     def logprior_fn(self, position) -> jnp.ndarray:
         """Joint log-prior density (pure JAX, return a scalar).
@@ -94,35 +113,126 @@ class SamplerBase(ABC):
         """Log-posterior density up to a normalization constant (pure JAX, return a scalar)."""
         return self.logprior_fn(position) + self.loglikelihood_fn(position)
 
-    @staticmethod
-    def format_output(particles, log_likelihoods, weights=None) -> dict:
-        """Format sampling results as a dictionary of numpy arrays.
+    def format_output(
+        self,
+        posterior_samples,
+        log_likelihoods,
+        log_evidence,
+        runing_time,
+        weights=None,
+    ) -> dict:
+        """Assemble the run result into a dictionary.
 
         Parameters
         ----------
-        particles : dict or namedtuple
-            Sampled parameter arrays in the physical parameter space, keyed
-            by parameter name.
+        posterior_samples : dict
+            Categorized posterior samples with keys ``sampled_params``,
+            ``derived_params`` and ``fixed_params``, each mapping parameter
+            names to their physical parameter arrays.
         log_likelihoods : array-like
             Log-likelihood of each sample.
+        log_evidence : float
+            Log-evidence of the run (for SMC samplers).
+        runing_time : float
+            Wall-clock time of the sampling run, in seconds.
         weights : array-like, optional
-            Importance weight of each sample (for SMC samplers).
+            Importance weight of each sample (for SMC samplers). When None,
+            an empty array is stored.
 
         Returns
         -------
         dict
-            Dictionary of numpy arrays keyed by parameter name, plus
-            ``'log_likelihood'`` and, if given, ``'weights'``.
+            Dictionary with keys ``label``, ``outdir``, ``rkey_seed``,
+            ``prior_dict``, ``likelihood_class``, ``runing_time``,
+            ``sampler_class``, ``sampler_config``, ``posteriors``,
+            ``log_likelihoods``, ``log_evidence`` and ``weights``.
         """
-        if isinstance(particles, dict):
-            items = particles.items()
-        else:
-            items = ((name, getattr(particles, name)) for name in particles._fields)
-        output = {name: np.asarray(values) for name, values in items}
-        output["log_likelihood"] = np.asarray(log_likelihoods)
-        if weights is not None:
-            output["weights"] = np.asarray(weights)
+        # JSON-serializable copy of the prior dictionary: transform/distribution
+        # callables are replaced by their names, tuple keys are stringified.
+        prior_dict = {}
+        for name, spec in self.prior_dict.items():
+            key = str(name)
+            if isinstance(spec, float):
+                prior_dict[key] = spec
+            elif isinstance(spec, dict):
+                entry = {}
+                for field, value in spec.items():
+                    if field in ("distribution", "transform") and not isinstance(
+                        value, str
+                    ):
+                        entry[field] = getattr(value, "__name__", str(value))
+                    else:
+                        entry[field] = value
+                prior_dict[key] = entry
+            else:
+                raise ValueError(
+                    f"Prior entry for '{name}' must be a float or a dict, "
+                    f"got {type(spec).__name__}."
+                )
+
+        # Sampler configuration: constructor arguments stored as attributes,
+        # collected over the MRO; the meta arguments are excluded.
+        meta = {"likelihood", "prior_dict", "rkey_seed", "label", "outdir"}
+        sampler_config = {}
+        for cls in reversed(type(self).__mro__):
+            init = cls.__dict__.get("__init__", None)
+            if init is not None:
+                try:
+                    parameters = inspect.signature(init).parameters
+                except (TypeError, ValueError):  # pragma: no cover
+                    continue
+                for name, parameter in parameters.items():
+                    if (
+                        (name != "self")
+                        and (
+                            parameter.kind
+                            not in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD)
+                        )
+                        and (name not in meta)
+                        and (hasattr(self, name))
+                    ):
+                        sampler_config[name] = getattr(self, name)
+
+        output = {
+            "label": self.label,
+            "outdir": self.outdir,
+            "likelihood_class": type(self.likelihood).__name__,
+            "prior_dict": prior_dict,
+            "rkey_seed": self.rkey_seed,
+            "sampler_class": type(self).__name__,
+            "sampler_config": sampler_config,
+            "runing_time": runing_time,
+            "posteriors": posterior_samples,
+            "weights": np.asarray([]) if weights is None else np.asarray(weights),
+            "log_likelihoods": np.asarray(log_likelihoods),
+            "log_evidence": float(np.asarray(log_evidence)),
+        }
         return output
+
+    def _save_output(self, output: dict, filename=None) -> str:
+        """Save the run result to ``outdir/{label}.json`` and return its path.
+
+        numpy/JAX arrays and numpy scalars are converted to JSON-native types
+        recursively before dumping.
+        """
+
+        def to_jsonable(value):
+            if isinstance(value, dict):
+                return {k: to_jsonable(v) for k, v in value.items()}
+            if isinstance(value, (list, tuple)):
+                return [to_jsonable(v) for v in value]
+            if isinstance(value, (np.ndarray, jnp.ndarray)):
+                return to_jsonable(np.asarray(value).tolist())
+            if isinstance(value, np.generic):
+                return value.item()
+            return value
+
+        os.makedirs(self.outdir, exist_ok=True)
+        filename = f"{self.label}.json" if filename is None else filename
+        path = os.path.join(self.outdir, filename)
+        with open(path, "w") as file:
+            json.dump(to_jsonable(output), file, indent=2)
+        return path
 
     @abstractmethod
     def run(self, *args, **kwargs) -> dict:
@@ -173,8 +283,15 @@ class NumpyroPriorSamplerBase(SamplerBase):
           be discarded, and a warning will be thrown.
     """
 
-    def __init__(self, likelihood, prior_dict: dict, rkey_seed: int = 0) -> None:
-        super().__init__(likelihood, prior_dict, rkey_seed)
+    def __init__(
+        self,
+        likelihood,
+        prior_dict: dict,
+        rkey_seed: int = 0,
+        label=None,
+        outdir=None,
+    ) -> None:
+        super().__init__(likelihood, prior_dict, rkey_seed, label, outdir)
         self._require_numpyro()
 
         self.sampled_params = {}  # name -> numpyro Distribution (sampled)
@@ -343,6 +460,8 @@ class NumpyroPriorSamplerBase(SamplerBase):
         returns the parameter value directly.
         """
         params = {name: getattr(x, name) for name in x._fields}
+        for name, value in self.fixed_params.items():
+            params[name] = value
         for outputs, (fn, *inputs) in self.derived_params.items():
             result = fn(**{k: params[k] for k in inputs})
             if isinstance(outputs, str):
@@ -355,8 +474,6 @@ class NumpyroPriorSamplerBase(SamplerBase):
                     f"Derived parameter key must be a str or a tuple of "
                     f"str, got {type(outputs).__name__}."
                 )
-        for name, value in self.fixed_params.items():
-            params[name] = value
         return self.likelihood.likelihood_param_type(
             **{k: params[k] for k in self.likelihood.likelihood_param_type._fields}
         )

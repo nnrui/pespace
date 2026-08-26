@@ -23,6 +23,7 @@ the particles (evaluated on the ``x + x**2`` transform), capped by
 """
 
 import logging
+import time
 from typing import Callable
 
 import jax
@@ -88,8 +89,9 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
     implementations (unbounded or physical) before sampling.
     ``_mcmc_step_fn`` / ``_mcmc_init_fn``
         The inner MCMC kernel and its state initialiser.
-    ``_params_to_likelihood``
-        Maps one particle to the likelihood-namespace parameter dict.
+    ``_get_particles_physical``
+        Maps one particle (in the sampler's working space) to the physical
+        sampled-parameter space.
     """
 
     # Define the default value as the class-level attribute.
@@ -100,7 +102,7 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
     # as that would cause complains of type checker.
     _mcmc_step_fn: Callable
     _mcmc_init_fn: Callable
-    _params_to_likelihood: Callable
+    _get_particles_physical: Callable
 
     def __init__(
         self,
@@ -112,8 +114,10 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         max_num_moves: int | None = None,
         correlation_threshold: float = 0.1,
         min_correlated_fraction: float = 0.3,
+        label=None,
+        outdir=None,
     ) -> None:
-        super().__init__(likelihood, prior_dict, rkey_seed)
+        super().__init__(likelihood, prior_dict, rkey_seed, label, outdir)
         self.num_particles = int(num_particles)
         self.target_ess = float(target_ess)
         self.max_num_moves = (
@@ -216,10 +220,14 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         Returns
         -------
         dict
-            Physical-space samples keyed by parameter name, plus
-            ``'log_likelihood'``, normalized importance ``'weights'`` and the
-            log-evidence ``'log_evidence'``.
+            Run result containing ``label``, ``outdir``, ``rkey_seed``,
+            ``prior_dict``, ``likelihood_class``, ``runing_time``,
+            ``sampler_class``, ``sampler_config``, ``posteriors`` (physical
+            sampled/derived/fixed parameters), ``log_likelihoods``, the
+            log-evidence ``log_evidence`` and normalized importance
+            ``weights``.  The result is also saved to ``outdir/{label}.json``.
         """
+        start = time.perf_counter()
         self.rng_key, init_key_1, init_key_2, loop_key = jax.random.split(
             self.rng_key, 4
         )
@@ -229,7 +237,11 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         particles, log_evidence = self._inference_loop(
             loop_key, particles, mcmc_params, batched_loglikelihood
         )
-        return self._finalize(particles, log_evidence)
+        output = self._finalize(
+            particles, log_evidence, runing_time=time.perf_counter() - start
+        )
+        self._save_output(output)
+        return output
 
     def _inference_loop(self, key, particles, mcmc_params, batched_loglikelihood):
         """Reweight-resample-mutate loop, terminating at tempering parameter 1.
@@ -285,14 +297,48 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         )
         return particles, log_evidence
 
-    def _finalize(self, particles, log_evidence) -> dict:
-        """Convert the final population into a physical-parameter dict."""
-        physical = jax.vmap(self._params_to_likelihood)(particles)
-        log_likelihoods = jax.vmap(self.loglikelihood_fn)(particles)
-        weights = jnp.ones(self.num_particles) / self.num_particles
-        output = self.format_output(physical, log_likelihoods, weights=weights)
-        output["log_evidence"] = float(np.asarray(log_evidence))
-        return output
+    def _finalize(self, particles, log_evidence, runing_time) -> dict:
+        """Assemble the final population into the run-result dictionary.
+
+        The particles are restored to the physical space and reported as
+        ``sampled_params``; the ``fixed_params`` are broadcast to the
+        particle count, and the ``derived_params`` are taken from the
+        likelihood-input assembly, which also provides the parameters used
+        to evaluate the likelihood directly.  The particles are equally
+        weighted, so ``weights`` is left as None (stored as an empty
+        array).
+        """
+        particles_phy = self._get_particles_physical(particles)
+        ll_params = jax.vmap(self._likelihood_params_from_physical)(particles_phy)
+        log_likelihoods = jax.vmap(self.likelihood.log_likelihood)(ll_params)
+
+        sampled = {
+            name: np.asarray(value)
+            for name, value in particles_phy._asdict().items()
+        }
+        fixed = {
+            name: np.full(self.num_particles, value)
+            for name, value in self.fixed_params.items()
+        }
+        derived_names = [
+            name
+            for outputs in self.derived_params
+            for name in (outputs if isinstance(outputs, tuple) else (outputs,))
+        ]
+        derived = {
+            name: np.asarray(getattr(ll_params, name))
+            for name in derived_names
+        }
+
+        posterior_samples = {
+            "sampled_params": sampled,
+            "derived_params": derived,
+            "fixed_params": fixed,
+        }
+        
+        return self.format_output(
+            posterior_samples, log_likelihoods, log_evidence, runing_time, weights=None
+        )
 
 
 class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
@@ -345,6 +391,13 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
     tuning_sigma_log : float, optional
         Log-space perturbation scale applied to the resampled step sizes.
         Default is 0.2.
+    label : str, optional
+        Label of the run, converted to ``str``; also the JSON filename
+        (``outdir/{label}.json``).  Default is None (-> ``"None"``).
+    outdir : str, optional
+        Output directory for the saved result.  Default is None, which
+        resolves to an ``outdir_{label}`` directory under the current
+        working directory (created if missing).
     """
 
     _DEFAULT_MAX_MOVES = 50
@@ -362,6 +415,8 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
         log_step_size_range: tuple = (jnp.log(1e-4), jnp.log(1.0)),
         tuning_alpha_frac: float = 0.1,
         tuning_sigma_log: float = 0.2,
+        label=None,
+        outdir=None,
     ) -> None:
         super().__init__(
             likelihood,
@@ -372,6 +427,8 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
             max_num_moves,
             correlation_threshold,
             min_correlated_fraction,
+            label,
+            outdir,
         )
         low, high = log_step_size_range
         if not low < high:
@@ -390,7 +447,7 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
         setattr(self, "logdensity_fn", self.logdensity_unbounded_fn)
         self._mcmc_step_fn = blackjax.nuts.build_kernel()
         self._mcmc_init_fn = blackjax.nuts.init
-        self._params_to_likelihood = self._likelihood_params_from_unbounded
+        self._get_particles_physical = self._to_physical_params
 
     def _initial_particles(self, key, num_particles):
         return self._sample_priors_unbounded(key, (num_particles,))
@@ -499,6 +556,13 @@ class BlackjaxSMCwithIRMH(_TunedAdaptiveTemperedSMC):
     covariance_regularization : float, optional
         Diagonal regularization added to the fitted proposal covariance.
         Default is 1e-6.
+    label : str, optional
+        Label of the run, converted to ``str``; also the JSON filename
+        (``outdir/{label}.json``).  Default is None (-> ``"None"``).
+    outdir : str, optional
+        Output directory for the saved result.  Default is None, which
+        resolves to an ``outdir_{label}`` directory under the current
+        working directory (created if missing).
     """
 
     _DEFAULT_MAX_MOVES = 100
@@ -514,6 +578,8 @@ class BlackjaxSMCwithIRMH(_TunedAdaptiveTemperedSMC):
         correlation_threshold: float = 0.1,
         min_correlated_fraction: float = 0.3,
         covariance_regularization: float = 1e-6,
+        label=None,
+        outdir=None,
     ) -> None:
         super().__init__(
             likelihood,
@@ -524,6 +590,8 @@ class BlackjaxSMCwithIRMH(_TunedAdaptiveTemperedSMC):
             max_num_moves,
             correlation_threshold,
             min_correlated_fraction,
+            label,
+            outdir,
         )
         self.covariance_regularization = float(covariance_regularization)
 
@@ -536,7 +604,7 @@ class BlackjaxSMCwithIRMH(_TunedAdaptiveTemperedSMC):
         self._irmh_kernel = blackjax.irmh.build_kernel()
         self._mcmc_step_fn = self._irmh_step_fn
         self._mcmc_init_fn = blackjax.irmh.init
-        self._params_to_likelihood = self._likelihood_params_from_physical
+        self._get_particles_physical = lambda particles: particles
 
     def _irmh_step_fn(self, rng_key, state, logdensity_fn, mean, covariance):
         """IRMH kernel with a shared Gaussian proposal ``N(mean, covariance)``."""
