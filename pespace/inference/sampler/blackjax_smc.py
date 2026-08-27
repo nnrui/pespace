@@ -108,16 +108,17 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         self,
         likelihood,
         prior_dict,
+        label=None,
+        outdir=None,
         rkey_seed: int = 0,
         num_particles: int = 4096,
         target_ess: float = 0.5,
         max_num_moves: int | None = None,
         correlation_threshold: float = 0.1,
         min_correlated_fraction: float = 0.3,
-        label=None,
-        outdir=None,
+        batch_size: int = 0,
     ) -> None:
-        super().__init__(likelihood, prior_dict, rkey_seed, label, outdir)
+        super().__init__(likelihood, prior_dict, label, outdir, rkey_seed)
         self.num_particles = int(num_particles)
         self.target_ess = float(target_ess)
         self.max_num_moves = (
@@ -125,6 +126,9 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         )
         self.correlation_threshold = float(correlation_threshold)
         self.min_correlated_fraction = float(min_correlated_fraction)
+        self.batch_size = int(batch_size)
+        if self.batch_size < 0:
+            raise ValueError("batch_size must be non-negative.")
 
         # Ravel/unravel utilities shared by both samplers; the template fixes
         # the pytree structure and the flattened dimension.
@@ -132,6 +136,20 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         test_sample = self._sample_priors_unbounded(test_key, ())
         sample_data, self._unflatten_fn = ravel_pytree(test_sample)
         self._dim = int(sample_data.shape[0])
+
+    def _map_fn(self, fn):
+        """Map ``fn`` over the particle axis, batched or chunked.
+
+        ``batch_size=0`` keeps the plain ``jax.vmap`` behaviour; a positive
+        ``batch_size`` switches to ``jax.lax.map``, which processes the
+        particles in sequential batches of that size.  This bounds the peak
+        memory of the ``(particles, frequency bins)`` intermediates at the
+        cost of cross-batch parallelism (the frequency axis inside one batch
+        still saturates the thread pool).
+        """
+        if self.batch_size > 0:
+            return lambda xs: jax.lax.map(fn, xs, batch_size=self.batch_size)
+        return jax.vmap(fn)
 
     # ------------------------------------------------------------------
     # mutation rounds
@@ -184,6 +202,7 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
             shared_step,
             1,
             self.num_particles,
+            batch_size=self.batch_size,
         )
         keys = jax.random.split(rng_key, self.num_particles)
         return update_fn(keys, particles, unshared)
@@ -233,7 +252,7 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         )
         particles = self._initial_particles(init_key_1, self.num_particles)
         mcmc_params = self._initial_mcmc_parameters(init_key_2, particles)
-        batched_loglikelihood = jax.vmap(self.loglikelihood_fn)
+        batched_loglikelihood = self._map_fn(self.loglikelihood_fn)
         particles, log_evidence = self._inference_loop(
             loop_key, particles, mcmc_params, batched_loglikelihood
         )
@@ -309,8 +328,8 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         array).
         """
         particles_phy = self._get_particles_physical(particles)
-        ll_params = jax.vmap(self._likelihood_params_from_physical)(particles_phy)
-        log_likelihoods = jax.vmap(self.likelihood.log_likelihood)(ll_params)
+        ll_params = self._map_fn(self._likelihood_params_from_physical)(particles_phy)
+        log_likelihoods = self._map_fn(self.likelihood.log_likelihood)(ll_params)
 
         sampled = {
             name: np.asarray(value)
@@ -365,12 +384,19 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
     prior : dict
         Prior declaration, see
         :class:`pespace.inference.sampler.base.NumpyroPriorSamplerBase`.
+    label : str, optional
+        Label of the run, converted to ``str``; also the JSON filename
+        (``outdir/{label}.json``).  Default is None (-> ``"None"``).
+    outdir : str, optional
+        Output directory for the saved result.  Default is None, which
+        resolves to an ``outdir_{label}`` directory under the current
+        working directory (created if missing).
     rkey_seed : int, optional
         Seed for the JAX random number generator key.  Default is 0.
     num_particles : int, optional
-        Number of SMC particles.  Default is 200.
+        Number of SMC particles.  Default is 4096.
     target_ess : float, optional
-        Target ESS ratio of the adaptive tempering schedule.  Default is 0.8.
+        Target ESS ratio of the adaptive tempering schedule.  Default is 0.5.
     max_num_moves : int, optional
         Upper bound on the number of mutation rounds per tempering level.
         Default is 50.
@@ -380,6 +406,11 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
     min_correlated_fraction : float, optional
         Fraction of components allowed to stay correlated before the
         mutation rounds stop.  Default is 0.3.
+    batch_size : int, optional
+        Number of particles processed per sequential batch when positive.
+        ``0`` (default) keeps the plain ``jax.vmap`` behaviour.  A positive
+        value bounds the peak memory of the likelihood intermediates and the
+        mutation updates, at the cost of cross-batch parallelism.
     log_step_size_range : tuple, optional
         ``(low, high)`` bounds of the log-uniform distribution the initial
         per-particle step sizes are drawn from (in log space).  Default is
@@ -391,13 +422,6 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
     tuning_sigma_log : float, optional
         Log-space perturbation scale applied to the resampled step sizes.
         Default is 0.2.
-    label : str, optional
-        Label of the run, converted to ``str``; also the JSON filename
-        (``outdir/{label}.json``).  Default is None (-> ``"None"``).
-    outdir : str, optional
-        Output directory for the saved result.  Default is None, which
-        resolves to an ``outdir_{label}`` directory under the current
-        working directory (created if missing).
     """
 
     _DEFAULT_MAX_MOVES = 50
@@ -406,29 +430,31 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
         self,
         likelihood,
         prior_dict,
+        label=None,
+        outdir=None,
         rkey_seed: int = 0,
         num_particles: int = 4096,
         target_ess: float = 0.5,
         max_num_moves: int | None = None,
         correlation_threshold: float = 0.1,
         min_correlated_fraction: float = 0.3,
+        batch_size: int = 0,
         log_step_size_range: tuple = (jnp.log(1e-4), jnp.log(1.0)),
         tuning_alpha_frac: float = 0.1,
         tuning_sigma_log: float = 0.2,
-        label=None,
-        outdir=None,
     ) -> None:
         super().__init__(
             likelihood,
             prior_dict,
+            label,
+            outdir,
             rkey_seed,
             num_particles,
             target_ess,
             max_num_moves,
             correlation_threshold,
             min_correlated_fraction,
-            label,
-            outdir,
+            batch_size,
         )
         low, high = log_step_size_range
         if not low < high:
@@ -538,12 +564,19 @@ class BlackjaxSMCwithIRMH(_TunedAdaptiveTemperedSMC):
     prior : dict
         Prior declaration, see
         :class:`pespace.inference.sampler.base.NumpyroPriorSamplerBase`.
+    label : str, optional
+        Label of the run, converted to ``str``; also the JSON filename
+        (``outdir/{label}.json``).  Default is None (-> ``"None"``).
+    outdir : str, optional
+        Output directory for the saved result.  Default is None, which
+        resolves to an ``outdir_{label}`` directory under the current
+        working directory (created if missing).
     rkey_seed : int, optional
         Seed for the JAX random number generator key.  Default is 0.
     num_particles : int, optional
-        Number of SMC particles.  Default is 200.
+        Number of SMC particles.  Default is 4096.
     target_ess : float, optional
-        Target ESS ratio of the adaptive tempering schedule.  Default is 0.8.
+        Target ESS ratio of the adaptive tempering schedule.  Default is 0.5.
     max_num_moves : int, optional
         Upper bound on the number of mutation rounds per tempering level.
         Default is 100.
@@ -553,16 +586,14 @@ class BlackjaxSMCwithIRMH(_TunedAdaptiveTemperedSMC):
     min_correlated_fraction : float, optional
         Fraction of components allowed to stay correlated before the
         mutation rounds stop.  Default is 0.3.
+    batch_size : int, optional
+        Number of particles processed per sequential batch when positive.
+        ``0`` (default) keeps the plain ``jax.vmap`` behaviour.  A positive
+        value bounds the peak memory of the likelihood intermediates and the
+        mutation updates, at the cost of cross-batch parallelism.
     covariance_regularization : float, optional
         Diagonal regularization added to the fitted proposal covariance.
         Default is 1e-6.
-    label : str, optional
-        Label of the run, converted to ``str``; also the JSON filename
-        (``outdir/{label}.json``).  Default is None (-> ``"None"``).
-    outdir : str, optional
-        Output directory for the saved result.  Default is None, which
-        resolves to an ``outdir_{label}`` directory under the current
-        working directory (created if missing).
     """
 
     _DEFAULT_MAX_MOVES = 100
@@ -571,27 +602,29 @@ class BlackjaxSMCwithIRMH(_TunedAdaptiveTemperedSMC):
         self,
         likelihood,
         prior_dict,
+        label=None,
+        outdir=None,
         rkey_seed: int = 0,
         num_particles: int = 4096,
         target_ess: float = 0.5,
         max_num_moves: int | None = None,
         correlation_threshold: float = 0.1,
         min_correlated_fraction: float = 0.3,
+        batch_size: int = 0,
         covariance_regularization: float = 1e-6,
-        label=None,
-        outdir=None,
     ) -> None:
         super().__init__(
             likelihood,
             prior_dict,
+            label,
+            outdir,
             rkey_seed,
             num_particles,
             target_ess,
             max_num_moves,
             correlation_threshold,
             min_correlated_fraction,
-            label,
-            outdir,
+            batch_size,
         )
         self.covariance_regularization = float(covariance_regularization)
 

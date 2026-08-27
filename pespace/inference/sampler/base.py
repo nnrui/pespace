@@ -54,7 +54,7 @@ class SamplerBase(ABC):
     """Framework-agnostic abstract base class for samplers."""
 
     def __init__(
-        self, likelihood, prior_dict: dict, rkey_seed: int = 0, label=None, outdir=None
+        self, likelihood, prior_dict: dict, label=None, outdir=None, rkey_seed: int = 0
     ) -> None:
         """
         Parameters
@@ -63,8 +63,6 @@ class SamplerBase(ABC):
             Likelihood instance providing a pure ``log_likelihood(params) -> scalar`` method.
         prior_dict : dict
             Input prior specification.
-        rkey_seed : int, optional
-            Seed for the random number generator key. Default is 0.
         label : str, optional
             Label attached to the sampling run, converted to ``str``. The
             default None becomes the string ``"None"``.
@@ -73,16 +71,18 @@ class SamplerBase(ABC):
             ``outdir_{label}`` directory under the current working directory
             where the calling script runs (``os.getcwd()``); the directory is
             created if it does not exist.
+        rkey_seed : int, optional
+            Seed for the random number generator key. Default is 0.
         """
         self.likelihood = likelihood
         self.prior_dict = prior_dict
-        self.rkey_seed = rkey_seed
-        self.rng_key = jax.random.key(self.rkey_seed)
         self.label = str(label)
         if outdir is None:
             outdir = os.path.join(os.getcwd(), f"outdir_{self.label}")
             os.makedirs(outdir, exist_ok=True)
         self.outdir = outdir
+        self.rkey_seed = rkey_seed
+        self.rng_key = jax.random.key(self.rkey_seed)
 
     def logprior_fn(self, position) -> jnp.ndarray:
         """Joint log-prior density (pure JAX, return a scalar).
@@ -287,11 +287,11 @@ class NumpyroPriorSamplerBase(SamplerBase):
         self,
         likelihood,
         prior_dict: dict,
-        rkey_seed: int = 0,
         label=None,
         outdir=None,
+        rkey_seed: int = 0,
     ) -> None:
-        super().__init__(likelihood, prior_dict, rkey_seed, label, outdir)
+        super().__init__(likelihood, prior_dict, label, outdir, rkey_seed)
         self._require_numpyro()
 
         self.sampled_params = {}  # name -> numpyro Distribution (sampled)
