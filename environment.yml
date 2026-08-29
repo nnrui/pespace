@@ -23,15 +23,11 @@ dependencies:
   - black
   - mypy
   - sphinx
-  # jax
-  - jax
-  - jaxlib
-  - blackjax
-  - numpyro
-  # used for taichi
-  - dill
-  - markdown-it-py
-  - mdurl
-  - rich
+  # cuda-toolkit
+  - cuda-version = 12.4
+  - cuda-toolkit
   - pip:
     - taichi
+    - "jax[cuda12]"
+    - blackjax
+    - numpyro
