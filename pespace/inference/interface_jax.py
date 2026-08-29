@@ -3,6 +3,7 @@
 from collections import namedtuple
 from typing import NamedTuple
 
+import jax
 import jax.numpy as jnp
 
 from ..waveform.interface_ripple import WaveformRippleBase
@@ -218,10 +219,20 @@ class WhittleLikelihoodJax:
         -------
         float
             The value of log-likelihood, summed over all detectors and channels.
+
+        Notes
+        -----
+        The waveform and the per-stage outputs are wrapped in
+        ``jax.lax.optimization_barrier`` (which natively accepts pytrees)
+        to prevent XLA from fusing the whole pipeline into a single kernel,
+        which on the CPU backend produces much slower code (~6x slower
+        without the barriers).
         """
+        # The waveform is shared by all detectors (the frequency samples are
+        # validated to match in ``__init__``), so it is computed once.
+        wf = jax.lax.optimization_barrier(self.waveform(params))
         logl = 0.0
         for det, det_data in zip(self.detector, self._static_data):
-            wf = self.waveform(params)
             links = det.response_model._backend_impl.get_response_jit(
                 wf,
                 params.ecliptic_longitude,
@@ -229,9 +240,11 @@ class WhittleLikelihoodJax:
                 params.polarization,
                 params.coalescence_time,
             )
+            links = jax.lax.optimization_barrier(links)
             # tuple of per-channel (N_freq,) arrays, ordered as
             # det.tdi_combination.labels
             resps = det.tdi_combination._backend_impl.get_combination_jit(links)
+            resps = jax.lax.optimization_barrier(resps)
             channel_indices = det_data.channel_indices
             if channel_indices is not None:
                 # static indices, resolved at trace time
