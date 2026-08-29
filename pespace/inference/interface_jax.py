@@ -1,10 +1,20 @@
 """Likelihood computation with jax."""
 
 from collections import namedtuple
+from typing import NamedTuple
 
 import jax.numpy as jnp
 
 from ..waveform.interface_ripple import WaveformRippleBase
+
+
+class DetectorData(NamedTuple):
+    """Static per-detector data for the likelihood."""
+
+    data: jnp.ndarray
+    psd: jnp.ndarray
+    df: float
+    channel_indices: tuple | None
 
 
 def noise_weighted_inner_product(observed_data, response_data, psd, df):
@@ -14,12 +24,10 @@ def noise_weighted_inner_product(observed_data, response_data, psd, df):
 
     Parameters
     ----------
-    observed_data : jnp.ndarray
-        Observed frequency-domain TDI channel data, shape ``(N_freq,)`` or ``(N_freq, N_channels)``.
-    response_data : jnp.ndarray
-        Modeled frequency-domain TDI response, same shape as ``observed_data``.
-    psd : jnp.ndarray
-        Noise power spectral density, same shape as ``observed_data``.
+    observed_data, response_data, psd : jnp.ndarray
+        Observed frequency-domain TDI channel data, modeled response, and noise
+        power spectral density, each of shape ``(N_freq,)`` or
+        ``(N_channels, N_freq)``.
     df : float
         Frequency bin spacing in Hz.
 
@@ -66,8 +74,8 @@ class WhittleLikelihoodJax:
 
         Notes
         -----
-        - The waveform computation function returns the AoS structure where the array has
-          the shape ``(N_freq, 3)`` stacking ``(h_plus, h_cross, tf)`` per frequency bin.
+        - The waveform computation function returns a dict: ``{"plus": hp, "cross": hc,
+          "tf": tf}`` for a single-mode waveform, or a mode-keyed dict for higher modes.
         - The coalescence time shift is applied in the response computation.
           Thus, the coalescence time should be set to zero in the waveform
           computation.
@@ -117,7 +125,7 @@ class WhittleLikelihoodJax:
             "LikelihoodParams", (*waveform.required_params, *response_params)
         )
 
-        self._static_data = ()
+        self._static_data: tuple[DetectorData, ...] = ()
         self._prepare_static_data()
 
     def _prepare_static_data(self):
@@ -126,7 +134,7 @@ class WhittleLikelihoodJax:
         capturing these data via closure in jit-compile of :meth:`log_likelihood`.
 
         Observed frequency-domain TDI data and PSD data are stacked with the shape
-        ``(N_freq, N_channels)`` and ordered as the requested channels. Along with the
+        ``(N_channels, N_freq)`` and ordered as the requested channels. Along with the
         ``delta_frequency``, and the indices for selecting the requested channels from
         the TDI combination output (``None`` when no slicing is needed), are stored in
         a namedtuple for each detector.
@@ -143,9 +151,6 @@ class WhittleLikelihoodJax:
               does not contain all requested channels.
         """
         static_data = []
-        DetectorData = namedtuple(
-            "DetectorData", ["data", "psd", "df", "channel_indices"]
-        )
 
         for det in self.detector:
             fd_data = det.tdi_data.fd_data
@@ -169,14 +174,12 @@ class WhittleLikelihoodJax:
                         f"detector={det.name}."
                     )
 
-            # stack channels into (N_freq, N_channels) arrays, matching the
-            # channel-last layout of the TDI combination output
-            data = jnp.stack(
-                [getattr(fd_data, chan) for chan in self.channels], axis=-1
-            )
-            psd = jnp.stack(
-                [getattr(psd_data, chan) for chan in self.channels], axis=-1
-            )
+            # stack channels into (N_channels, N_freq) arrays, ordered as
+            # self.channels, matching the channel order of the TDI combination
+            # output; axis=0 is a contiguous concatenation of the per-channel
+            # arrays (channel-first layout)
+            data = jnp.stack([getattr(fd_data, chan) for chan in self.channels], axis=0)
+            psd = jnp.stack([getattr(psd_data, chan) for chan in self.channels], axis=0)
 
             labels = det.tdi_combination.labels
             missing_chans = [chan for chan in self.channels if chan not in labels]
@@ -226,12 +229,16 @@ class WhittleLikelihoodJax:
                 params.polarization,
                 params.coalescence_time,
             )
-            # shape (N_freq, N_labels), channel-last as det.tdi_combination.labels
+            # tuple of per-channel (N_freq,) arrays, ordered as
+            # det.tdi_combination.labels
             resps = det.tdi_combination._backend_impl.get_combination_jit(links)
-            if det_data.channel_indices is not None:
-                # stored as hashable tuple in _static_data for jit static analysis and
-                # conveying immutability, converted to list here for unambiguous indexing.
-                resps = resps[:, list(det_data.channel_indices)]  # static indices, resolved at trace time # fmt: skip
+            channel_indices = det_data.channel_indices
+            if channel_indices is not None:
+                # static indices, resolved at trace time
+                resps = tuple(resps[i] for i in channel_indices)
+            # stack channels into (N_channels, N_freq), axis=0 keeps each
+            # channel contiguous
+            resps = jnp.stack(resps, axis=0)
 
             logl += noise_weighted_inner_product(
                 det_data.data, resps, det_data.psd, det_data.df

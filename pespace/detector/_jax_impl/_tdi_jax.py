@@ -3,7 +3,6 @@
 from collections import namedtuple
 import weakref
 
-import jax
 import jax.numpy as jnp
 
 from ..tdi import TDICombinationModel
@@ -77,39 +76,30 @@ class _FDMichelsonConstantEqualArmJax(TDICombinationModel):
 
         Parameters
         ----------
-        single_link_response : jnp.ndarray
-            Single-link responses, shape ``(N_freq, 6)``, with
-            (link12, link21, link23, link32, link31, link13) per bin.
+        single_link_response : tuple of jnp.ndarray
+            Six single-link responses, each of shape ``(N_freq,)``, ordered as
+            (link12, link21, link23, link32, link31, link13).
 
         Returns
         -------
-        jnp.ndarray
-            TDI combination with shape ``(N_freq, 3)``.
-            The last axis corresponds to ``('A', 'E', 'T')`` if ``orthogonal`` is True,
-            otherwise ``('X', 'Y', 'Z')``.
+        tuple of jnp.ndarray
+            Three TDI combination channels, each of shape ``(N_freq,)``. The
+            channel order corresponds to ``('A', 'E', 'T')`` if ``orthogonal``
+            is True, otherwise ``('X', 'Y', 'Z')``.
         """
         orthogonal = self.tdi_model.orthogonal
-        static_factors = self._cached_data
+        prefactor, delay_factor = self._cached_data
 
-        def _comb_at_fi(links, prefactor, delay_factor):
-            # column order: link12, link21, link23, link32, link31, link13
-            link12, link21, link23, link32, link31, link13 = links
-            X = prefactor * (link13 - link12 + delay_factor * (link31 - link21))
-            Y = prefactor * (link21 - link23 + delay_factor * (link12 - link32))
-            Z = prefactor * (link32 - link31 + delay_factor * (link23 - link13))
-            if orthogonal:
-                A = (Z - X) / jnp.sqrt(2.0)
-                E = (X - 2.0 * Y + Z) / jnp.sqrt(6.0)
-                T = (X + Y + Z) / jnp.sqrt(3.0)
-                return jnp.stack([A, E, T], axis=-1)
-            else:
-                return jnp.stack([X, Y, Z], axis=-1)
-
-        _comb_func = jax.vmap(_comb_at_fi)
-
-        return _comb_func(
-            single_link_response, static_factors.prefactor, static_factors.delay_factor
-        )
+        link12, link21, link23, link32, link31, link13 = single_link_response
+        X = prefactor * (link13 - link12 + delay_factor * (link31 - link21))
+        Y = prefactor * (link21 - link23 + delay_factor * (link12 - link32))
+        Z = prefactor * (link32 - link31 + delay_factor * (link23 - link13))
+        if orthogonal:
+            A = (Z - X) / jnp.sqrt(2.0)
+            E = (X - 2.0 * Y + Z) / jnp.sqrt(6.0)
+            T = (X + Y + Z) / jnp.sqrt(3.0)
+            return A, E, T
+        return X, Y, Z
 
     def update_tdi_response(self) -> None:
         """
@@ -124,4 +114,4 @@ class _FDMichelsonConstantEqualArmJax(TDICombinationModel):
         """
         tdi_response = self.get_combination_jit(self.detector.single_link_response)
         DataContent = namedtuple("DataContent", self.tdi_model.labels)
-        self.detector.tdi_response = DataContent(*jnp.moveaxis(tdi_response, -1, 0))
+        self.detector.tdi_response = DataContent(*tdi_response)

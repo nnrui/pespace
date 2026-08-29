@@ -83,7 +83,10 @@ class _KeplerianGeocentricJax(OrbitModelBase):
             ],
             axis=-1,
         )
-        x0 = jnp.stack([jnp.cos(alpha), jnp.sin(alpha), 0.0], axis=-1) * AU_sec
+        x0 = (
+            jnp.stack([jnp.cos(alpha), jnp.sin(alpha), jnp.zeros_like(alpha)], axis=-1)
+            * AU_sec
+        )
 
         return ConstellationVectorTuple(
             n1=(node3_det - node2_det) / params.static_arm_sec,
@@ -175,7 +178,7 @@ class _KaplerianHeliocentricJax(OrbitModelBase):
             ],
             axis=-1,
         )
-        x0 = jnp.stack([ca, sa, 0.0], axis=-1) * AU_sec
+        x0 = jnp.stack([ca, sa, jnp.zeros_like(ca)], axis=-1) * AU_sec
 
         return ConstellationVectorTuple(
             n1=(x3_det - x2_det) / params.static_arm_sec,

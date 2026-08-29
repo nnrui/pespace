@@ -4,7 +4,6 @@ from __future__ import annotations
 from collections import namedtuple
 import weakref
 
-import jax
 import jax.numpy as jnp
 
 from ..antenna import SingleLinkResponseModel
@@ -86,9 +85,13 @@ class _FDResponseModelMarset2018Jax(SingleLinkResponseModel):
 
         Parameters
         ----------
-        waveform : jnp.ndarray
-            Waveform array; shape ``(N_freqs, 3)``, (hp, hc, tf) per bin for single mode,
-            or ``(N_freqs, N_modes, 3)`` for higher modes.
+        waveform : dict
+            Waveform dict. For a single-mode waveform: ``{"plus": hp,
+            "cross": hc, "tf": tf}``; for waveforms with higher modes, each
+            harmonic mode maps to such a dict, e.g. ``{"22": {...}, "21":
+            {...}}``. ``hp`` and ``hc`` are complex arrays of length
+            ``N_freq`` matching the detector frequency samples; ``tf`` is a
+            real array of the same length.
         lam, beta, psi : float
             Sky location and polarization angle in radians.
         tc : float
@@ -96,9 +99,9 @@ class _FDResponseModelMarset2018Jax(SingleLinkResponseModel):
 
         Returns
         -------
-        jnp.ndarray
-            Single-link responses, shape ``(N_freq, 6)``,
-            with (link12, link21, link23, link32, link31, link13) per bin.
+        tuple of jnp.ndarray
+            Six single-link responses, each of shape ``(N_freq,)``, ordered as
+            (link12, link21, link23, link32, link31, link13).
         """
         orbit = self.detector.orbit_model
         freqs = self.detector.tdi_data.frequency_samples
@@ -106,83 +109,90 @@ class _FDResponseModelMarset2018Jax(SingleLinkResponseModel):
         pol_tensor = get_polarization_tensor_ssb_jax(lam, beta, psi)  # matrix: 3*3
         prop_direc = get_gw_propagation_unit_vector_jax(lam, beta)  # vector: 3
 
-        def _response_at_fi(wf, fi):
-            hp, hc, tf = wf
-            tshift = jnp.exp(-1j * 2.0 * PI * fi * tc)
-            hp *= tshift
-            hc *= tshift
-            tf += tc
+        # single-mode waveform: {"plus": hp, "cross": hc, "tf": tf}; higher
+        # modes: mode-keyed dict {"22": {...}, "21": {...}}.
+        modes = (waveform,) if "plus" in waveform else tuple(waveform.values())
 
-            det_vecs = orbit.get_constellation_vectors(tf)
-            arm_sec = orbit.arm_length_sec(tf)
-            # n1: unit vector of 2 -> 3
+        def _response_mode(wf):
+            hp, hc, tf = wf["plus"], wf["cross"], wf["tf"]  # each (N_freq,)
+
+            tshift = jnp.exp(-1j * 2.0 * PI * freqs * tc)
+            hp = hp * tshift
+            hc = hc * tshift
+            tf = tf + tc
+
+            det_vecs = orbit.get_constellation_vectors(tf)  # 6 vectors of (N_freq, 3)
+            arm_sec = orbit.arm_length_sec(tf)  # scalar, constant arm-length
+
+            # antenna pattern functions n^T P n; the ellipsis keeps leading
+            # batch dims when this function is vmapped over samples.
             n1_h_n1 = (
-                det_vecs.n1 @ pol_tensor.plus @ det_vecs.n1 * hp
-                + det_vecs.n1 @ pol_tensor.cross @ det_vecs.n1 * hc
+                jnp.einsum(
+                    "...i,ij,...j->...", det_vecs.n1, pol_tensor.plus, det_vecs.n1
+                )
+                * hp
+                + jnp.einsum(
+                    "...i,ij,...j->...", det_vecs.n1, pol_tensor.cross, det_vecs.n1
+                )
+                * hc
             )
-            # n2: unit vector of 3 -> 1
             n2_h_n2 = (
-                det_vecs.n2 @ pol_tensor.plus @ det_vecs.n2 * hp
-                + det_vecs.n2 @ pol_tensor.cross @ det_vecs.n2 * hc
+                jnp.einsum(
+                    "...i,ij,...j->...", det_vecs.n2, pol_tensor.plus, det_vecs.n2
+                )
+                * hp
+                + jnp.einsum(
+                    "...i,ij,...j->...", det_vecs.n2, pol_tensor.cross, det_vecs.n2
+                )
+                * hc
             )
-            # n3: unit vector of 1 -> 2
             n3_h_n3 = (
-                det_vecs.n3 @ pol_tensor.plus @ det_vecs.n3 * hp
-                + det_vecs.n3 @ pol_tensor.cross @ det_vecs.n3 * hc
+                jnp.einsum(
+                    "...i,ij,...j->...", det_vecs.n3, pol_tensor.plus, det_vecs.n3
+                )
+                * hp
+                + jnp.einsum(
+                    "...i,ij,...j->...", det_vecs.n3, pol_tensor.cross, det_vecs.n3
+                )
+                * hc
             )
 
-            k_n1 = prop_direc @ det_vecs.n1  # scalar
-            k_n2 = prop_direc @ det_vecs.n2  # scalar
-            k_n3 = prop_direc @ det_vecs.n3  # scalar
+            k_n1 = jnp.einsum("i,...i->...", prop_direc, det_vecs.n1)
+            k_n2 = jnp.einsum("i,...i->...", prop_direc, det_vecs.n2)
+            k_n3 = jnp.einsum("i,...i->...", prop_direc, det_vecs.n3)
+            k_x1_x2 = jnp.einsum("i,...i->...", prop_direc, det_vecs.x1 + det_vecs.x2)
+            k_x2_x3 = jnp.einsum("i,...i->...", prop_direc, det_vecs.x2 + det_vecs.x3)
+            k_x3_x1 = jnp.einsum("i,...i->...", prop_direc, det_vecs.x3 + det_vecs.x1)
 
-            k_x1_x2 = prop_direc @ (det_vecs.x1 + det_vecs.x2)  # scalar
-            k_x2_x3 = prop_direc @ (det_vecs.x2 + det_vecs.x3)  # scalar
-            k_x3_x1 = prop_direc @ (det_vecs.x3 + det_vecs.x1)  # scalar
-
-            f_L = fi * arm_sec  # scalar
+            f_L = freqs * arm_sec
             # Note jnp.sinc is the normalized sinc: sin(pi*x)/(pi*x)!
-            sinc32 = jnp.sinc(f_L * (1.0 - k_n1))  # scalar
-            sinc23 = jnp.sinc(f_L * (1.0 + k_n1))  # scalar
-            sinc13 = jnp.sinc(f_L * (1.0 - k_n2))  # scalar
-            sinc31 = jnp.sinc(f_L * (1.0 + k_n2))  # scalar
-            sinc21 = jnp.sinc(f_L * (1.0 - k_n3))  # scalar
-            sinc12 = jnp.sinc(f_L * (1.0 + k_n3))  # scalar
+            sinc32 = jnp.sinc(f_L * (1.0 - k_n1))
+            sinc23 = jnp.sinc(f_L * (1.0 + k_n1))
+            sinc13 = jnp.sinc(f_L * (1.0 - k_n2))
+            sinc31 = jnp.sinc(f_L * (1.0 + k_n2))
+            sinc21 = jnp.sinc(f_L * (1.0 - k_n3))
+            sinc12 = jnp.sinc(f_L * (1.0 + k_n3))
 
-            common_exp = -PI * fi * 1j  # complex
-            exp12 = jnp.exp(common_exp * (arm_sec + k_x1_x2))  # complex
-            exp23 = jnp.exp(common_exp * (arm_sec + k_x2_x3))  # complex
-            exp31 = jnp.exp(common_exp * (arm_sec + k_x3_x1))  # complex
+            common_exp = -PI * freqs * 1j  # complex
+            exp12 = jnp.exp(common_exp * (arm_sec + k_x1_x2))
+            exp23 = jnp.exp(common_exp * (arm_sec + k_x2_x3))
+            exp31 = jnp.exp(common_exp * (arm_sec + k_x3_x1))
 
-            link12 = sinc12 * n3_h_n3 * exp12
-            link21 = sinc21 * n3_h_n3 * exp12
-            link23 = sinc23 * n1_h_n1 * exp23
-            link32 = sinc32 * n1_h_n1 * exp23
-            link31 = sinc31 * n2_h_n2 * exp31
-            link13 = sinc13 * n2_h_n2 * exp31
-
-            response = jnp.stack(
-                [link12, link21, link23, link32, link31, link13], axis=-1
-            )
             prefactor = -PI * f_L * 1j
-            response *= prefactor
-            return response
+            link12 = prefactor * sinc12 * n3_h_n3 * exp12
+            link21 = prefactor * sinc21 * n3_h_n3 * exp12
+            link23 = prefactor * sinc23 * n1_h_n1 * exp23
+            link32 = prefactor * sinc32 * n1_h_n1 * exp23
+            link31 = prefactor * sinc31 * n2_h_n2 * exp31
+            link13 = prefactor * sinc13 * n2_h_n2 * exp31
 
-        def _response_at_fi_modes(wf_modes, fi):
-            mode_num, _ = wf_modes.shape
-            response = jnp.zeros(6, dtype=complex)
-            for i in range(mode_num):
-                response_mode = _response_at_fi(wf_modes[i], fi)
-                response += response_mode
-            return response
+            return link12, link21, link23, link32, link31, link13
 
-        if waveform.ndim == 2:
-            response = jax.vmap(_response_at_fi)(waveform, freqs)
-        elif waveform.ndim == 3:
-            response = jax.vmap(_response_at_fi_modes)(waveform, freqs)
-        else:
-            raise ValueError("Invalid dimension of waveform.")
-
-        return response
+        links = _response_mode(modes[0])
+        for wf_mode in modes[1:]:
+            links_mode = _response_mode(wf_mode)
+            links = tuple(a + b for a, b in zip(links, links_mode))
+        return links
 
     def update_single_link_response(self, waveform, lam, beta, psi, tc) -> None:
         """Compute single link response and update the detector state.
@@ -192,9 +202,8 @@ class _FDResponseModelMarset2018Jax(SingleLinkResponseModel):
 
         Parameters
         ----------
-        waveform : jnp.ndarray
-            Waveform array; shape ``(N_freqs, 3)``, (hp, hc, tf) per bin for single mode,
-            or ``(N_freqs, N_modes, 3)`` for higher modes.
+        waveform : dict
+            Waveform dict, see :meth:`get_response_jit` for the structure.
         lam, beta, psi : float
             Sky location and polarization angle in radians.
         tc : float
@@ -210,4 +219,4 @@ class _FDResponseModelMarset2018Jax(SingleLinkResponseModel):
         DataContent = namedtuple(
             "DataContent", ("link12", "link21", "link23", "link32", "link31", "link13")
         )
-        self.detector.single_link_response = DataContent(*jnp.moveaxis(links, -1, 0))
+        self.detector.single_link_response = DataContent(*links)
