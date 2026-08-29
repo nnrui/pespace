@@ -7,10 +7,10 @@ grad-able, which makes them suitable for likelihood computations with jax
 backends (see
 :class:`pespace.inference.interface_jax.WhittleLikelihoodJax`).
 
-ripple is not a default dependency of pespace. It is imported lazily when a
-waveform is requested; if it is not installed, a :class:`RippleImportError`
+ripple is not a default dependency of pespace. The import is attempted when
+this module is loaded; if ripple is not installed, an ``ImportError``
 reminding the user to install the non-official ripple from
-``_RIPPLE_INSTALL_URL`` is raised.
+``_RIPPLE_INSTALL_URL`` is raised immediately.
 """
 
 from abc import ABC, abstractmethod
@@ -22,22 +22,14 @@ import jax.numpy as jnp
 _RIPPLE_INSTALL_URL = "https://github.com/xxx"
 
 
-class RippleImportError(ImportError):
-    """
-    Raised when ripple is not installed but a waveform is requested.
-
-    The default message reminds the user to install the non-official ripple
-    from ``_RIPPLE_INSTALL_URL``.
-    """
-
-    _message = (
+try:
+    from ripplegw.waveforms.IMRPhenomXAS import gen_IMRPhenomXAS_hphctf
+except ImportError as err:
+    raise ImportError(
         "ripple is not installed by default. If waveforms from ripple "
         "are needed, please install the non-official ripple manually "
         f"from {_RIPPLE_INSTALL_URL}."
-    )
-
-    def __init__(self):
-        super().__init__(self._message)
+    ) from err
 
 
 class WaveformRippleBase(ABC):
@@ -57,11 +49,13 @@ class WaveformRippleBase(ABC):
 
     Notes
     -----
-    The frequency-domain waveform returned by concrete templates has the AoS
-    layout of shape ``(N_freq, 3)`` stacking ``(h_plus, h_cross, t_f)`` per
-    frequency bin. The coalescence time shift is usually applied in the
-    detector response computation; in that case the coalescence time is fixed
-    to zero inside the waveform computation.
+    The frequency-domain waveform returned by concrete templates is a dict:
+    ``{"plus": hp, "cross": hc, "tf": tf}`` for a single-mode waveform, with
+    complex ``hp``/``hc`` and real ``tf`` of shape ``(N_freq,)``; for waveforms
+    with higher modes, each harmonic mode maps to such a dict, e.g.
+    ``{"22": {...}, "21": {...}}``. The coalescence time shift is usually
+    applied in the detector response computation; in that case the coalescence
+    time is fixed to zero inside the waveform computation.
     """
 
     def __init__(self, frequencies, reference_frequency: float):
@@ -81,7 +75,7 @@ class WaveformRippleBase(ABC):
         """
 
     @abstractmethod
-    def get_waveform(self, params) -> jnp.ndarray:
+    def get_waveform(self, params) -> dict:
         """
         Evaluate the ripple waveform for the given parameters.
 
@@ -93,14 +87,10 @@ class WaveformRippleBase(ABC):
 
         Returns
         -------
-        jnp.ndarray
-            Stacked waveform of shape ``(N_freq, 3)`` with
-            ``(h_plus, h_cross, t_f)`` per frequency bin.
-
-        Raises
-        ------
-        RippleImportError
-            If ripple is not installed.
+        dict
+            Waveform dict: ``{"plus": hp, "cross": hc, "tf": tf}`` for a
+            single-mode waveform, or a mode-keyed dict
+            ``{"22": {...}, "21": {...}}`` for higher modes.
         """
 
     def __call__(self, params):
@@ -148,15 +138,11 @@ class IMRPhenomXAS(WaveformRippleBase):
 
         Returns
         -------
-        jnp.ndarray
-            Stacked waveform of shape ``(N_freq, 3)`` with
-            ``(h_plus, h_cross, t_f)`` per frequency bin.
+        dict
+            Waveform dict: ``{"plus": hp, "cross": hc, "tf": tf}`` for a
+            single-mode waveform, or a mode-keyed dict
+            ``{"22": {...}, "21": {...}}`` for higher modes.
         """
-        try:
-            from ripplegw.waveforms.IMRPhenomXAS import gen_IMRPhenomXAS_hphctf
-        except ImportError:
-            raise RippleImportError
-
         # the coalescence time shift is applied in the response computation,
         # so it is fixed to zero here
         params_array = jnp.array(
@@ -174,4 +160,4 @@ class IMRPhenomXAS(WaveformRippleBase):
         hp, hc, tf = gen_IMRPhenomXAS_hphctf(
             self.frequencies, params_array, self.reference_frequency
         )
-        return jnp.stack([hp, hc, tf], axis=-1)
+        return {"plus": hp, "cross": hc, "tf": tf}
