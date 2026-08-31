@@ -12,7 +12,7 @@ ti.init(arch=ti.cpu, default_fp=ti.f64, cpu_max_num_threads=1, offline_cache=Fal
 from pespace.detector.antenna import InterferometerAntenna, FDResponseModelMarset2018
 from pespace.detector.tdi import TDIChannelData, FDMichelsonConstantEqualArm
 from pespace.detector.orbit import available_orbit_models
-from pespace.inference.interface_bilby import LikelihoodBilbyInterface
+from pespace.inference.interface_bilby import LikelihoodBilbyInterfaceTaichi
 from tiwave.waveforms import IMRPhenomXAS
 
 ########################################################################################
@@ -82,7 +82,7 @@ lisa.inject_signal(
 
 ########################################################################################
 # set sampling
-likelihood = LikelihoodBilbyInterface(
+likelihood = LikelihoodBilbyInterfaceTaichi(
     waveform=wf_xas,
     detector=lisa,
     channels=('A', 'E', 'T')
@@ -102,7 +102,7 @@ priors['mass_ratio'] = bilby.gw.prior.UniformInComponentsMassRatio(name='mass_ra
 priors['luminosity_distance'] = bilby.core.prior.LogUniform(name='luminosity_distance', minimum=1e4, maximum=5e6)
 priors = bilby.core.prior.PriorDict(dictionary=priors)
 
-label = "inj_MBHB_LISA"
+label = "full_pe_MBHB_LISA_multinest"
 outdir = f"outdir_{label}"
 result = bilby.run_sampler(
     likelihood=likelihood,
