@@ -1,10 +1,21 @@
-"""Common utilities for parameter estimation."""
+"""Taichi backend of the Whittle likelihood kernel.
+
+This module contains the taichi kernel for the Whittle likelihood
+computation, used by
+:class:`~pespace.inference.interface_bilby.LikelihoodBilbyInterfaceTaichi`.
+
+Important: this module must *not* use ``from __future__ import annotations``
+(PEP 563). Taichi parses kernel annotations at decoration time and requires
+the actual annotation objects (e.g., ``ti.template()``); with PEP 563 all
+annotations become strings and the kernel definition fails with a
+``TaichiSyntaxError``.
+"""
 
 import taichi as ti
 
 
 @ti.kernel
-def _compute_whittle_likelihood(
+def compute_whittle_likelihood_ti(
     channels: ti.template(),
     observed_data: ti.template(),
     response_data: ti.template(),

@@ -5,7 +5,7 @@ The frequency-domain waveform generators in ripple used here are implemented
 with jax in a non-official fork, so the generated waveforms are jit-able and
 grad-able, which makes them suitable for likelihood computations with jax
 backends (see
-:class:`pespace.inference.interface_jax.WhittleLikelihoodJax`).
+:class:`pespace.inference.likelihood_jax.WhittleLikelihoodJax`).
 
 ripple is not a default dependency of pespace. The import is attempted when
 this module is loaded; if ripple is not installed, an ``ImportError``
