@@ -16,11 +16,16 @@ at every tempering level:
   Gaussian proposal ``mean`` / ``covariance`` are re-fitted to the particle
   cloud and the output is already physical.
 
-For both samplers the number of mutation rounds per tempering level is
-determined automatically from the inter-generation lag-1 autocorrelation of
-the particles (evaluated on the ``x + x**2`` transform), capped by
-``max_num_moves``.
+For both samplers the number of mutation rounds per tempering level is a
+fixed number of rounds given by ``num_mcmc_steps``.
+
+With ``show_progress=True`` each level's mutation is wrapped in
+:func:`blackjax.progress_bar` (requires the optional ``jaxtap`` package)
+and per-level diagnostics (temperature, ESS and kernel statistics) are
+printed.
 """
+
+from functools import partial
 
 import logging
 import time
@@ -33,6 +38,7 @@ from jax.flatten_util import ravel_pytree
 from jax.scipy.special import logsumexp
 
 from .base import NumpyroPriorSamplerBase
+from ..utils import map_fn
 
 try:
     import blackjax
@@ -61,26 +67,12 @@ def _stack_particles(particles) -> jnp.ndarray:
     return jax.vmap(lambda particle: ravel_pytree(particle)[0])(particles)
 
 
-def _lag1_corr(previous: jnp.ndarray, current: jnp.ndarray) -> jnp.ndarray:
-    """Component-wise lag-1 correlation on the ``x + x**2`` transform.
-
-    The transform makes the criterion insensitive to the sign of the
-    components (following the HSMC move-length criterion).
-    """
-    previous = previous + previous**2
-    current = current + current**2
-    previous = previous - jnp.mean(previous, axis=0)
-    current = current - jnp.mean(current, axis=0)
-    denominator = jnp.sqrt(jnp.sum(previous**2, axis=0) * jnp.sum(current**2, axis=0))
-    return jnp.sum(previous * current, axis=0) / (denominator + 1e-16)
-
-
 class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
     """Shared machinery for adaptive-tempered SMC with self-tuned kernels.
 
     Concrete samplers provide the inner mutation kernel and its tuning rule;
-    this base class implements the tempering loop and the autocorrelation-
-    based mutation stopping rule.
+    this base class implements the tempering loop and the fixed-step mutation
+    schedule.
 
     Hooks expected from subclasses (set in ``__init__``):
 
@@ -93,10 +85,6 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         Maps one particle (in the sampler's working space) to the physical
         sampled-parameter space.
     """
-
-    # Define the default value as the class-level attribute.
-    # Subclasses can override this default without redefining __init__.
-    _DEFAULT_MAX_MOVES = 50
 
     # Type annotations, avoid initialize these hooks with None in __init__ of base class,
     # as that would cause complains of type checker.
@@ -113,22 +101,20 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         rkey_seed: int = 0,
         num_particles: int = 4096,
         target_ess: float = 0.5,
-        max_num_moves: int | None = None,
-        correlation_threshold: float = 0.1,
-        min_correlated_fraction: float = 0.3,
+        num_mcmc_steps: int = 10,
         batch_size: int = 0,
+        show_progress: bool = False,
     ) -> None:
         super().__init__(likelihood, prior_dict, label, outdir, rkey_seed)
         self.num_particles = int(num_particles)
         self.target_ess = float(target_ess)
-        self.max_num_moves = (
-            self._DEFAULT_MAX_MOVES if max_num_moves is None else int(max_num_moves)
-        )
-        self.correlation_threshold = float(correlation_threshold)
-        self.min_correlated_fraction = float(min_correlated_fraction)
+        self.num_mcmc_steps = int(num_mcmc_steps)
         self.batch_size = int(batch_size)
+        self.show_progress = bool(show_progress)
         if self.batch_size < 0:
             raise ValueError("batch_size must be non-negative.")
+        if self.num_mcmc_steps < 1:
+            raise ValueError("num_mcmc_steps must be positive.")
 
         # Ravel/unravel utilities shared by both samplers; the template fixes
         # the pytree structure and the flattened dimension.
@@ -137,56 +123,24 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         sample_data, self._unflatten_fn = ravel_pytree(test_sample)
         self._dim = int(sample_data.shape[0])
 
-    def _map_fn(self, fn):
-        """Map ``fn`` over the particle axis, batched or chunked.
-
-        ``batch_size=0`` keeps the plain ``jax.vmap`` behaviour; a positive
-        ``batch_size`` switches to ``jax.lax.map``, which processes the
-        particles in sequential batches of that size.  This bounds the peak
-        memory of the ``(particles, frequency bins)`` intermediates at the
-        cost of cross-batch parallelism (the frequency axis inside one batch
-        still saturates the thread pool).
-        """
-        if self.batch_size > 0:
-            return lambda xs: jax.lax.map(fn, xs, batch_size=self.batch_size)
-        return jax.vmap(fn)
-
     # ------------------------------------------------------------------
     # mutation rounds
     # ------------------------------------------------------------------
-    def _mutate_until_decorrelated(
-        self, rng_key, particles, parameters, tempering_param
+    def _mutate(
+        self,
+        rng_key,
+        particles,
+        parameters,
+        tempering_param,
+        num_mcmc_steps: int = 1,
     ):
-        """Mutate the particles at the current temperature until decorrelation.
+        """One mutation round: ``num_mcmc_steps`` kernel steps per particle.
 
-        All mutation rounds share the kernel parameters tuned beforehand.
-        Implements the ``move_steps`` rule: start from a running correlation
-        product of ones and multiply it by the lag-1 correlation between
-        successive populations after every mutation round, until fewer than
-        ``min_correlated_fraction`` of the components remain correlated.
+        Runs ``num_mcmc_steps`` inner-kernel steps for every particle and
+        keeps only the final states (blackjax's ``update_and_take_last``).
+        ``num_mcmc_steps=1`` is used by the tuning probe moves; the
+        tempering loop passes the level's full ``self.num_mcmc_steps``.
         """
-        init = (rng_key, particles, _stack_particles(particles), jnp.ones(self._dim), 0)
-
-        def cond(carry):
-            _, _, _, correlations, num_moves = carry
-            still_correlated = jnp.mean(correlations > self.correlation_threshold)
-            return (num_moves < self.max_num_moves) & (
-                still_correlated >= self.min_correlated_fraction
-            )
-
-        def body(carry):
-            key, particles, previous, correlations, num_moves = carry
-            key, subkey = jax.random.split(key)
-            particles, _ = self._mutate(subkey, particles, parameters, tempering_param)
-            current = _stack_particles(particles)
-            correlations = correlations * _lag1_corr(previous, current)
-            return key, particles, current, correlations, num_moves + 1
-
-        _, particles, _, _, _ = jax.lax.while_loop(cond, body, init)
-        return particles
-
-    def _mutate(self, rng_key, particles, parameters, tempering_param):
-        """One mutation round: a single kernel step for every particle."""
 
         def tempered_logposterior(position):
             return self.logprior_fn(position) + tempering_param * self.loglikelihood_fn(
@@ -200,7 +154,7 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
             self._mcmc_init_fn,
             tempered_logposterior,
             shared_step,
-            1,
+            num_mcmc_steps,
             self.num_particles,
             batch_size=self.batch_size,
         )
@@ -233,6 +187,66 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
     # ------------------------------------------------------------------
     # inference loop
     # ------------------------------------------------------------------
+    def _temper(
+        self,
+        key,
+        particles,
+        mcmc_params,
+        tempering_param,
+        log_evidence,
+    ):
+        """One tempering level up to (but excluding) the mutation.
+
+        Computes the ESS-optimal tempering increment from the current
+        particle likelihoods (evaluated by the instance-level
+        ``_batched_loglikelihood``, bound by :meth:`run`), accumulates the
+        normalising-constant increment into the log-evidence,
+        systematic-resamples the particles and the per-particle kernel
+        parameters, and re-tunes the inner kernel.  The input RNG key is
+        consumed by the split into the resampling and tuning subkeys;
+        nothing is returned for the caller.  Returns the resampled
+        particles, the tuned parameters, the new tempering parameter, the
+        updated log-evidence, the tempering increment and the
+        pre-resampling ESS.
+        """
+        resample_key, tune_key = jax.random.split(key, 2)
+
+        loglikelihoods = self._batched_loglikelihood(particles)
+        # Solve for the ESS-optimal tempering increment, mirroring
+        # ``blackjax.smc.ess.ess_solver`` but reusing the likelihood
+        # population evaluated above (instead of re-evaluating it).
+        target_val = jnp.log(self.num_particles * self.target_ess)
+
+        def fun_to_solve(delta):
+            log_weights = jnp.nan_to_num(delta * loglikelihoods)
+            return log_ess(log_weights) - target_val
+
+        delta = dichotomy(fun_to_solve, 0.0, 1.0 - tempering_param)
+        tempering_param = tempering_param + delta
+        log_weights = delta * loglikelihoods
+        ess = jnp.exp(log_ess(log_weights))
+        log_evidence = (
+            log_evidence + logsumexp(log_weights) - jnp.log(self.num_particles)
+        )
+        indices = resampling.systematic(
+            resample_key,
+            jnp.exp(log_weights - logsumexp(log_weights)),
+            self.num_particles,
+        )
+        particles = jax.tree.map(lambda p: p[indices], particles)
+        mcmc_params = self._resample_mcmc_parameters(mcmc_params, indices)
+        mcmc_params = self._tune_mcmc_parameters(
+            tune_key, particles, mcmc_params, tempering_param
+        )
+        return (
+            particles,
+            mcmc_params,
+            tempering_param,
+            log_evidence,
+            delta,
+            ess,
+        )
+
     def run(self) -> dict:
         """Run the adaptive-tempered SMC sampler.
 
@@ -246,15 +260,17 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
             log-evidence ``log_evidence`` and normalized importance
             ``weights``.  The result is also saved to ``outdir/{label}.json``.
         """
-        start = time.perf_counter()
         self.rng_key, init_key_1, init_key_2, loop_key = jax.random.split(
             self.rng_key, 4
         )
         particles = self._initial_particles(init_key_1, self.num_particles)
         mcmc_params = self._initial_mcmc_parameters(init_key_2, particles)
-        batched_loglikelihood = self._map_fn(self.loglikelihood_fn)
+        self._batched_loglikelihood = map_fn(
+            self.loglikelihood_fn, self.batch_size
+        )
+        start = time.perf_counter()
         particles, log_evidence = self._inference_loop(
-            loop_key, particles, mcmc_params, batched_loglikelihood
+            loop_key, particles, mcmc_params
         )
         output = self._finalize(
             particles, log_evidence, runing_time=time.perf_counter() - start
@@ -262,59 +278,101 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         self._save_output(output)
         return output
 
-    def _inference_loop(self, key, particles, mcmc_params, batched_loglikelihood):
+    def _inference_loop(self, key, particles, mcmc_params):
         """Reweight-resample-mutate loop, terminating at tempering parameter 1.
 
-        Each iteration computes the ESS-optimal tempering increment,
-        reweights and resamples the particles, tunes the inner kernel
-        parameters from the particle cloud, and mutates the particles at the
-        new temperature until they decorrelate.  The particles carry uniform
-        weights after resampling; the normalising-constant increments are
-        accumulated into the log-evidence.
+        A plain Python ``while`` drives the levels; each level runs the
+        jitted :meth:`_temper` (tempering increment, resampling and
+        inner-kernel tuning) followed by the jitted :meth:`_mutate` (the
+        fixed number of mutation rounds).  With ``show_progress`` the
+        mutation call is wrapped in :func:`blackjax.progress_bar` and each
+        level's diagnostics are printed.
+
+        Notes
+        -----
+        The progress bar relies on ``jaxtap`` instrumenting the scan at
+        trace time.  The jitted closures are recreated on every
+        ``_inference_loop`` call, so the mutation kernel is (re)traced
+        inside the active context whenever ``show_progress=True`` -- no
+        ``jax.clear_caches()`` dance is needed when flipping the flag
+        between runs.
         """
-
-        def cond(carry):
-            return carry[2] < 1.0
-
-        def body(carry):
-            key, particles, tempering_param, mcmc_params, log_evidence = carry
-            key, resample_key, tune_key, move_key = jax.random.split(key, 4)
-
-            loglikelihoods = batched_loglikelihood(particles)
-            # Solve for the ESS-optimal tempering increment, mirroring
-            # ``blackjax.smc.ess.ess_solver`` but reusing the likelihood
-            # population evaluated above (instead of re-evaluating it).
-            target_val = jnp.log(self.num_particles * self.target_ess)
-
-            def fun_to_solve(delta):
-                log_weights = jnp.nan_to_num(delta * loglikelihoods)
-                return log_ess(log_weights) - target_val
-
-            delta = dichotomy(fun_to_solve, 0.0, 1.0 - tempering_param)
-            tempering_param = tempering_param + delta
-            log_weights = delta * loglikelihoods
-            log_evidence = (
-                log_evidence + logsumexp(log_weights) - jnp.log(self.num_particles)
-            )
-            indices = resampling.systematic(
-                resample_key,
-                jnp.exp(log_weights - logsumexp(log_weights)),
-                self.num_particles,
-            )
-            particles = jax.tree.map(lambda p: p[indices], particles)
-            mcmc_params = self._resample_mcmc_parameters(mcmc_params, indices)
-            mcmc_params = self._tune_mcmc_parameters(
-                tune_key, particles, mcmc_params, tempering_param
-            )
-            particles = self._mutate_until_decorrelated(
-                move_key, particles, mcmc_params, tempering_param
-            )
-            return key, particles, tempering_param, mcmc_params, log_evidence
-
-        _, particles, _, _, log_evidence = jax.lax.while_loop(
-            cond, body, (key, particles, 0.0, mcmc_params, 0.0)
+        temper_jit = jax.jit(self._temper)
+        # ``num_mcmc_steps`` is bound once by ``partial``, so the jitted
+        # wrapper needs no ``static_argnums``.
+        mutate_jit = jax.jit(
+            partial(self._mutate, num_mcmc_steps=self.num_mcmc_steps)
         )
+
+        tempering_param = 0.0
+        log_evidence = 0.0
+        level = 0
+        while tempering_param < 1.0:
+            level += 1
+            start = time.perf_counter()
+            # Derive this level's subkeys in the Python scope: the incoming
+            # ``key`` is consumed by the split and replaced by the parent
+            # of the next level; ``temper_key`` and ``move_key`` are each
+            # used exactly once below and never again.
+            key, temper_key, move_key = jax.random.split(key, 3)
+            (
+                particles,
+                mcmc_params,
+                tempering_param,
+                log_evidence,
+                delta,
+                ess,
+            ) = temper_jit(
+                temper_key,
+                particles,
+                mcmc_params,
+                tempering_param,
+                log_evidence,
+            )
+            if self.show_progress:
+                self._print_level_header(
+                    level, tempering_param, delta, ess, log_evidence
+                )
+                with blackjax.progress_bar(
+                    label=f"mutate lambda={float(tempering_param):.4g}"
+                ):
+                    particles, info = mutate_jit(
+                        move_key,
+                        particles,
+                        mcmc_params,
+                        tempering_param,
+                    )
+                self._print_diagnose_info(
+                    mcmc_params, info, time.perf_counter() - start
+                )
+            else:
+                particles, _ = mutate_jit(
+                    move_key,
+                    particles,
+                    mcmc_params,
+                    tempering_param,
+                )
         return particles, log_evidence
+
+    def _print_level_header(
+        self, level, tempering_param, delta, ess, log_evidence
+    ):
+        """Print the common per-level header (level, lambda, delta, ESS, logZ)."""
+        print(
+            f"level {level}: lambda={float(tempering_param):.6g} "
+            f"(delta={float(delta):.4g})  "
+            f"ESS {float(ess):.0f}/{self.num_particles}  "
+            f"logZ {float(log_evidence):.4f}"
+        )
+
+    def _print_diagnose_info(self, mcmc_params, info, elapsed):
+        """Print kernel-specific mutation diagnostics for one level.
+
+        Implemented by the concrete samplers; ``info`` is the info pytree
+        returned by the level's mutation call (leaf shape
+        ``(num_particles, num_mcmc_steps)``).
+        """
+        raise NotImplementedError
 
     def _finalize(self, particles, log_evidence, runing_time) -> dict:
         """Assemble the final population into the run-result dictionary.
@@ -328,8 +386,12 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         array).
         """
         particles_phy = self._get_particles_physical(particles)
-        ll_params = self._map_fn(self._likelihood_params_from_physical)(particles_phy)
-        log_likelihoods = self._map_fn(self.likelihood.log_likelihood)(ll_params)
+        ll_params = map_fn(self._likelihood_params_from_physical, self.batch_size)(
+            particles_phy
+        )
+        log_likelihoods = map_fn(self.likelihood.log_likelihood, self.batch_size)(
+            ll_params
+        )
 
         sampled = {
             name: np.asarray(value)
@@ -397,20 +459,19 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
         Number of SMC particles.  Default is 4096.
     target_ess : float, optional
         Target ESS ratio of the adaptive tempering schedule.  Default is 0.5.
-    max_num_moves : int, optional
-        Upper bound on the number of mutation rounds per tempering level.
-        Default is 50.
-    correlation_threshold : float, optional
-        Lag-1 autocorrelation threshold of the mutation stopping rule.
-        Default is 0.1.
-    min_correlated_fraction : float, optional
-        Fraction of components allowed to stay correlated before the
-        mutation rounds stop.  Default is 0.3.
+    num_mcmc_steps : int, optional
+        Fixed number of mutation rounds per tempering level.  Default is 10.
     batch_size : int, optional
         Number of particles processed per sequential batch when positive.
         ``0`` (default) keeps the plain ``jax.vmap`` behaviour.  A positive
         value bounds the peak memory of the likelihood intermediates and the
         mutation updates, at the cost of cross-batch parallelism.
+    show_progress : bool, optional
+        When True, wrap each level's mutation in
+        :func:`blackjax.progress_bar` (requires the optional ``jaxtap``
+        package) and print per-level diagnostics (temperature, ESS and the
+        step-size / leapfrog / acceptance statistics below).  Default is
+        False.
     log_step_size_range : tuple, optional
         ``(low, high)`` bounds of the log-uniform distribution the initial
         per-particle step sizes are drawn from (in log space).  Default is
@@ -424,8 +485,6 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
         Default is 0.2.
     """
 
-    _DEFAULT_MAX_MOVES = 50
-
     def __init__(
         self,
         likelihood,
@@ -435,11 +494,10 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
         rkey_seed: int = 0,
         num_particles: int = 4096,
         target_ess: float = 0.5,
-        max_num_moves: int | None = None,
-        correlation_threshold: float = 0.1,
-        min_correlated_fraction: float = 0.3,
+        num_mcmc_steps: int = 10,
         batch_size: int = 0,
-        log_step_size_range: tuple = (jnp.log(1e-4), jnp.log(1.0)),
+        show_progress: bool = False,
+        log_step_size_range: tuple = (jnp.log(1e-3), jnp.log(1.0)),
         tuning_alpha_frac: float = 0.1,
         tuning_sigma_log: float = 0.2,
     ) -> None:
@@ -451,10 +509,9 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
             rkey_seed,
             num_particles,
             target_ess,
-            max_num_moves,
-            correlation_threshold,
-            min_correlated_fraction,
+            num_mcmc_steps,
             batch_size,
+            show_progress,
         )
         low, high = log_step_size_range
         if not low < high:
@@ -507,8 +564,8 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
         first and then jittered multiplicatively in log space (so
         duplicates receive independent perturbations); the probe particles
         are discarded and the shared inverse mass matrix is re-estimated
-        from the pre-move particle cloud.  The actual mutation is performed
-        afterwards by ``_mutate_until_decorrelated``.
+        from the pre-move particle cloud.  The actual mutation rounds are
+        performed afterwards by ``_mutate`` with ``self.num_mcmc_steps``.
         """
         move_key, resample_key, perturb_key = jax.random.split(key, 3)
         previous = particles
@@ -547,6 +604,32 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
         measure = jnp.sum((start - end) ** 2 / inverse_mass_diag, axis=-1)
         return measure / trajectory_length * acceptance
 
+    def _print_diagnose_info(self, mcmc_params, info, elapsed):
+        """NUTS diagnostics for one level: step sizes, leapfrog length,
+        acceptance rate and divergent-transition fraction."""
+        step_size = np.asarray(mcmc_params["step_size"])
+        steps = np.asarray(info.num_integration_steps)
+        acceptance = np.asarray(info.acceptance_rate)
+        divergences = np.asarray(info.is_divergent)
+        print(
+            f"  step_size   mean {step_size.mean():.4g}  "
+            f"med {np.median(step_size):.4g}  "
+            f"[{step_size.min():.4g}, {step_size.max():.4g}]  "
+            f"log10-span {np.log10(step_size.max() / step_size.min()):.2f}"
+        )
+        print(
+            f"  leapfrog    mean {steps.mean():.1f}  "
+            f"med {np.median(steps):.1f}  max {steps.max():.0f}"
+        )
+        print(
+            f"  acceptance  mean {acceptance.mean():.3f}  "
+            f"med {np.median(acceptance):.3f}"
+        )
+        print(
+            f"  divergences {100.0 * divergences.mean():.2f}%  "
+            f"({elapsed:.2f}s)"
+        )
+
 
 class BlackjaxSMCwithIRMH(_TunedAdaptiveTemperedSMC):
     """Adaptive-tempered SMC with an independent MH mutation kernel.
@@ -577,26 +660,22 @@ class BlackjaxSMCwithIRMH(_TunedAdaptiveTemperedSMC):
         Number of SMC particles.  Default is 4096.
     target_ess : float, optional
         Target ESS ratio of the adaptive tempering schedule.  Default is 0.5.
-    max_num_moves : int, optional
-        Upper bound on the number of mutation rounds per tempering level.
-        Default is 100.
-    correlation_threshold : float, optional
-        Lag-1 autocorrelation threshold of the mutation stopping rule.
-        Default is 0.1.
-    min_correlated_fraction : float, optional
-        Fraction of components allowed to stay correlated before the
-        mutation rounds stop.  Default is 0.3.
+    num_mcmc_steps : int, optional
+        Fixed number of mutation rounds per tempering level.  Default is 100.
     batch_size : int, optional
         Number of particles processed per sequential batch when positive.
         ``0`` (default) keeps the plain ``jax.vmap`` behaviour.  A positive
         value bounds the peak memory of the likelihood intermediates and the
         mutation updates, at the cost of cross-batch parallelism.
+    show_progress : bool, optional
+        When True, wrap each level's mutation in
+        :func:`blackjax.progress_bar` (requires the optional ``jaxtap``
+        package) and print per-level diagnostics (temperature, ESS and the
+        acceptance / proposal-scale statistics below).  Default is False.
     covariance_regularization : float, optional
         Diagonal regularization added to the fitted proposal covariance.
         Default is 1e-6.
     """
-
-    _DEFAULT_MAX_MOVES = 100
 
     def __init__(
         self,
@@ -607,10 +686,9 @@ class BlackjaxSMCwithIRMH(_TunedAdaptiveTemperedSMC):
         rkey_seed: int = 0,
         num_particles: int = 4096,
         target_ess: float = 0.5,
-        max_num_moves: int | None = None,
-        correlation_threshold: float = 0.1,
-        min_correlated_fraction: float = 0.3,
+        num_mcmc_steps: int = 100,
         batch_size: int = 0,
+        show_progress: bool = False,
         covariance_regularization: float = 1e-6,
     ) -> None:
         super().__init__(
@@ -621,10 +699,9 @@ class BlackjaxSMCwithIRMH(_TunedAdaptiveTemperedSMC):
             rkey_seed,
             num_particles,
             target_ess,
-            max_num_moves,
-            correlation_threshold,
-            min_correlated_fraction,
+            num_mcmc_steps,
             batch_size,
+            show_progress,
         )
         self.covariance_regularization = float(covariance_regularization)
 
@@ -678,6 +755,21 @@ class BlackjaxSMCwithIRMH(_TunedAdaptiveTemperedSMC):
         # mutation; no measurement move is needed.
         del key, parameters, tempering_param
         return self._fitted_proposal(particles)
+
+    def _print_diagnose_info(self, mcmc_params, info, elapsed):
+        """IRMH diagnostics for one level: acceptance rate and the proposal
+        scale range."""
+        acceptance = np.asarray(info.acceptance_rate)
+        std = np.sqrt(np.diag(np.asarray(mcmc_params["covariance"][0])))
+        print(
+            f"  acceptance  mean {acceptance.mean():.3f}  "
+            f"med {np.median(acceptance):.3f}"
+        )
+        print(
+            f"  proposal sigma[{std.min():.4g}, {std.max():.4g}]  "
+            f"log10-span {np.log10(std.max() / std.min()):.2f}  "
+            f"({elapsed:.2f}s)"
+        )
 
     def _fitted_proposal(self, particles):
         """Gaussian proposal parameters fitted to the current particle cloud."""
