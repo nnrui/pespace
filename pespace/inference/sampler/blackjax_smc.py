@@ -21,21 +21,26 @@ fixed number of rounds given by ``num_mcmc_steps``.
 
 With ``show_progress=True`` each level's mutation is wrapped in
 :func:`blackjax.progress_bar` (requires the optional ``jaxtap`` package)
-and per-level diagnostics (temperature, ESS and kernel statistics) are
-printed.
+and per-level diagnostics (temperature, tempering increment and kernel
+statistics) are printed.  With ``save_diagnosis=True`` each level's
+mutation and tuning info and the diagnostic figures are stored under
+``outdir/_diagnosis_info/level_{i}_mutate/``.
 """
 
 from functools import partial
 
-import logging
+import os
 import time
-from typing import Callable
+from typing import Callable, NamedTuple
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 from jax.flatten_util import ravel_pytree
 from jax.scipy.special import logsumexp
+import matplotlib.pyplot as plt
+import corner
+import numpy as np
+import h5py
 
 from .base import NumpyroPriorSamplerBase
 from ..utils import map_fn
@@ -52,19 +57,58 @@ try:
         particles_covariance_matrix,
         particles_means,
     )
-except ImportError:
-    logging.error(
+except ImportError as err:
+    raise ImportError(
         "blackjax (with `blackjax.irmh` and `blackjax.smc.tuning`) is not "
         "installed by default, please install blackjax manually."
-    )
-    raise
+    ) from err
 
 __all__ = ["BlackjaxSMCwithNUTS", "BlackjaxSMCwithIRMH"]
+
+
+class NUTSTuneInfo(NamedTuple):
+    """Per-particle tuning diagnostics of the NUTS sampler.
+
+    Returned by :meth:`BlackjaxSMCwithNUTS._tune_mcmc_parameters` with the
+    step sizes before/after the feedback update, the realised performance
+    measure, the unnormalised resampling weights and the probe's
+    evaluation count.  Kernels without per-particle tuning (IRMH) return
+    the empty tuple instead.
+    """
+
+    step_size_previous: jnp.ndarray
+    step_size_current: jnp.ndarray
+    perf_metric: jnp.ndarray
+    weights: jnp.ndarray
+    num_eval: jnp.ndarray
 
 
 def _stack_particles(particles) -> jnp.ndarray:
     """Ravel each particle into a row of an ``(n_particles, dim)`` matrix."""
     return jax.vmap(lambda particle: ravel_pytree(particle)[0])(particles)
+
+
+def _mahal_distance(previous, particles, mcmc_params):
+    """Mahalanobis distance between the pre/post-mutation positions."""
+    start = np.asarray(_stack_particles(previous))
+    end = np.asarray(_stack_particles(particles))
+    inverse_mass_diag = np.asarray(jnp.diag(mcmc_params["inverse_mass_matrix"][0]))
+    return np.sqrt(np.sum((start - end) ** 2 / inverse_mass_diag, axis=-1))
+
+
+def _std_ratio(previous, particles):
+    """Per-dimension ratio of the post/pre-mutation population std.
+
+    Follows the plain-ratio semantics: a zero/zero dimension yields
+    ``nan`` (degenerate before and after) and a positive/zero dimension
+    yields ``inf`` (spread created by the mutation).
+    """
+    start = np.asarray(_stack_particles(previous))
+    end = np.asarray(_stack_particles(particles))
+    std_before = start.std(axis=0)
+    std_after = end.std(axis=0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return std_after / std_before
 
 
 class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
@@ -104,6 +148,7 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         num_mcmc_steps: int = 10,
         batch_size: int = 0,
         show_progress: bool = False,
+        save_diagnosis: bool = False,
     ) -> None:
         super().__init__(likelihood, prior_dict, label, outdir, rkey_seed)
         self.num_particles = int(num_particles)
@@ -111,6 +156,7 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         self.num_mcmc_steps = int(num_mcmc_steps)
         self.batch_size = int(batch_size)
         self.show_progress = bool(show_progress)
+        self.save_diagnosis = bool(save_diagnosis)
         if self.batch_size < 0:
             raise ValueError("batch_size must be non-negative.")
         if self.num_mcmc_steps < 1:
@@ -179,8 +225,29 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
     def _tune_mcmc_parameters(self, key, particles, parameters, tempering_param):
         """Tune the inner kernel parameters before the mutation rounds.
 
-        Returns the tuned ``parameters``; tuning never modifies the
-        particles (any probe move is discarded).
+        Returns the tuned ``parameters`` and the tuning diagnostics
+        ``tune_info`` (for NUTS a :class:`NUTSTuneInfo` namedtuple with
+        the per-particle fields and the probe's evaluation count, the
+        empty tuple for kernels without per-particle tuning); tuning
+        never modifies the particles (any probe move is discarded).
+        """
+        raise NotImplementedError
+
+    def _mutate_eval_counts(self, mutate_info):
+        """Number of log-density and gradient evaluations of one mutation
+        call.
+
+        Implemented by the concrete samplers; ``mutate_info`` is the info
+        pytree returned by the level's mutation call.
+        """
+        raise NotImplementedError
+
+    def _tune_eval_counts(self, tune_info):
+        """Number of log-density and gradient evaluations of the tuning
+        probe, read from ``tune_info``.
+
+        Implemented by the concrete samplers; kernels without a tuning
+        probe (IRMH) report zero counts.
         """
         raise NotImplementedError
 
@@ -206,8 +273,8 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         consumed by the split into the resampling and tuning subkeys;
         nothing is returned for the caller.  Returns the resampled
         particles, the tuned parameters, the new tempering parameter, the
-        updated log-evidence, the tempering increment and the
-        pre-resampling ESS.
+        updated log-evidence, the tempering increment and the tuning
+        diagnostics.
         """
         resample_key, tune_key = jax.random.split(key, 2)
 
@@ -224,7 +291,6 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         delta = dichotomy(fun_to_solve, 0.0, 1.0 - tempering_param)
         tempering_param = tempering_param + delta
         log_weights = delta * loglikelihoods
-        ess = jnp.exp(log_ess(log_weights))
         log_evidence = (
             log_evidence + logsumexp(log_weights) - jnp.log(self.num_particles)
         )
@@ -235,16 +301,16 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         )
         particles = jax.tree.map(lambda p: p[indices], particles)
         mcmc_params = self._resample_mcmc_parameters(mcmc_params, indices)
-        mcmc_params = self._tune_mcmc_parameters(
+        mcmc_params, tune_info = self._tune_mcmc_parameters(
             tune_key, particles, mcmc_params, tempering_param
         )
         return (
             particles,
             mcmc_params,
+            tune_info,
             tempering_param,
             log_evidence,
             delta,
-            ess,
         )
 
     def run(self) -> dict:
@@ -265,13 +331,9 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         )
         particles = self._initial_particles(init_key_1, self.num_particles)
         mcmc_params = self._initial_mcmc_parameters(init_key_2, particles)
-        self._batched_loglikelihood = map_fn(
-            self.loglikelihood_fn, self.batch_size
-        )
+        self._batched_loglikelihood = map_fn(self.loglikelihood_fn, self.batch_size)
         start = time.perf_counter()
-        particles, log_evidence = self._inference_loop(
-            loop_key, particles, mcmc_params
-        )
+        particles, log_evidence = self._inference_loop(loop_key, particles, mcmc_params)
         output = self._finalize(
             particles, log_evidence, runing_time=time.perf_counter() - start
         )
@@ -300,13 +362,18 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         temper_jit = jax.jit(self._temper)
         # ``num_mcmc_steps`` is bound once by ``partial``, so the jitted
         # wrapper needs no ``static_argnums``.
-        mutate_jit = jax.jit(
-            partial(self._mutate, num_mcmc_steps=self.num_mcmc_steps)
-        )
+        mutate_jit = jax.jit(partial(self._mutate, num_mcmc_steps=self.num_mcmc_steps))
 
         tempering_param = 0.0
         log_evidence = 0.0
         level = 0
+        cum_ll = 0
+        cum_grad = 0
+        n_batch = (
+            (self.num_particles + self.batch_size - 1) // self.batch_size
+            if self.batch_size > 0
+            else 1
+        )
         while tempering_param < 1.0:
             level += 1
             start = time.perf_counter()
@@ -318,10 +385,10 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
             (
                 particles,
                 mcmc_params,
+                tune_info,
                 tempering_param,
                 log_evidence,
                 delta,
-                ess,
             ) = temper_jit(
                 temper_key,
                 particles,
@@ -329,48 +396,126 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
                 tempering_param,
                 log_evidence,
             )
+            previous = particles
             if self.show_progress:
-                self._print_level_header(
-                    level, tempering_param, delta, ess, log_evidence
+                print(
+                    f"level {level}: lambda={float(tempering_param):.6g} "
+                    f"(delta={float(delta):.4g})  "
+                    f"logZ {float(log_evidence):.4f}"
                 )
-                with blackjax.progress_bar(
-                    label=f"mutate lambda={float(tempering_param):.4g}"
-                ):
-                    particles, info = mutate_jit(
+                with blackjax.progress_bar(label=f"mutate (n_batch={n_batch})"):
+                    particles, mutate_info = mutate_jit(
                         move_key,
                         particles,
                         mcmc_params,
                         tempering_param,
                     )
+                # temper: one batched likelihood evaluation of all
+                # particles, plus the tuning probe's evaluations.
+                tune_ll, tune_grad = self._tune_eval_counts(tune_info)
+                cum_ll += self.num_particles + tune_ll
+                cum_grad += tune_grad
+                mutate_ll, mutate_grad = self._mutate_eval_counts(mutate_info)
+                cum_ll += mutate_ll
+                cum_grad += mutate_grad
                 self._print_diagnose_info(
-                    mcmc_params, info, time.perf_counter() - start
+                    mcmc_params,
+                    mutate_info,
+                    previous,
+                    particles,
+                    cum_ll,
+                    cum_grad,
+                    time.perf_counter() - start,
                 )
             else:
-                particles, _ = mutate_jit(
+                particles, mutate_info = mutate_jit(
                     move_key,
                     particles,
                     mcmc_params,
                     tempering_param,
                 )
+            if self.save_diagnosis:
+                self._save_diagnosis(
+                    level,
+                    previous,
+                    particles,
+                    mcmc_params,
+                    mutate_info,
+                    tune_info,
+                )
         return particles, log_evidence
 
-    def _print_level_header(
-        self, level, tempering_param, delta, ess, log_evidence
+    def _print_diagnose_info(
+        self,
+        mcmc_params,
+        mutate_info,
+        previous,
+        particles,
+        cum_ll,
+        cum_grad,
+        elapsed,
     ):
-        """Print the common per-level header (level, lambda, delta, ESS, logZ)."""
-        print(
-            f"level {level}: lambda={float(tempering_param):.6g} "
-            f"(delta={float(delta):.4g})  "
-            f"ESS {float(ess):.0f}/{self.num_particles}  "
-            f"logZ {float(log_evidence):.4f}"
-        )
-
-    def _print_diagnose_info(self, mcmc_params, info, elapsed):
         """Print kernel-specific mutation diagnostics for one level.
 
-        Implemented by the concrete samplers; ``info`` is the info pytree
-        returned by the level's mutation call (leaf shape
-        ``(num_particles, num_mcmc_steps)``).
+        Implemented by the concrete samplers; ``mutate_info`` is the info
+        pytree returned by the level's mutation call (leaf shape
+        ``(num_particles, num_mcmc_steps)``), ``previous`` / ``particles``
+        are the pre/post-mutation populations and ``cum_ll`` /
+        ``cum_grad`` the cumulative evaluation counts.
+        """
+        raise NotImplementedError
+
+    def _save_diagnosis(
+        self, level, previous, particles, mcmc_params, mutate_info, tune_info
+    ):
+        """Save the level's mutation and tuning info and figures to disk.
+
+        Creates ``outdir/_diagnosis_info/level_{level}_mutate/`` and stores
+        the mutation info pytree (always a namedtuple, possibly with nested
+        namedtuples) in ``mutate_info.h5`` and, when ``tune_info`` is not
+        the empty tuple, the tuning diagnostics in ``tune_info.h5``
+        (HDF5).  Each pytree is expanded once with
+        ``jax.tree_util.tree_flatten_with_path``; every key-path entry is
+        then a ``GetAttrKey`` field name, which becomes the nested group
+        layout, and only the array leaves become datasets (shapes kept).
+        The kernel-specific figures produced by :meth:`_diagnosis_plots`
+        receive the pre/post-mutation populations, the mutation
+        parameters, the original ``mutate_info`` and ``tune_info``.
+        """
+        level_dir = os.path.join(
+            self.outdir, "_diagnosis_info", f"level_{level}_mutate"
+        )
+        os.makedirs(level_dir, exist_ok=True)
+        leaves, _ = jax.tree_util.tree_flatten_with_path(mutate_info)
+        with h5py.File(os.path.join(level_dir, "mutate_info.h5"), "w") as f:
+            for path, leaf in leaves:
+                names = [entry.name for entry in path]
+                group = f
+                for name in names[:-1]:
+                    group = group.require_group(name)
+                group.create_dataset(names[-1], data=np.asarray(leaf))
+        if tune_info:
+            tune_leaves, _ = jax.tree_util.tree_flatten_with_path(tune_info)
+            with h5py.File(os.path.join(level_dir, "tune_info.h5"), "w") as f:
+                for path, leaf in tune_leaves:
+                    names = [entry.name for entry in path]
+                    group = f
+                    for name in names[:-1]:
+                        group = group.require_group(name)
+                    group.create_dataset(names[-1], data=np.asarray(leaf))
+        self._diagnosis_plots(
+            previous, particles, mcmc_params, mutate_info, tune_info, level_dir
+        )
+
+    def _diagnosis_plots(
+        self, previous, particles, mcmc_params, mutate_info, tune_info, level_dir
+    ):
+        """Draw kernel-specific diagnostic figures into ``level_dir``.
+
+        ``previous`` / ``particles`` are the pre/post-mutation
+        populations, ``mcmc_params`` the mutation parameters,
+        ``mutate_info`` the level's original mutation info namedtuple and
+        ``tune_info`` the tuning diagnostics (or the empty tuple).
         """
         raise NotImplementedError
 
@@ -394,8 +539,7 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         )
 
         sampled = {
-            name: np.asarray(value)
-            for name, value in particles_phy._asdict().items()
+            name: np.asarray(value) for name, value in particles_phy._asdict().items()
         }
         fixed = {
             name: np.full(self.num_particles, value)
@@ -406,17 +550,14 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
             for outputs in self.derived_params
             for name in (outputs if isinstance(outputs, tuple) else (outputs,))
         ]
-        derived = {
-            name: np.asarray(getattr(ll_params, name))
-            for name in derived_names
-        }
+        derived = {name: np.asarray(getattr(ll_params, name)) for name in derived_names}
 
         posterior_samples = {
             "sampled_params": sampled,
             "derived_params": derived,
             "fixed_params": fixed,
         }
-        
+
         return self.format_output(
             posterior_samples, log_likelihoods, log_evidence, runing_time, weights=None
         )
@@ -469,9 +610,16 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
     show_progress : bool, optional
         When True, wrap each level's mutation in
         :func:`blackjax.progress_bar` (requires the optional ``jaxtap``
-        package) and print per-level diagnostics (temperature, ESS and the
-        step-size / leapfrog / acceptance statistics below).  Default is
-        False.
+        package) and print per-level diagnostics (temperature, tempering
+        increment and the step-size / leapfrog / acceptance statistics
+        below).  Default is False.
+    save_diagnosis : bool, optional
+        When True, save each level's full mutation and tuning info and the
+        diagnostic figures under
+        ``outdir/_diagnosis_info/level_{i}_mutate/`` (mutate_info.h5,
+        tune_info.h5, hist_step_size.png, hist_num_integration_steps.png,
+        tune_info.png, particles_Mahal.png and particles_corner.png).
+        Default is False.
     log_step_size_range : tuple, optional
         ``(low, high)`` bounds of the log-uniform distribution the initial
         per-particle step sizes are drawn from (in log space).  Default is
@@ -497,6 +645,7 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
         num_mcmc_steps: int = 10,
         batch_size: int = 0,
         show_progress: bool = False,
+        save_diagnosis: bool = False,
         log_step_size_range: tuple = (jnp.log(1e-3), jnp.log(1.0)),
         tuning_alpha_frac: float = 0.1,
         tuning_sigma_log: float = 0.2,
@@ -512,6 +661,7 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
             num_mcmc_steps,
             batch_size,
             show_progress,
+            save_diagnosis,
         )
         low, high = log_step_size_range
         if not low < high:
@@ -559,18 +709,37 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
     def _tune_mcmc_parameters(self, key, particles, parameters, tempering_param):
         """Tune the inner kernel from one measured MCMC move.
 
-        The move is a pure measurement step: its realised squared-jump
-        measure reweights the particle step sizes, which are resampled
-        first and then jittered multiplicatively in log space (so
-        duplicates receive independent perturbations); the probe particles
-        are discarded and the shared inverse mass matrix is re-estimated
-        from the pre-move particle cloud.  The actual mutation rounds are
-        performed afterwards by ``_mutate`` with ``self.num_mcmc_steps``.
+        The shared inverse mass matrix is re-estimated from the current
+        particle cloud *first*, so that the probe move, its realised
+        squared-jump measure and the subsequent mutation all share the
+        current level's geometry (the previous level's mass matrix would
+        reflect the lower-temperature posterior).  The measure reweights
+        the particle step sizes, which are resampled first and then
+        jittered multiplicatively in log space (so duplicates receive
+        independent perturbations); the probe particles are discarded.
+        The actual mutation rounds are performed afterwards by ``_mutate``
+        with ``self.num_mcmc_steps``.  Returns the tuned parameters
+        together with a :class:`NUTSTuneInfo` namedtuple (pre/post step
+        sizes, realised measure, the unnormalised resampling weights and
+        the probe's evaluation count ``num_eval``).
         """
         move_key, resample_key, perturb_key = jax.random.split(key, 3)
         previous = particles
-        probe, info = self._mutate(move_key, particles, parameters, tempering_param)
-        measure = self._perf_metric(parameters, previous, probe, info)
+        inverse_mass_matrix = inverse_mass_matrix_from_particles(previous)[None, ...]
+        probe_params = {
+            "step_size": parameters["step_size"],
+            "inverse_mass_matrix": inverse_mass_matrix,
+        }
+        probe, probe_info = self._mutate(
+            move_key, previous, probe_params, tempering_param
+        )
+        measure = self._perf_metric(
+            probe_params,
+            previous,
+            probe,
+            probe_info.num_integration_steps,
+            probe_info.acceptance_rate,
+        )
 
         weights = self.tuning_alpha_frac * jnp.mean(measure) + measure
         selection = resampling.systematic(
@@ -583,13 +752,24 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
             self.tuning_sigma_log * jax.random.normal(perturb_key, step_size.shape)
         )
 
-        inverse_mass_matrix = inverse_mass_matrix_from_particles(previous)[None, ...]
+        tune_info = NUTSTuneInfo(
+            step_size_previous=parameters["step_size"],
+            step_size_current=step_size,
+            perf_metric=measure,
+            weights=weights,
+            num_eval=self.num_particles
+            + jnp.sum(
+                probe_info.num_integration_steps
+            ),  # num_particles of ll and grad evaluations in init step
+        )
         return {
             "step_size": step_size,
             "inverse_mass_matrix": inverse_mass_matrix,
-        }
+        }, tune_info
 
-    def _perf_metric(self, parameters, previous, probe, info):
+    def _perf_metric(
+        self, parameters, previous, probe, num_integration_steps, acceptance_rate
+    ):
         """Realised squared-jump measure of a mutation round.
 
         The squared Mahalanobis distance between the pre- and post-mutation
@@ -599,36 +779,165 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
         start = _stack_particles(previous)
         end = _stack_particles(probe)
         inverse_mass_diag = jnp.diag(parameters["inverse_mass_matrix"][0])
-        trajectory_length = jnp.ravel(info.num_integration_steps)
-        acceptance = jnp.ravel(info.acceptance_rate)
+        trajectory_length = jnp.ravel(num_integration_steps)
+        acceptance = jnp.ravel(acceptance_rate)
         measure = jnp.sum((start - end) ** 2 / inverse_mass_diag, axis=-1)
         return measure / trajectory_length * acceptance
 
-    def _print_diagnose_info(self, mcmc_params, info, elapsed):
+    def _mutate_eval_counts(self, mutate_info):
+        """NUTS: one value-and-gradient evaluation per particle for the
+        init, plus one per leapfrog step of every trajectory."""
+        leaps = int(np.asarray(mutate_info.num_integration_steps).sum())
+        return self.num_particles + leaps, self.num_particles + leaps
+
+    def _tune_eval_counts(self, tune_info):
+        """NUTS: the probe's value-and-gradient evaluations (init plus one
+        per leapfrog step), identical for likelihood and gradient."""
+        return int(tune_info.num_eval), int(tune_info.num_eval)
+
+    def _print_diagnose_info(
+        self,
+        mcmc_params,
+        mutate_info,
+        previous,
+        particles,
+        cum_ll,
+        cum_grad,
+        elapsed,
+    ):
         """NUTS diagnostics for one level: step sizes, leapfrog length,
-        acceptance rate and divergent-transition fraction."""
+        acceptance rate, divergent-transition fraction, Mahalanobis
+        distances, per-dimension std ratios and cumulative evaluation
+        counts."""
         step_size = np.asarray(mcmc_params["step_size"])
-        steps = np.asarray(info.num_integration_steps)
-        acceptance = np.asarray(info.acceptance_rate)
-        divergences = np.asarray(info.is_divergent)
+        steps = np.asarray(mutate_info.num_integration_steps)
+        acceptance = np.asarray(mutate_info.acceptance_rate)
+        divergences = np.asarray(mutate_info.is_divergent)
+        mahal = _mahal_distance(previous, particles, mcmc_params)
+        std_ratio = _std_ratio(previous, particles)
         print(
             f"  step_size   mean {step_size.mean():.4g}  "
             f"med {np.median(step_size):.4g}  "
-            f"[{step_size.min():.4g}, {step_size.max():.4g}]  "
-            f"log10-span {np.log10(step_size.max() / step_size.min()):.2f}"
+            f"[{step_size.min():.4g}, {step_size.max():.4g}]"
         )
         print(
-            f"  leapfrog    mean {steps.mean():.1f}  "
-            f"med {np.median(steps):.1f}  max {steps.max():.0f}"
+            f"  leapfrog    mean {steps.mean():.0f}  "
+            f"med {np.median(steps):.0f}  "
+            f"[{steps.min()}, {steps.max()}]"
         )
         print(
             f"  acceptance  mean {acceptance.mean():.3f}  "
             f"med {np.median(acceptance):.3f}"
         )
+        print(f"  divergence  {100.0 * divergences.mean():.1f}%")
         print(
-            f"  divergences {100.0 * divergences.mean():.2f}%  "
-            f"({elapsed:.2f}s)"
+            f"  Mahal       mean {mahal.mean():.4g}  "
+            f"med {np.median(mahal):.4g}  "
+            f"[{mahal.min():.4g}, {mahal.max():.4g}]"
         )
+        print(f"  std ratio   " f"{np.array2string(std_ratio, precision=4)}")
+        print(f"  cum ll      {cum_ll:,}")
+        print(f"  cum grad    {cum_grad:,}")
+        print(f"  ({elapsed:.2f}s)")
+
+    def _diagnosis_plots(
+        self, previous, particles, mcmc_params, mutate_info, tune_info, level_dir
+    ):
+        """NUTS diagnostic figures: step-size and integration-step
+        histograms, the tuning diagnostics figure, the Mahalanobis
+        distance histogram and the pre/post-mutation corner plot."""
+
+        # ``tune_info.step_size_current`` is the level's tuned step sizes
+        # (identical to the step sizes of the mutation parameters).
+        step_size = np.asarray(tune_info.step_size_current)
+        steps = np.asarray(mutate_info.num_integration_steps).ravel()
+
+        fig, ax = plt.subplots()
+        ax.hist(np.log10(step_size), bins=40)
+        ax.set_xlabel("log10 step_size")
+        ax.set_ylabel("counts")
+        ax.set_title("hist log10 step_size")
+        fig.savefig(os.path.join(level_dir, "hist_step_size.png"))
+        plt.close(fig)
+
+        fig, ax = plt.subplots()
+        n_bins = int(steps.max() - steps.min() + 1) if steps.size else 1
+        ax.hist(steps, bins=min(40, n_bins))
+        ax.set_xlabel("num_integration_steps")
+        ax.set_ylabel("counts")
+        ax.set_title("hist num_integration_steps")
+        fig.savefig(os.path.join(level_dir, "hist_num_integration_steps.png"))
+        plt.close(fig)
+
+        step_size_current = np.asarray(tune_info.step_size_current)
+        step_size_previous = np.asarray(tune_info.step_size_previous)
+        perf_metric = np.asarray(tune_info.perf_metric)
+        weights = np.asarray(tune_info.weights)
+        fig, ax = plt.subplots()
+        ax.hist(
+            np.log10(step_size_previous),
+            bins=40,
+            histtype="step",
+            label="step_size_previous",
+        )
+        ax.hist(
+            np.log10(step_size_current),
+            bins=40,
+            histtype="step",
+            label="step_size_current",
+        )
+        ax.set_xlabel("log10 step_size")
+        ax.set_ylabel("counts")
+        ax.legend(loc="upper left")
+        ax2 = ax.twinx()
+        ax2.plot(
+            np.log10(step_size_previous),
+            perf_metric,
+            ".",
+            ms=6,
+            color="tab:green",
+            label="perf_metric",
+        )
+        ax2.plot(
+            np.log10(step_size_previous),
+            weights,
+            "x",
+            ms=6,
+            color="tab:red",
+            label="weights",
+        )
+        ax2.set_ylabel("perf_metric and weights")
+        ax2.legend(loc="upper right")
+        fig.savefig(os.path.join(level_dir, "tune_info.png"))
+        plt.close(fig)
+
+        mahal = _mahal_distance(previous, particles, mcmc_params)
+        fig, ax = plt.subplots()
+        ax.hist(mahal, bins=40)
+        ax.set_xlabel("Mahalanobis distance")
+        ax.set_ylabel("counts")
+        ax.set_title("Mahalanobis distance after mutation")
+        fig.savefig(os.path.join(level_dir, "particles_Mahal.png"))
+        plt.close(fig)
+
+        before = np.asarray(_stack_particles(previous))
+        after = np.asarray(_stack_particles(particles))
+        labels = [f"x{i}" for i in range(before.shape[1])]
+        fig = corner.corner(
+            before,
+            labels=labels,
+            color="tab:blue",
+            show_titles=True,
+        )
+        corner.corner(
+            after,
+            labels=labels,
+            color="tab:orange",
+            fig=fig,
+            show_titles=True,
+        )
+        fig.savefig(os.path.join(level_dir, "particles_corner.png"))
+        plt.close(fig)
 
 
 class BlackjaxSMCwithIRMH(_TunedAdaptiveTemperedSMC):
@@ -670,8 +979,15 @@ class BlackjaxSMCwithIRMH(_TunedAdaptiveTemperedSMC):
     show_progress : bool, optional
         When True, wrap each level's mutation in
         :func:`blackjax.progress_bar` (requires the optional ``jaxtap``
-        package) and print per-level diagnostics (temperature, ESS and the
-        acceptance / proposal-scale statistics below).  Default is False.
+        package) and print per-level diagnostics (temperature, tempering
+        increment and the acceptance / proposal-scale statistics below).
+        Default is False.
+    save_diagnosis : bool, optional
+        When True, save each level's full mutation info under
+        ``outdir/_diagnosis_info/level_{i}_mutate/`` (mutate_info.h5;
+        IRMH has no per-particle tuning info, so no tune_info.h5 is
+        written).  No diagnostic figures are drawn yet for IRMH.  Default
+        is False.
     covariance_regularization : float, optional
         Diagonal regularization added to the fitted proposal covariance.
         Default is 1e-6.
@@ -689,6 +1005,7 @@ class BlackjaxSMCwithIRMH(_TunedAdaptiveTemperedSMC):
         num_mcmc_steps: int = 100,
         batch_size: int = 0,
         show_progress: bool = False,
+        save_diagnosis: bool = False,
         covariance_regularization: float = 1e-6,
     ) -> None:
         super().__init__(
@@ -702,6 +1019,7 @@ class BlackjaxSMCwithIRMH(_TunedAdaptiveTemperedSMC):
             num_mcmc_steps,
             batch_size,
             show_progress,
+            save_diagnosis,
         )
         self.covariance_regularization = float(covariance_regularization)
 
@@ -754,12 +1072,34 @@ class BlackjaxSMCwithIRMH(_TunedAdaptiveTemperedSMC):
         # the proposal is fitted from the particles before the level's
         # mutation; no measurement move is needed.
         del key, parameters, tempering_param
-        return self._fitted_proposal(particles)
+        return self._fitted_proposal(particles), ()
 
-    def _print_diagnose_info(self, mcmc_params, info, elapsed):
+    def _tune_eval_counts(self, tune_info):
+        """IRMH: the proposal is fitted without a measurement move, so the
+        tuning probe contributes no evaluations."""
+        del tune_info
+        return 0, 0
+
+    def _mutate_eval_counts(self, mutate_info):
+        """IRMH: one log-density evaluation per particle for the init plus
+        one per mutation round; no gradients."""
+        del mutate_info
+        return self.num_particles * (self.num_mcmc_steps + 1), 0
+
+    def _print_diagnose_info(
+        self,
+        mcmc_params,
+        mutate_info,
+        previous,
+        particles,
+        cum_ll,
+        cum_grad,
+        elapsed,
+    ):
         """IRMH diagnostics for one level: acceptance rate and the proposal
         scale range."""
-        acceptance = np.asarray(info.acceptance_rate)
+        del previous, particles, cum_ll, cum_grad
+        acceptance = np.asarray(mutate_info.acceptance_rate)
         std = np.sqrt(np.diag(np.asarray(mcmc_params["covariance"][0])))
         print(
             f"  acceptance  mean {acceptance.mean():.3f}  "
@@ -770,6 +1110,12 @@ class BlackjaxSMCwithIRMH(_TunedAdaptiveTemperedSMC):
             f"log10-span {np.log10(std.max() / std.min()):.2f}  "
             f"({elapsed:.2f}s)"
         )
+
+    def _diagnosis_plots(
+        self, previous, particles, mcmc_params, mutate_info, tune_info, level_dir
+    ):
+        """Placeholder: no IRMH diagnostic figures implemented yet."""
+        del previous, particles, mcmc_params, mutate_info, tune_info, level_dir
 
     def _fitted_proposal(self, particles):
         """Gaussian proposal parameters fitted to the current particle cloud."""

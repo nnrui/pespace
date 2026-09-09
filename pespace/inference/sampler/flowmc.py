@@ -456,12 +456,9 @@ class FlowMCSampler(NumpyroPriorSamplerBase):
             self.likelihood.log_likelihood, self.likelihood_batch_size
         )(ll_params)
 
-        sampled = {
-            name: np.asarray(value) for name, value in x_batch._asdict().items()
-        }
+        sampled = {name: np.asarray(value) for name, value in x_batch._asdict().items()}
         fixed = {
-            name: np.full(n_samples, value)
-            for name, value in self.fixed_params.items()
+            name: np.full(n_samples, value) for name, value in self.fixed_params.items()
         }
         derived_names = [
             name

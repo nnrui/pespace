@@ -119,7 +119,6 @@ class LikelihoodBilbyInterfaceTaichi(Likelihood):
         return logl
 
 
-
 class LikelihoodBilbyInterfaceJax(WhittleLikelihoodJax, Likelihood):
     """Bilby-compatible likelihood class using the jax backend.
 
