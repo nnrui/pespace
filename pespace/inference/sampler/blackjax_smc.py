@@ -10,7 +10,9 @@ at every tempering level:
   bijections and the inverse mapping back to physical parameters are handled
   by the base class).  The per-particle ``step_size`` is tuned with a
   feedback scheme based on the realised squared-jump distance, and the shared
-  ``inverse_mass_matrix`` is re-estimated from the particle variance.
+  dense ``inverse_mass_matrix`` is re-estimated as the regularized covariance
+  of the particle cloud (blackjax convention: the matrix enters the kinetic
+  energy directly).
 - :class:`BlackjaxSMCwithIRMH` mutates the particles with an independent
   Metropolis-Hastings kernel directly in the physical parameter space; the
   Gaussian proposal ``mean`` / ``covariance`` are re-fitted to the particle
@@ -53,7 +55,6 @@ try:
     from blackjax.smc.from_mcmc import unshared_parameters_and_step_fn
     from blackjax.smc.solver import dichotomy
     from blackjax.smc.tuning.from_particles import (
-        inverse_mass_matrix_from_particles,
         particles_covariance_matrix,
         particles_means,
     )
@@ -88,12 +89,17 @@ def _stack_particles(particles) -> jnp.ndarray:
     return jax.vmap(lambda particle: ravel_pytree(particle)[0])(particles)
 
 
-def _mahal_distance(previous, particles, mcmc_params):
-    """Mahalanobis distance between the pre/post-mutation positions."""
-    start = np.asarray(_stack_particles(previous))
-    end = np.asarray(_stack_particles(particles))
-    inverse_mass_diag = np.asarray(jnp.diag(mcmc_params["inverse_mass_matrix"][0]))
-    return np.sqrt(np.sum((start - end) ** 2 / inverse_mass_diag, axis=-1))
+def _square_mahal_distance(diff, inverse_mass_matrix):
+    """Squared classical Mahalanobis distance per row, ``dq^T A^{-1} dq``.
+
+    The ``inverse_mass_matrix`` ``A`` (the particle covariance, in blackjax's
+    convention) is inverted, so the distance is normalized by the cloud's
+    per-direction scales.  ``diff`` has shape ``(n, d)`` and ``A`` shape
+    ``(d, d)``; works with both JAX and NumPy arrays (used by the NUTS
+    tuning measure inside JIT and by the host-side diagnostics).
+    """
+    solved = jnp.linalg.solve(inverse_mass_matrix, diff.T).T  # A^{-1} diff
+    return jnp.einsum("ni,ni->n", diff, solved)
 
 
 def _std_ratio(previous, particles):
@@ -109,6 +115,25 @@ def _std_ratio(previous, particles):
     std_after = end.std(axis=0)
     with np.errstate(divide="ignore", invalid="ignore"):
         return std_after / std_before
+
+
+def _full_inverse_mass_matrix(particles, dim, regularization=1e-6):
+    """Dense inverse mass matrix from the regularized particle covariance.
+
+    Blackjax's ``inverse_mass_matrix`` parameter enters the kinetic energy
+    as ``K(p) = 1/2 p^T A p`` with momentum ``p ~ N(0, A^{-1})``, so the
+    optimal value for a cloud with covariance ``Sigma`` is ``A = Sigma``
+    itself (no inversion); blackjax's own ``mass_matrix_adaptation`` and
+    ``inverse_mass_matrix_from_particles`` both return the covariance under
+    the same name.  The ridge regularization keeps the estimate positive
+    definite for the internal factorization when the cloud degenerates
+    (e.g. duplicated particles after resampling).  The ``(1, d, d)``
+    leading singleton axis keeps the SMC parameter-sharing convention
+    (parameters with ``shape[0] == 1`` are shared across chains).
+    """
+    covariance = particles_covariance_matrix(particles)
+    covariance = covariance + regularization * jnp.eye(dim)
+    return covariance[None, ...]
 
 
 class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
@@ -571,13 +596,14 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
     prior bijections and the inverse transform back to physical parameters
     are handled by the base class).
 
-    At every tempering level the shared ``inverse_mass_matrix`` is
-    re-estimated from the particle variance, and the per-particle
-    ``step_size`` is updated by a feedback scheme from one measured MCMC
-    move at the level's temperature (squared Mahalanobis distance divided
-    by the trajectory length and scaled by the acceptance rate): the step
-    sizes are resampled by that measure and then jittered multiplicatively
-    in log space.
+    At every tempering level the shared dense ``inverse_mass_matrix`` is
+    re-estimated as the regularized covariance of the particle cloud
+    (blackjax convention: the matrix enters the kinetic energy directly),
+    and the per-particle ``step_size`` is updated by a feedback scheme from
+    one measured MCMC move at the level's temperature (squared metric
+    distance divided by the trajectory length and scaled by
+    the acceptance rate): the step sizes are resampled by that measure and
+    then jittered multiplicatively in log space.
 
     Parameters
     ----------
@@ -624,6 +650,11 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
         ``(low, high)`` bounds of the log-uniform distribution the initial
         per-particle step sizes are drawn from (in log space).  Default is
         ``(log 1e-4, log 1.0)``.
+    imm_regularization : float, optional
+        Diagonal ridge regularization added to the particle covariance
+        before it is used as the dense inverse mass matrix (no inversion
+        is applied; blackjax uses the covariance directly).  Default is
+        1e-6.
     tuning_alpha_frac : float, optional
         Floor of the reweighting measure in the step-size feedback tuning,
         expressed as a fraction of the mean realised measure (keeps the
@@ -647,6 +678,7 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
         show_progress: bool = False,
         save_diagnosis: bool = False,
         log_step_size_range: tuple = (jnp.log(1e-3), jnp.log(1.0)),
+        imm_regularization: float = 1e-6,
         tuning_alpha_frac: float = 0.1,
         tuning_sigma_log: float = 0.2,
     ) -> None:
@@ -669,6 +701,7 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
                 "log_step_size_range must be a (low, high) tuple with low < high."
             )
         self.log_step_size_range = (float(low), float(high))
+        self.imm_regularization = float(imm_regularization)
         self.tuning_alpha_frac = float(tuning_alpha_frac)
         self.tuning_sigma_log = float(tuning_sigma_log)
 
@@ -693,7 +726,9 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
             minval=low,
             maxval=high,
         )
-        inverse_mass_matrix = inverse_mass_matrix_from_particles(particles)[None, ...]
+        inverse_mass_matrix = _full_inverse_mass_matrix(
+            particles, self._dim, self.imm_regularization
+        )
         return {
             "step_size": jnp.exp(log_step_size),
             "inverse_mass_matrix": inverse_mass_matrix,
@@ -725,7 +760,9 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
         """
         move_key, resample_key, perturb_key = jax.random.split(key, 3)
         previous = particles
-        inverse_mass_matrix = inverse_mass_matrix_from_particles(previous)[None, ...]
+        inverse_mass_matrix = _full_inverse_mass_matrix(
+            previous, self._dim, self.imm_regularization
+        )
         probe_params = {
             "step_size": parameters["step_size"],
             "inverse_mass_matrix": inverse_mass_matrix,
@@ -772,17 +809,20 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
     ):
         """Realised squared-jump measure of a mutation round.
 
-        The squared Mahalanobis distance between the pre- and post-mutation
-        positions is divided by the NUTS trajectory length and scaled by the
-        acceptance rate.
+        The squared classical Mahalanobis distance between the pre- and
+        post-mutation positions (:func:`_square_mahal_distance`, the
+        quadratic form with the *inverse* of the dense inverse mass matrix)
+        is divided by the NUTS trajectory length and scaled by the
+        acceptance rate.  The trajectory length is floored at 1 and the
+        measure is NaN-guarded so the tuning weights stay finite.
         """
         start = _stack_particles(previous)
         end = _stack_particles(probe)
-        inverse_mass_diag = jnp.diag(parameters["inverse_mass_matrix"][0])
-        trajectory_length = jnp.ravel(num_integration_steps)
+        inverse_mass_matrix = parameters["inverse_mass_matrix"][0]
+        trajectory_length = jnp.maximum(jnp.ravel(num_integration_steps), 1)
         acceptance = jnp.ravel(acceptance_rate)
-        measure = jnp.sum((start - end) ** 2 / inverse_mass_diag, axis=-1)
-        return measure / trajectory_length * acceptance
+        measure = _square_mahal_distance(start - end, inverse_mass_matrix)
+        return jnp.nan_to_num(measure) / trajectory_length * acceptance
 
     def _mutate_eval_counts(self, mutate_info):
         """NUTS: one value-and-gradient evaluation per particle for the
@@ -813,7 +853,12 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
         steps = np.asarray(mutate_info.num_integration_steps)
         acceptance = np.asarray(mutate_info.acceptance_rate)
         divergences = np.asarray(mutate_info.is_divergent)
-        mahal = _mahal_distance(previous, particles, mcmc_params)
+        start = np.asarray(_stack_particles(previous))
+        end = np.asarray(_stack_particles(particles))
+        inverse_mass_matrix = np.asarray(mcmc_params["inverse_mass_matrix"][0])
+        mahal = np.sqrt(
+            np.asarray(_square_mahal_distance(start - end, inverse_mass_matrix))
+        )
         std_ratio = _std_ratio(previous, particles)
         print(
             f"  step_size   mean {step_size.mean():.4g}  "
@@ -911,7 +956,12 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
         fig.savefig(os.path.join(level_dir, "tune_info.png"))
         plt.close(fig)
 
-        mahal = _mahal_distance(previous, particles, mcmc_params)
+        start = np.asarray(_stack_particles(previous))
+        end = np.asarray(_stack_particles(particles))
+        inverse_mass_matrix = np.asarray(mcmc_params["inverse_mass_matrix"][0])
+        mahal = np.sqrt(
+            np.asarray(_square_mahal_distance(start - end, inverse_mass_matrix))
+        )
         fig, ax = plt.subplots()
         ax.hist(mahal, bins=40)
         ax.set_xlabel("Mahalanobis distance")
