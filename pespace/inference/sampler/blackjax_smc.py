@@ -8,11 +8,11 @@ at every tempering level:
 - :class:`BlackjaxSMCwithNUTS` mutates the particles with NUTS on the
   unconstrained space prepared by :class:`NumpyroPriorSamplerBase` (the prior
   bijections and the inverse mapping back to physical parameters are handled
-  by the base class).  The per-particle ``step_size`` is tuned with a
-  feedback scheme based on the realised squared-jump distance, and the shared
-  dense ``inverse_mass_matrix`` is re-estimated as the regularized covariance
-  of the particle cloud (blackjax convention: the matrix enters the kinetic
-  energy directly).
+  by the base class).  Following SHARPy, a fixed shared ``step_size`` is
+  used, and the per-particle dense ``inverse_mass_matrix`` is re-computed at
+  every level as the inverse of the SoftAbs-regularized negative Hessian of
+  the tempered log-posterior at each particle's position (position-dependent
+  Riemannian metric, frozen along each NUTS trajectory).
 - :class:`BlackjaxSMCwithIRMH` mutates the particles with an independent
   Metropolis-Hastings kernel directly in the physical parameter space; the
   Gaussian proposal ``mean`` / ``covariance`` are re-fitted to the particle
@@ -33,7 +33,7 @@ from functools import partial
 
 import os
 import time
-from typing import Callable, NamedTuple
+from typing import Callable
 
 import jax
 import jax.numpy as jnp
@@ -67,38 +67,22 @@ except ImportError as err:
 __all__ = ["BlackjaxSMCwithNUTS", "BlackjaxSMCwithIRMH"]
 
 
-class NUTSTuneInfo(NamedTuple):
-    """Per-particle tuning diagnostics of the NUTS sampler.
-
-    Returned by :meth:`BlackjaxSMCwithNUTS._tune_mcmc_parameters` with the
-    step sizes before/after the feedback update, the realised performance
-    measure, the unnormalised resampling weights and the probe's
-    evaluation count.  Kernels without per-particle tuning (IRMH) return
-    the empty tuple instead.
-    """
-
-    step_size_previous: jnp.ndarray
-    step_size_current: jnp.ndarray
-    perf_metric: jnp.ndarray
-    weights: jnp.ndarray
-    num_eval: jnp.ndarray
-
-
 def _stack_particles(particles) -> jnp.ndarray:
     """Ravel each particle into a row of an ``(n_particles, dim)`` matrix."""
     return jax.vmap(lambda particle: ravel_pytree(particle)[0])(particles)
 
 
 def _square_mahal_distance(diff, inverse_mass_matrix):
-    """Squared classical Mahalanobis distance per row, ``dq^T A^{-1} dq``.
+    """Squared distance per row under the mass metric, ``dq^T M dq``.
 
-    The ``inverse_mass_matrix`` ``A`` (the particle covariance, in blackjax's
-    convention) is inverted, so the distance is normalized by the cloud's
-    per-direction scales.  ``diff`` has shape ``(n, d)`` and ``A`` shape
-    ``(d, d)``; works with both JAX and NumPy arrays (used by the NUTS
-    tuning measure inside JIT and by the host-side diagnostics).
+    ``M = A^{-1}`` with ``A`` the per-particle blackjax
+    ``inverse_mass_matrix`` of shape ``(n, d, d)`` (the quadratic form
+    entering the kinetic energy); for a covariance ``A`` this is the
+    classical Mahalanobis distance.  ``diff`` has shape ``(n, d)``.  The
+    batched linear solve applies the metric without inverting every
+    particle's matrix.
     """
-    solved = jnp.linalg.solve(inverse_mass_matrix, diff.T).T  # A^{-1} diff
+    solved = jnp.linalg.solve(inverse_mass_matrix, diff[..., None])[..., 0]
     return jnp.einsum("ni,ni->n", diff, solved)
 
 
@@ -117,23 +101,32 @@ def _std_ratio(previous, particles):
         return std_after / std_before
 
 
-def _full_inverse_mass_matrix(particles, dim, regularization=1e-6):
-    """Dense inverse mass matrix from the regularized particle covariance.
+def _hessian_matrix(fn, position) -> jnp.ndarray:
+    """Dense ``(d, d)`` Hessian of a scalar pytree function.
 
-    Blackjax's ``inverse_mass_matrix`` parameter enters the kinetic energy
-    as ``K(p) = 1/2 p^T A p`` with momentum ``p ~ N(0, A^{-1})``, so the
-    optimal value for a cloud with covariance ``Sigma`` is ``A = Sigma``
-    itself (no inversion); blackjax's own ``mass_matrix_adaptation`` and
-    ``inverse_mass_matrix_from_particles`` both return the covariance under
-    the same name.  The ridge regularization keeps the estimate positive
-    definite for the internal factorization when the cloud degenerates
-    (e.g. duplicated particles after resampling).  The ``(1, d, d)``
-    leading singleton axis keeps the SMC parameter-sharing convention
-    (parameters with ``shape[0] == 1`` are shared across chains).
+    The position is flattened once with ``ravel_pytree`` and the Hessian is
+    taken in the flattened coordinates, so the result is directly an
+    ``(d, d)`` array (no pytree-of-pytrees assembly) in the same ordering
+    ``ravel_pytree`` uses for the momentum -- the kernel's parameter
+    ordering is matched by construction.
     """
-    covariance = particles_covariance_matrix(particles)
-    covariance = covariance + regularization * jnp.eye(dim)
-    return covariance[None, ...]
+    flat_position, unflatten = ravel_pytree(position)
+    return jax.hessian(lambda flat: fn(unflatten(flat)))(flat_position)
+
+
+def _softabs_metric(hessian, alpha):
+    """SoftAbs-regularized metric of the Hessian (Betancourt 2013).
+
+    ``G = V diag(lambda_i / tanh(alpha * lambda_i)) V^T`` with
+    ``hessian = V diag(lambda_i) V^T``.  The eigenvalues are smoothed to
+    ``|lambda_i|`` for ``|lambda_i| >> 1 / alpha`` and to the finite floor
+    ``1 / alpha`` near zero, so the metric is positive definite and
+    invertible everywhere, including saddle and negative-curvature regions
+    of the log-posterior.
+    """
+    eigenvalues, eigenvectors = jnp.linalg.eigh(hessian)
+    soft_eigenvalues = eigenvalues / jnp.tanh(alpha * eigenvalues)
+    return eigenvectors @ jnp.diag(soft_eigenvalues) @ eigenvectors.T
 
 
 class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
@@ -169,7 +162,7 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         outdir=None,
         rkey_seed: int = 0,
         num_particles: int = 4096,
-        target_ess: float = 0.5,
+        target_ess: float = 0.9,
         num_mcmc_steps: int = 10,
         batch_size: int = 0,
         show_progress: bool = False,
@@ -209,8 +202,7 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
 
         Runs ``num_mcmc_steps`` inner-kernel steps for every particle and
         keeps only the final states (blackjax's ``update_and_take_last``).
-        ``num_mcmc_steps=1`` is used by the tuning probe moves; the
-        tempering loop passes the level's full ``self.num_mcmc_steps``.
+        The tempering loop passes the level's full ``self.num_mcmc_steps``.
         """
 
         def tempered_logposterior(position):
@@ -239,22 +231,15 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         """Draw the initial particle population."""
         raise NotImplementedError
 
-    def _initial_mcmc_parameters(self, key, particles):
-        """Initial inner-kernel parameters."""
-        raise NotImplementedError
+    def _tune_mcmc_parameters(self, key, particles, tempering_param):
+        """Build the inner kernel parameters for the mutation rounds.
 
-    def _resample_mcmc_parameters(self, parameters, indices):
-        """Resample the per-particle kernel parameters with their particles."""
-        raise NotImplementedError
-
-    def _tune_mcmc_parameters(self, key, particles, parameters, tempering_param):
-        """Tune the inner kernel parameters before the mutation rounds.
-
-        Returns the tuned ``parameters`` and the tuning diagnostics
-        ``tune_info`` (for NUTS a :class:`NUTSTuneInfo` namedtuple with
-        the per-particle fields and the probe's evaluation count, the
-        empty tuple for kernels without per-particle tuning); tuning
-        never modifies the particles (any probe move is discarded).
+        Called after the resampling, so the parameters are re-fitted from
+        the resampled particle cloud at every level.  Returns the tuned
+        ``parameters`` and the tuning diagnostics ``tune_info`` (the empty
+        tuple for both current kernels: NUTS recomputes its per-particle
+        mass matrices, IRMH refits its proposal); tuning never modifies
+        the particles.
         """
         raise NotImplementedError
 
@@ -272,7 +257,7 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         probe, read from ``tune_info``.
 
         Implemented by the concrete samplers; kernels without a tuning
-        probe (IRMH) report zero counts.
+        probe report zero counts.
         """
         raise NotImplementedError
 
@@ -283,7 +268,6 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         self,
         key,
         particles,
-        mcmc_params,
         tempering_param,
         log_evidence,
     ):
@@ -293,8 +277,10 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         particle likelihoods (evaluated by the instance-level
         ``_batched_loglikelihood``, bound by :meth:`run`), accumulates the
         normalising-constant increment into the log-evidence,
-        systematic-resamples the particles and the per-particle kernel
-        parameters, and re-tunes the inner kernel.  The input RNG key is
+        systematic-resamples the particles and re-tunes the inner kernel
+        from the resampled cloud (both current kernels re-fit all their
+        kernel parameters there, so no per-particle parameter resampling
+        is needed).  The input RNG key is
         consumed by the split into the resampling and tuning subkeys;
         nothing is returned for the caller.  Returns the resampled
         particles, the tuned parameters, the new tempering parameter, the
@@ -325,9 +311,8 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
             self.num_particles,
         )
         particles = jax.tree.map(lambda p: p[indices], particles)
-        mcmc_params = self._resample_mcmc_parameters(mcmc_params, indices)
         mcmc_params, tune_info = self._tune_mcmc_parameters(
-            tune_key, particles, mcmc_params, tempering_param
+            tune_key, particles, tempering_param
         )
         return (
             particles,
@@ -351,21 +336,18 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
             log-evidence ``log_evidence`` and normalized importance
             ``weights``.  The result is also saved to ``outdir/{label}.json``.
         """
-        self.rng_key, init_key_1, init_key_2, loop_key = jax.random.split(
-            self.rng_key, 4
-        )
-        particles = self._initial_particles(init_key_1, self.num_particles)
-        mcmc_params = self._initial_mcmc_parameters(init_key_2, particles)
+        self.rng_key, init_key, loop_key = jax.random.split(self.rng_key, 3)
+        particles = self._initial_particles(init_key, self.num_particles)
         self._batched_loglikelihood = map_fn(self.loglikelihood_fn, self.batch_size)
         start = time.perf_counter()
-        particles, log_evidence = self._inference_loop(loop_key, particles, mcmc_params)
+        particles, log_evidence = self._inference_loop(loop_key, particles)
         output = self._finalize(
             particles, log_evidence, runing_time=time.perf_counter() - start
         )
         self._save_output(output)
         return output
 
-    def _inference_loop(self, key, particles, mcmc_params):
+    def _inference_loop(self, key, particles):
         """Reweight-resample-mutate loop, terminating at tempering parameter 1.
 
         A plain Python ``while`` drives the levels; each level runs the
@@ -417,7 +399,6 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
             ) = temper_jit(
                 temper_key,
                 particles,
-                mcmc_params,
                 tempering_param,
                 log_evidence,
             )
@@ -596,14 +577,12 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
     prior bijections and the inverse transform back to physical parameters
     are handled by the base class).
 
-    At every tempering level the shared dense ``inverse_mass_matrix`` is
-    re-estimated as the regularized covariance of the particle cloud
-    (blackjax convention: the matrix enters the kinetic energy directly),
-    and the per-particle ``step_size`` is updated by a feedback scheme from
-    one measured MCMC move at the level's temperature (squared metric
-    distance divided by the trajectory length and scaled by
-    the acceptance rate): the step sizes are resampled by that measure and
-    then jittered multiplicatively in log space.
+    At every tempering level the per-particle dense ``inverse_mass_matrix``
+    is re-computed as the inverse of the SoftAbs-regularized negative
+    Hessian of the tempered log-posterior evaluated at each particle's
+    position (a position-dependent Riemannian metric, frozen along each
+    NUTS trajectory, as in SHARPy).  A single fixed ``step_size`` is used
+    for all particles and levels; no step-size tuning is performed.
 
     Parameters
     ----------
@@ -625,14 +604,16 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
     num_particles : int, optional
         Number of SMC particles.  Default is 4096.
     target_ess : float, optional
-        Target ESS ratio of the adaptive tempering schedule.  Default is 0.5.
+        Target ESS ratio of the adaptive tempering schedule.  Default is 0.9.
     num_mcmc_steps : int, optional
-        Fixed number of mutation rounds per tempering level.  Default is 10.
+        Fixed number of mutation rounds per tempering level.  Default is 1.
     batch_size : int, optional
         Number of particles processed per sequential batch when positive.
         ``0`` (default) keeps the plain ``jax.vmap`` behaviour.  A positive
         value bounds the peak memory of the likelihood intermediates and the
-        mutation updates, at the cost of cross-batch parallelism.
+        mutation updates, at the cost of cross-batch parallelism.  The
+        per-particle Hessian tuning is chunked separately via
+        ``hessian_batch_size``.
     show_progress : bool, optional
         When True, wrap each level's mutation in
         :func:`blackjax.progress_bar` (requires the optional ``jaxtap``
@@ -640,28 +621,36 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
         increment and the step-size / leapfrog / acceptance statistics
         below).  Default is False.
     save_diagnosis : bool, optional
-        When True, save each level's full mutation and tuning info and the
-        diagnostic figures under
-        ``outdir/_diagnosis_info/level_{i}_mutate/`` (mutate_info.h5,
-        tune_info.h5, hist_step_size.png, hist_num_integration_steps.png,
-        tune_info.png, particles_Mahal.png and particles_corner.png).
+        When True, save each level's full mutation info and the diagnostic
+        figures under ``outdir/_diagnosis_info/level_{i}_mutate/``
+        (mutate_info.h5, hist_num_integration_steps.png, particles_Mahal.png
+        and particles_corner.png; no per-particle tuning info is written).
         Default is False.
-    log_step_size_range : tuple, optional
-        ``(low, high)`` bounds of the log-uniform distribution the initial
-        per-particle step sizes are drawn from (in log space).  Default is
-        ``(log 1e-4, log 1.0)``.
-    imm_regularization : float, optional
-        Diagonal ridge regularization added to the particle covariance
-        before it is used as the dense inverse mass matrix (no inversion
-        is applied; blackjax uses the covariance directly).  Default is
-        1e-6.
-    tuning_alpha_frac : float, optional
-        Floor of the reweighting measure in the step-size feedback tuning,
-        expressed as a fraction of the mean realised measure (keeps the
-        floor a non-dominant term).  Default is 0.1.
-    tuning_sigma_log : float, optional
-        Log-space perturbation scale applied to the resampled step sizes.
-        Default is 0.2.
+    step_size : float, optional
+        Fixed NUTS step size shared by all particles and levels (no
+        step-size tuning is performed).  Default is 0.2.
+    softabs_alpha : float, optional
+        SoftAbs regularization parameter of the position-dependent metric
+        (Betancourt 2013): the metric eigenvalues are
+        ``lambda / tanh(alpha * lambda)``, so near-flat directions get a
+        finite mass ``1 / alpha`` and the metric stays positive definite
+        everywhere.  Default is 0.3.
+    hessian_batch_size : int, optional
+        Number of particles per sequential chunk when the per-particle
+        Hessians of the mass-matrix tuning are evaluated.  The Hessian
+        evaluation is far more memory-hungry than a plain likelihood
+        evaluation (roughly ``dim`` forward tangents are materialised per
+        particle), so it is chunked separately from ``batch_size``: ``0``
+        keeps the plain ``jax.vmap`` behaviour and a positive value caps
+        the chunk (and hence the peak memory) of the tuning evaluation.
+        Lower it when the GPU runs out of memory.  Default is 32.
+    max_num_doublings : int, optional
+        Maximum number of trajectory doublings of the NUTS kernel (at most
+        ``2**max_num_doublings`` leapfrog steps per trajectory).  Default
+        is 7.
+    divergence_threshold : int, optional
+        Absolute energy error above which a transition is flagged as
+        divergent.  Default is 100.
     """
 
     def __init__(
@@ -672,15 +661,16 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
         outdir=None,
         rkey_seed: int = 0,
         num_particles: int = 4096,
-        target_ess: float = 0.5,
-        num_mcmc_steps: int = 10,
+        target_ess: float = 0.9,
+        num_mcmc_steps: int = 1,
         batch_size: int = 0,
         show_progress: bool = False,
         save_diagnosis: bool = False,
-        log_step_size_range: tuple = (jnp.log(1e-3), jnp.log(1.0)),
-        imm_regularization: float = 1e-6,
-        tuning_alpha_frac: float = 0.1,
-        tuning_sigma_log: float = 0.2,
+        step_size: float = 0.2,
+        softabs_alpha: float = 0.3,
+        hessian_batch_size: int = 32,
+        max_num_doublings: int = 7,
+        divergence_threshold: int = 100,
     ) -> None:
         super().__init__(
             likelihood,
@@ -695,15 +685,15 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
             show_progress,
             save_diagnosis,
         )
-        low, high = log_step_size_range
-        if not low < high:
-            raise ValueError(
-                "log_step_size_range must be a (low, high) tuple with low < high."
-            )
-        self.log_step_size_range = (float(low), float(high))
-        self.imm_regularization = float(imm_regularization)
-        self.tuning_alpha_frac = float(tuning_alpha_frac)
-        self.tuning_sigma_log = float(tuning_sigma_log)
+        if step_size <= 0.0:
+            raise ValueError("step_size must be positive.")
+        if hessian_batch_size < 0:
+            raise ValueError("hessian_batch_size must be non-negative.")
+        self.step_size = float(step_size)
+        self.softabs_alpha = float(softabs_alpha)
+        self.hessian_batch_size = int(hessian_batch_size)
+        self.max_num_doublings = int(max_num_doublings)
+        self.divergence_threshold = int(divergence_threshold)
 
         # NUTS is gradient-based: bind the generic density interface to the
         # unbounded-space functions (setattr keeps strict type checkers quiet
@@ -711,118 +701,50 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
         setattr(self, "logprior_fn", self.logprior_unbounded_fn)
         setattr(self, "loglikelihood_fn", self.loglikelihood_unbounded_fn)
         setattr(self, "logdensity_fn", self.logdensity_unbounded_fn)
-        self._mcmc_step_fn = blackjax.nuts.build_kernel()
+        kernel = blackjax.nuts.build_kernel(
+            divergence_threshold=self.divergence_threshold
+        )
+        self._mcmc_step_fn = partial(kernel, max_num_doublings=self.max_num_doublings)
         self._mcmc_init_fn = blackjax.nuts.init
         self._get_particles_physical = self._to_physical_params
 
     def _initial_particles(self, key, num_particles):
         return self._sample_priors_unbounded(key, (num_particles,))
 
-    def _initial_mcmc_parameters(self, key, particles):
-        low, high = self.log_step_size_range
-        log_step_size = jax.random.uniform(
-            key,
-            (self.num_particles,),
-            minval=low,
-            maxval=high,
-        )
-        inverse_mass_matrix = _full_inverse_mass_matrix(
-            particles, self._dim, self.imm_regularization
-        )
-        return {
-            "step_size": jnp.exp(log_step_size),
-            "inverse_mass_matrix": inverse_mass_matrix,
-        }
+    def _tune_mcmc_parameters(self, key, particles, tempering_param):
+        """Build the per-particle Hessian-based mass matrices.
 
-    def _resample_mcmc_parameters(self, parameters, indices):
-        """Resample the per-particle step sizes with their particles."""
-        return {
-            "step_size": parameters["step_size"][indices],
-            "inverse_mass_matrix": parameters["inverse_mass_matrix"],
-        }
-
-    def _tune_mcmc_parameters(self, key, particles, parameters, tempering_param):
-        """Tune the inner kernel from one measured MCMC move.
-
-        The shared inverse mass matrix is re-estimated from the current
-        particle cloud *first*, so that the probe move, its realised
-        squared-jump measure and the subsequent mutation all share the
-        current level's geometry (the previous level's mass matrix would
-        reflect the lower-temperature posterior).  The measure reweights
-        the particle step sizes, which are resampled first and then
-        jittered multiplicatively in log space (so duplicates receive
-        independent perturbations); the probe particles are discarded.
-        The actual mutation rounds are performed afterwards by ``_mutate``
-        with ``self.num_mcmc_steps``.  Returns the tuned parameters
-        together with a :class:`NUTSTuneInfo` namedtuple (pre/post step
-        sizes, realised measure, the unnormalised resampling weights and
-        the probe's evaluation count ``num_eval``).
+        The per-particle dense ``inverse_mass_matrix`` is
+        ``SoftAbs(-hessian)^{-1}`` of the tempered log-posterior at each
+        (resampled) particle's position (blackjax convention: the
+        quadratic form entering the kinetic energy).  SoftAbs keeps the
+        metric positive definite everywhere and gives near-flat directions
+        a finite mass ``1 / alpha``; the matrix is frozen along each NUTS
+        trajectory, so the standard velocity-Verlet integrator and the
+        detailed-balance argument remain valid.  The evaluation is chunked
+        with ``hessian_batch_size`` to bound the peak memory (one Hessian
+        costs roughly ``dim`` gradient evaluations per particle).  The
+        fixed step size is rebuilt here and no probe move is performed, so
+        the tuning returns the empty tuple as diagnostics.
         """
-        move_key, resample_key, perturb_key = jax.random.split(key, 3)
-        previous = particles
-        inverse_mass_matrix = _full_inverse_mass_matrix(
-            previous, self._dim, self.imm_regularization
-        )
-        probe_params = {
-            "step_size": parameters["step_size"],
-            "inverse_mass_matrix": inverse_mass_matrix,
-        }
-        probe, probe_info = self._mutate(
-            move_key, previous, probe_params, tempering_param
-        )
-        measure = self._perf_metric(
-            probe_params,
-            previous,
-            probe,
-            probe_info.num_integration_steps,
-            probe_info.acceptance_rate,
-        )
+        del key
 
-        weights = self.tuning_alpha_frac * jnp.mean(measure) + measure
-        selection = resampling.systematic(
-            resample_key,
-            weights / jnp.sum(weights),
-            parameters["step_size"].shape[0],
-        )
-        step_size = parameters["step_size"][selection]
-        step_size = step_size * jnp.exp(
-            self.tuning_sigma_log * jax.random.normal(perturb_key, step_size.shape)
-        )
+        def logposterior(position):
+            return self.logprior_fn(position) + tempering_param * self.loglikelihood_fn(
+                position
+            )
 
-        tune_info = NUTSTuneInfo(
-            step_size_previous=parameters["step_size"],
-            step_size_current=step_size,
-            perf_metric=measure,
-            weights=weights,
-            num_eval=self.num_particles
-            + jnp.sum(
-                probe_info.num_integration_steps
-            ),  # num_particles of ll and grad evaluations in init step
-        )
+        def per_particle(position):
+            hessian = _hessian_matrix(logposterior, position)
+            return jnp.linalg.inv(_softabs_metric(-hessian, self.softabs_alpha))
+
+        inverse_mass_matrix = map_fn(per_particle, self.hessian_batch_size)(particles)
         return {
-            "step_size": step_size,
+            # Shared parameter (shape[0] == 1): bound once by the SMC
+            # machinery instead of being mapped per particle.
+            "step_size": jnp.full((1,), self.step_size),
             "inverse_mass_matrix": inverse_mass_matrix,
-        }, tune_info
-
-    def _perf_metric(
-        self, parameters, previous, probe, num_integration_steps, acceptance_rate
-    ):
-        """Realised squared-jump measure of a mutation round.
-
-        The squared classical Mahalanobis distance between the pre- and
-        post-mutation positions (:func:`_square_mahal_distance`, the
-        quadratic form with the *inverse* of the dense inverse mass matrix)
-        is divided by the NUTS trajectory length and scaled by the
-        acceptance rate.  The trajectory length is floored at 1 and the
-        measure is NaN-guarded so the tuning weights stay finite.
-        """
-        start = _stack_particles(previous)
-        end = _stack_particles(probe)
-        inverse_mass_matrix = parameters["inverse_mass_matrix"][0]
-        trajectory_length = jnp.maximum(jnp.ravel(num_integration_steps), 1)
-        acceptance = jnp.ravel(acceptance_rate)
-        measure = _square_mahal_distance(start - end, inverse_mass_matrix)
-        return jnp.nan_to_num(measure) / trajectory_length * acceptance
+        }, ()
 
     def _mutate_eval_counts(self, mutate_info):
         """NUTS: one value-and-gradient evaluation per particle for the
@@ -831,9 +753,11 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
         return self.num_particles + leaps, self.num_particles + leaps
 
     def _tune_eval_counts(self, tune_info):
-        """NUTS: the probe's value-and-gradient evaluations (init plus one
-        per leapfrog step), identical for likelihood and gradient."""
-        return int(tune_info.num_eval), int(tune_info.num_eval)
+        """NUTS: one value evaluation per particle for the level's mass
+        matrices, plus roughly ``dim`` gradient evaluations per particle
+        for the Hessians (``jax.hessian`` is forward-over-reverse)."""
+        del tune_info
+        return self.num_particles, self.num_particles * self._dim
 
     def _print_diagnose_info(
         self,
@@ -845,26 +769,26 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
         cum_grad,
         elapsed,
     ):
-        """NUTS diagnostics for one level: step sizes, leapfrog length,
-        acceptance rate, divergent-transition fraction, Mahalanobis
-        distances, per-dimension std ratios and cumulative evaluation
+        """NUTS diagnostics for one level: the fixed step size, leapfrog
+        length, acceptance rate, divergent-transition fraction, Mahalanobis
+        distances, the fraction of stationary particles (unchanged
+        positions), per-dimension std ratios and cumulative evaluation
         counts."""
-        step_size = np.asarray(mcmc_params["step_size"])
+        # The step size is fixed and shared by all particles and levels.
+        step_size = np.asarray(mcmc_params["step_size"]).item()
         steps = np.asarray(mutate_info.num_integration_steps)
         acceptance = np.asarray(mutate_info.acceptance_rate)
         divergences = np.asarray(mutate_info.is_divergent)
         start = np.asarray(_stack_particles(previous))
         end = np.asarray(_stack_particles(particles))
-        inverse_mass_matrix = np.asarray(mcmc_params["inverse_mass_matrix"][0])
+        inverse_mass_matrix = np.asarray(mcmc_params["inverse_mass_matrix"])
         mahal = np.sqrt(
             np.asarray(_square_mahal_distance(start - end, inverse_mass_matrix))
         )
+        unmoved = int(np.count_nonzero(mahal == 0.0))
         std_ratio = _std_ratio(previous, particles)
-        print(
-            f"  step_size   mean {step_size.mean():.4g}  "
-            f"med {np.median(step_size):.4g}  "
-            f"[{step_size.min():.4g}, {step_size.max():.4g}]"
-        )
+
+        print(f"  step_size   {step_size:.4g}")
         print(
             f"  leapfrog    mean {steps.mean():.0f}  "
             f"med {np.median(steps):.0f}  "
@@ -880,6 +804,10 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
             f"med {np.median(mahal):.4g}  "
             f"[{mahal.min():.4g}, {mahal.max():.4g}]"
         )
+        print(
+            f"  unmoved     {unmoved}/{mahal.size}  "
+            f"({100.0 * unmoved / mahal.size:.1f}%)"
+        )
         print(f"  std ratio   " f"{np.array2string(std_ratio, precision=4)}")
         print(f"  cum ll      {cum_ll:,}")
         print(f"  cum grad    {cum_grad:,}")
@@ -888,22 +816,11 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
     def _diagnosis_plots(
         self, previous, particles, mcmc_params, mutate_info, tune_info, level_dir
     ):
-        """NUTS diagnostic figures: step-size and integration-step
-        histograms, the tuning diagnostics figure, the Mahalanobis
-        distance histogram and the pre/post-mutation corner plot."""
+        """NUTS diagnostic figures: the integration-step histogram, the
+        Mahalanobis distance histogram and the pre/post-mutation corner
+        plot."""
 
-        # ``tune_info.step_size_current`` is the level's tuned step sizes
-        # (identical to the step sizes of the mutation parameters).
-        step_size = np.asarray(tune_info.step_size_current)
         steps = np.asarray(mutate_info.num_integration_steps).ravel()
-
-        fig, ax = plt.subplots()
-        ax.hist(np.log10(step_size), bins=40)
-        ax.set_xlabel("log10 step_size")
-        ax.set_ylabel("counts")
-        ax.set_title("hist log10 step_size")
-        fig.savefig(os.path.join(level_dir, "hist_step_size.png"))
-        plt.close(fig)
 
         fig, ax = plt.subplots()
         n_bins = int(steps.max() - steps.min() + 1) if steps.size else 1
@@ -914,51 +831,9 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
         fig.savefig(os.path.join(level_dir, "hist_num_integration_steps.png"))
         plt.close(fig)
 
-        step_size_current = np.asarray(tune_info.step_size_current)
-        step_size_previous = np.asarray(tune_info.step_size_previous)
-        perf_metric = np.asarray(tune_info.perf_metric)
-        weights = np.asarray(tune_info.weights)
-        fig, ax = plt.subplots()
-        ax.hist(
-            np.log10(step_size_previous),
-            bins=40,
-            histtype="step",
-            label="step_size_previous",
-        )
-        ax.hist(
-            np.log10(step_size_current),
-            bins=40,
-            histtype="step",
-            label="step_size_current",
-        )
-        ax.set_xlabel("log10 step_size")
-        ax.set_ylabel("counts")
-        ax.legend(loc="upper left")
-        ax2 = ax.twinx()
-        ax2.plot(
-            np.log10(step_size_previous),
-            perf_metric,
-            ".",
-            ms=6,
-            color="tab:green",
-            label="perf_metric",
-        )
-        ax2.plot(
-            np.log10(step_size_previous),
-            weights,
-            "x",
-            ms=6,
-            color="tab:red",
-            label="weights",
-        )
-        ax2.set_ylabel("perf_metric and weights")
-        ax2.legend(loc="upper right")
-        fig.savefig(os.path.join(level_dir, "tune_info.png"))
-        plt.close(fig)
-
         start = np.asarray(_stack_particles(previous))
         end = np.asarray(_stack_particles(particles))
-        inverse_mass_matrix = np.asarray(mcmc_params["inverse_mass_matrix"][0])
+        inverse_mass_matrix = np.asarray(mcmc_params["inverse_mass_matrix"])
         mahal = np.sqrt(
             np.asarray(_square_mahal_distance(start - end, inverse_mass_matrix))
         )
@@ -1018,7 +893,7 @@ class BlackjaxSMCwithIRMH(_TunedAdaptiveTemperedSMC):
     num_particles : int, optional
         Number of SMC particles.  Default is 4096.
     target_ess : float, optional
-        Target ESS ratio of the adaptive tempering schedule.  Default is 0.5.
+        Target ESS ratio of the adaptive tempering schedule.  Default is 0.9.
     num_mcmc_steps : int, optional
         Fixed number of mutation rounds per tempering level.  Default is 100.
     batch_size : int, optional
@@ -1051,7 +926,7 @@ class BlackjaxSMCwithIRMH(_TunedAdaptiveTemperedSMC):
         outdir=None,
         rkey_seed: int = 0,
         num_particles: int = 4096,
-        target_ess: float = 0.5,
+        target_ess: float = 0.9,
         num_mcmc_steps: int = 100,
         batch_size: int = 0,
         show_progress: bool = False,
@@ -1110,18 +985,10 @@ class BlackjaxSMCwithIRMH(_TunedAdaptiveTemperedSMC):
     def _initial_particles(self, key, num_particles):
         return self._sample_priors_physical(key, (num_particles,))
 
-    def _initial_mcmc_parameters(self, key, particles):
-        del key
-        return self._fitted_proposal(particles)
-
-    def _resample_mcmc_parameters(self, parameters, indices):
-        del indices
-        return parameters
-
-    def _tune_mcmc_parameters(self, key, particles, parameters, tempering_param):
+    def _tune_mcmc_parameters(self, key, particles, tempering_param):
         # the proposal is fitted from the particles before the level's
         # mutation; no measurement move is needed.
-        del key, parameters, tempering_param
+        del key, tempering_param
         return self._fitted_proposal(particles), ()
 
     def _tune_eval_counts(self, tune_info):
