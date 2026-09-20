@@ -186,9 +186,11 @@ class FlowMCSampler(NumpyroPriorSamplerBase):
         Label of the run, converted to ``str``; also the JSON filename
         (``outdir/{label}.json``).  Default is None (-> ``"None"``).
     outdir : str, optional
-        Output directory for the saved result and the flowMC checkpoint.
-        Default is None, which resolves to an ``outdir_{label}`` directory
-        under the current working directory (created if missing).
+        Output directory for the saved result and the flowMC checkpoint.  It
+        must not exist yet: the base class creates it and refuses to reuse an
+        existing path, so that the results of an earlier run are never
+        overwritten.  Default is None, which resolves to an ``outdir_{label}``
+        directory under the current working directory.
     rkey_seed : int, optional
         Seed for the JAX random number generator key.  Default is 0.
     resource_strategy_bundles : str or ResourceStrategyBundle, optional

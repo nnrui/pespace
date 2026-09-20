@@ -50,6 +50,70 @@ def _build_distribution(spec: dict) -> dist.Distribution:
         )
 
 
+def _validate_prior_dict(prior_dict: dict, required_params: tuple) -> None:
+    """Validate the prior declarations against the likelihood.
+
+    Iterates the dictionary in insertion order and checks that
+
+    (1) every ``'from'`` input of a derived parameter is declared earlier
+        (as a sampled, derived or fixed parameter);
+    (2) no name is declared twice (a fixed parameter must not conflict with an
+        earlier sampled/derived declaration, and vice versa);
+    (3) every parameter required by the likelihood is declared.
+
+    Parameters
+    ----------
+    prior_dict : dict
+        Prior specification: parameter names (or a tuple of names, for a
+        transform returning several parameters at once) mapped to their
+        declaration dicts.
+    required_params : iterable of str
+        Parameter names the likelihood needs, e.g. the fields of its
+        ``likelihood_param_type`` namedtuple.
+
+    Raises
+    ------
+    ValueError
+        If a declaration is missing, declared twice, or depends on a parameter
+        declared after it.
+    """
+    declared = set()
+    for name, spec in prior_dict.items():
+        if "transform" in spec:
+            outputs = (name,) if isinstance(name, str) else tuple(name)
+            inputs = tuple(spec["from"])
+            missing_inputs = [key for key in inputs if key not in declared]
+            if missing_inputs:
+                raise ValueError(
+                    f"Derived parameter(s) {sorted(outputs)} depend on "
+                    f"parameter(s) {missing_inputs} that are not declared "
+                    "before them."
+                )
+            overlap = sorted(set(outputs) & declared)
+            if overlap:
+                raise ValueError(
+                    f"Derived parameter(s) {overlap} are declared more "
+                    "than once."
+                )
+            declared.update(outputs)
+        else:
+            if name in declared:
+                raise ValueError(
+                    f"Parameter '{name}' is declared more than once "
+                    "(fixed and sampled/derived declarations must not "
+                    "conflict)."
+                )
+            declared.add(name)
+
+    missing = set(required_params) - declared
+    if missing:
+        raise ValueError(
+            "The prior does not provide all parameters required by the "
+            "likelihood. Missing: "
+            f"{sorted(missing)}. Provided by the prior: {sorted(declared)}."
+        )
+
+
 class SamplerBase(ABC):
     """Framework-agnostic abstract base class for samplers."""
 
@@ -67,19 +131,36 @@ class SamplerBase(ABC):
             Label attached to the sampling run, converted to ``str``. The
             default None becomes the string ``"None"``.
         outdir : str, optional
-            Output directory. Default is None, which resolves to an
-            ``outdir_{label}`` directory under the current working directory
-            where the calling script runs (``os.getcwd()``); the directory is
-            created if it does not exist.
+            Output directory, created here and required *not* to exist yet, so
+            that the result files of an earlier run can never be overwritten
+            silently. The default None resolves to an ``outdir_{label}``
+            directory under the current working directory where the calling
+            script runs (``os.getcwd()``).
         rkey_seed : int, optional
             Seed for the random number generator key. Default is 0.
+
+        Raises
+        ------
+        FileExistsError
+            If ``outdir`` already exists.
         """
         self.likelihood = likelihood
         self.prior_dict = prior_dict
         self.label = str(label)
         if outdir is None:
             outdir = os.path.join(os.getcwd(), f"outdir_{self.label}")
-            os.makedirs(outdir, exist_ok=True)
+        # The directory is created when ``outdir`` is bound, so that every
+        # sampler can rely on it existing -- including the post-processing
+        # helpers, which write plots and raw results before the shared JSON
+        # output is saved.  An already existing path is refused instead of
+        # reused, so that the results of an earlier run are never overwritten.
+        if os.path.exists(outdir):
+            raise FileExistsError(
+                f"Output path {outdir!r} already exists. It is refused rather "
+                "than reused, so that the result files of an earlier run are "
+                "not overwritten. Remove it, or pass another 'outdir'."
+            )
+        os.makedirs(outdir)
         self.outdir = outdir
         self.rkey_seed = rkey_seed
         self.rng_key = jax.random.key(self.rkey_seed)
@@ -227,7 +308,6 @@ class SamplerBase(ABC):
                 return value.item()
             return value
 
-        os.makedirs(self.outdir, exist_ok=True)
         filename = f"{self.label}.json" if filename is None else filename
         path = os.path.join(self.outdir, filename)
         with open(path, "w") as file:
@@ -298,7 +378,9 @@ class NumpyroPriorSamplerBase(SamplerBase):
         self.fixed_params = {}  # name -> array (fixed parameter)
         self.derived_params = {}  # output name(s) -> (callable, *input names)
         self._parse_prior_dict()
-        self._validate_parameters()
+        _validate_prior_dict(
+            self.prior_dict, self.likelihood.likelihood_param_type._fields
+        )
         self.bijects = {
             name: transforms.biject_to(prior.support) # mapping unbounded parameters to physical parameters # fmt: skip
             for name, prior in self.sampled_params.items()
@@ -372,54 +454,6 @@ class NumpyroPriorSamplerBase(SamplerBase):
                     f"Prior entry for '{name}' must contain a 'distribution', "
                     "'transform' or 'fixed' key."
                 )
-
-    def _validate_parameters(self) -> None:
-        """Validate the prior declarations against the likelihood.
-
-        Iterates the prior dictionary in insertion order and checks that
-
-        (1) every ``'from'`` input of a derived parameter is declared
-            earlier (as a sampled, derived or fixed parameter);
-        (2) no name is declared twice (a fixed parameter must not conflict
-            with an earlier sampled/derived declaration, and vice versa);
-        (3) every parameter required by the likelihood is declared.
-        """
-        declared = set()
-        for name, spec in self.prior_dict.items():
-            if "transform" in spec:
-                outputs = (name,) if isinstance(name, str) else tuple(name)
-                inputs = tuple(spec["from"])
-                missing_inputs = [k for k in inputs if k not in declared]
-                if missing_inputs:
-                    raise ValueError(
-                        f"Derived parameter(s) {sorted(outputs)} depend on "
-                        f"parameter(s) {missing_inputs} that are not declared "
-                        "before them."
-                    )
-                overlap = sorted(set(outputs) & declared)
-                if overlap:
-                    raise ValueError(
-                        f"Derived parameter(s) {overlap} are declared more "
-                        "than once."
-                    )
-                declared.update(outputs)
-            else:
-                if name in declared:
-                    raise ValueError(
-                        f"Parameter '{name}' is declared more than once "
-                        "(fixed and sampled/derived declarations must not "
-                        "conflict)."
-                    )
-                declared.add(name)
-
-        required = set(self.likelihood.likelihood_param_type._fields)
-        missing = required - declared
-        if missing:
-            raise ValueError(
-                "The prior does not provide all parameters required by the "
-                "likelihood. Missing: "
-                f"{sorted(missing)}. Provided by the prior: {sorted(declared)}."
-            )
 
     def logprior_unbounded_fn(self, z) -> jnp.ndarray:
         """Joint log-prior in the unbounded (unconstrained) space (pure JAX).
