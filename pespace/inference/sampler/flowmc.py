@@ -184,7 +184,7 @@ class FlowMCSampler(NumpyroPriorSamplerBase):
         :class:`~pespace.inference.sampler.base.NumpyroPriorSamplerBase`.
     label : str, optional
         Label of the run, converted to ``str``; also the JSON filename
-        (``outdir/{label}.json``).  Default is None (-> ``"None"``).
+        (``outdir/{label}_results.json``).  Default is None (-> ``"None"``).
     outdir : str, optional
         Output directory for the saved result and the flowMC checkpoint.  It
         must not exist yet: the base class creates it and refuses to reuse an
@@ -495,7 +495,7 @@ class FlowMCSampler(NumpyroPriorSamplerBase):
             sampled/derived/fixed parameters) and ``log_likelihoods``; the
             log-evidence ``log_evidence`` is NaN and ``weights`` is an empty
             array (equally weighted MCMC samples).  The result is also saved to
-            ``outdir/{label}.json``.
+            ``outdir/{label}_results.json``.
         """
         # Initial chain positions drawn from the priors in the unbounded space.
         self.rng_key, key_init = jax.random.split(self.rng_key)

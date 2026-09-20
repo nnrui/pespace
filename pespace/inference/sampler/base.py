@@ -291,7 +291,7 @@ class SamplerBase(ABC):
         return output
 
     def _save_output(self, output: dict, filename=None) -> str:
-        """Save the run result to ``outdir/{label}.json`` and return its path.
+        """Save the run result to ``outdir/{label}_results.json`` and return its path.
 
         numpy/JAX arrays and numpy scalars are converted to JSON-native types
         recursively before dumping.
@@ -308,7 +308,7 @@ class SamplerBase(ABC):
                 return value.item()
             return value
 
-        filename = f"{self.label}.json" if filename is None else filename
+        filename = f"{self.label}_results.json" if filename is None else filename
         path = os.path.join(self.outdir, filename)
         with open(path, "w") as file:
             json.dump(to_jsonable(output), file, indent=2)

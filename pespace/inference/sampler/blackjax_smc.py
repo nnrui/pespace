@@ -334,7 +334,8 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
             ``sampler_class``, ``sampler_config``, ``posteriors`` (physical
             sampled/derived/fixed parameters), ``log_likelihoods``, the
             log-evidence ``log_evidence`` and normalized importance
-            ``weights``.  The result is also saved to ``outdir/{label}.json``.
+            ``weights``.  The result is also saved to
+            ``outdir/{label}_results.json``.
         """
         self.rng_key, init_key, loop_key = jax.random.split(self.rng_key, 3)
         particles = self._initial_particles(init_key, self.num_particles)
@@ -594,7 +595,7 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
         :class:`pespace.inference.sampler.base.NumpyroPriorSamplerBase`.
     label : str, optional
         Label of the run, converted to ``str``; also the JSON filename
-        (``outdir/{label}.json``).  Default is None (-> ``"None"``).
+        (``outdir/{label}_results.json``).  Default is None (-> ``"None"``).
     outdir : str, optional
         Output directory for the saved result.  It must not exist yet: the
         base class creates it and refuses to reuse an existing path, so that
@@ -885,7 +886,7 @@ class BlackjaxSMCwithIRMH(_TunedAdaptiveTemperedSMC):
         :class:`pespace.inference.sampler.base.NumpyroPriorSamplerBase`.
     label : str, optional
         Label of the run, converted to ``str``; also the JSON filename
-        (``outdir/{label}.json``).  Default is None (-> ``"None"``).
+        (``outdir/{label}_results.json``).  Default is None (-> ``"None"``).
     outdir : str, optional
         Output directory for the saved result.  It must not exist yet: the
         base class creates it and refuses to reuse an existing path, so that
