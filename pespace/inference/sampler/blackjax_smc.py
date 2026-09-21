@@ -44,8 +44,7 @@ import corner
 import numpy as np
 import h5py
 
-from .base import NumpyroPriorSamplerBase
-from ..utils import map_fn
+from .base import NumpyroPriorSamplerBase, map_fn
 
 try:
     import blackjax

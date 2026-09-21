@@ -45,8 +45,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.flatten_util import ravel_pytree
 
-from .base import NumpyroPriorSamplerBase
-from ..utils import map_fn
+from .base import NumpyroPriorSamplerBase, map_fn
 
 try:
     import flowMC  # noqa: F401

@@ -42,6 +42,12 @@ Notes
   ``jaxns_results`` key of the output dictionary.  ``run`` additionally prints
   the jaxns summary and saves the jaxns corner/diagnostic plots and the raw
   ``NestedSamplerResults`` into ``outdir``.
+- :func:`tfpSine` / :func:`tfpCosine` give the inclination (``sin(x)/2``) and
+  the ecliptic latitude (``cos(x)/2``) priors as TFP distributions, the TFP
+  counterparts of :class:`~pespace.inference.sampler.base.Sine` /
+  :class:`~pespace.inference.sampler.base.Cosine` (which are numpyro ones and
+  cannot be consumed by jaxns).  Use them as prior factories, e.g.
+  ``"inclination": {"distribution": tfpSine}``.
 - jaxns is an optional dependency, imported lazily.
 """
 
@@ -56,11 +62,11 @@ import jax.numpy as jnp
 import numpy as np
 
 from .base import SamplerBase, _validate_prior_dict
-from ..utils import map_fn
 
 try:
     import tensorflow_probability.substrates.jax as tfp
 
+    tfb = tfp.bijectors
     tfpd = tfp.distributions
 
     from jaxns import Model, NestedSampler, Prior, ShardedStaticNestedSampler
@@ -81,10 +87,10 @@ except ImportError as err:
         "is needed, please install jaxns and tensorflow_probability manually."
     ) from err
 
-__all__ = ["JaxnsSampler"]
+__all__ = ["JaxnsSampler", "tfpCosine", "tfpSine"]
 
 
-def _as_jnp_array(value):
+def _as_jnp_float64(value):
     """Convert a numeric prior argument into a float64 JAX array.
 
     TFP infers ``float32`` from plain Python scalars even with x64 enabled, so
@@ -108,12 +114,166 @@ def _as_jnp_array(value):
     return value
 
 
+# ---------------------------------------------------------------------------
+# TFP angle priors: counterparts of base.Sine / base.Cosine
+# ---------------------------------------------------------------------------
+# ``pespace.inference.sampler.base.Sine`` and ``.Cosine`` are numpyro
+# distributions, which jaxns cannot consume: it maps every prior onto the unit
+# cube through its quantile (``X = F^{-1}(U)``) and requires the wrapped
+# distribution to carry a ``_quantile``.  These factories build the same two
+# densities as TFP transformed distributions of the unit-cube variable itself,
+# ``u ~ Uniform(0, 1)``: the bijector's forward is verbatim the inverse CDF
+# those classes sample with, and the ``Uniform`` base carries TFP's own
+# ``_quantile``, which is what jaxns requires.
+
+
+class _Arcsin(tfb.Bijector):
+    """``u -> arcsin(2u - 1)``: ``Uniform(0, 1)`` to ``cos(x)/2`` on ``[-pi/2, pi/2]``.
+
+    TFP names the pre-image ``x`` and the image ``y``: here ``_forward(x)``
+    takes the unit-cube variable ``u`` and returns the angle.
+    """
+
+    def __init__(self, name: str = "arcsin"):
+        super().__init__(forward_min_event_ndims=0, name=name)
+
+    def _forward(self, x):
+        return jnp.arcsin(2.0 * x - 1.0)
+
+    def _inverse(self, y):
+        return 0.5 * (1.0 + jnp.sin(y))
+
+    def _forward_log_det_jacobian(self, x):
+        # log|d arcsin(2x - 1)/dx| = -0.5 log(4 x (1 - x)) = -0.5 (log x +
+        # log(1 - x)) -- the log 4 cancels exactly.  TFP derives the inverse
+        # log-det by evaluating this at x = (1 + sin(angle)) / 2, where 1 - x
+        # loses digits at the support edges, hence the log1p.
+        return -0.5 * (jnp.log(x) + jnp.log1p(-x))
+
+    def _inverse_log_det_jacobian(self, y):
+        # log|du/dangle| = log(cos(angle) / 2).
+        return jnp.log(0.5 * jnp.cos(y))
+
+    @classmethod
+    def _is_increasing(cls, **kwargs):
+        return True
+
+
+class _Arccos(tfb.Bijector):
+    """``u -> arccos(1 - 2u)``: ``Uniform(0, 1)`` to ``sin(x)/2`` on ``[0, pi]``.
+
+    Same TFP naming as :class:`_Arcsin`: ``_forward(x)`` maps the unit-cube
+    variable ``u`` to the angle.
+    """
+
+    def __init__(self, name: str = "arccos"):
+        super().__init__(forward_min_event_ndims=0, name=name)
+
+    def _forward(self, x):
+        return jnp.arccos(1.0 - 2.0 * x)
+
+    def _inverse(self, y):
+        return 0.5 * (1.0 - jnp.cos(y))
+
+    def _forward_log_det_jacobian(self, x):
+        # d arccos(1 - 2x)/dx = 1/sqrt(x (1 - x)), i.e. the same log-det as
+        # _Arcsin: the log 4 cancels exactly, and 1 - x loses digits at the
+        # support edges, hence the log1p.
+        return -0.5 * (jnp.log(x) + jnp.log1p(-x))
+
+    def _inverse_log_det_jacobian(self, y):
+        # log|du/dangle| = log(sin(angle) / 2).
+        return jnp.log(0.5 * jnp.sin(y))
+
+    @classmethod
+    def _is_increasing(cls, **kwargs):
+        return True
+
+
+def _tfp_uniform_base(validate_args: bool):
+    """``Uniform(0, 1)`` with float64 boundaries, the base of both factories.
+
+    The base *is* the unit-cube variable jaxns samples, so the bijector
+    composed on top of it is exactly the quantile transform.  The boundaries
+    are handed to TFP as **arrays**: TFP infers float32 from plain Python
+    scalars even with x64 enabled, and the quantile transform would then lose
+    the remaining digits.  (jaxns enables x64 on import, so ``jnp.asarray``
+    yields float64 here.)
+    """
+    return tfpd.Uniform(
+        low=jnp.asarray(0.0),  # type: ignore  # float64 array on purpose
+        high=jnp.asarray(1.0),  # type: ignore  # float64 array on purpose
+        validate_args=validate_args,
+    )
+
+
+def tfpCosine(name: str = "Cosine", validate_args: bool = False):
+    """TFP counterpart of :class:`~pespace.inference.sampler.base.Cosine`.
+
+    Builds the same density, ``p(x) = cos(x) / 2`` on ``[-pi/2, pi/2]``, as
+    ``TransformedDistribution(Uniform(0, 1), u -> arcsin(2u - 1))`` -- the very
+    inverse CDF :meth:`~pespace.inference.sampler.base.Cosine.sample` writes
+    (``jnp.arcsin(2.0 * u - 1.0)``) -- whose ``Uniform`` base carries the
+    ``_quantile`` jaxns requires.  Pass it as the factory of a jaxns prior
+    entry::
+
+        "ecliptic_latitude": {"distribution": tfpCosine},
+
+    Parameters
+    ----------
+    name : str, optional
+        Name of the TFP distribution.  Default is "Cosine".
+    validate_args : bool, optional
+        Passed to the TFP distribution.  Default is False.
+
+    Returns
+    -------
+    tfpd.TransformedDistribution
+        The TFP distribution with the ``cos(x) / 2`` density.
+    """
+    return tfpd.TransformedDistribution(
+        distribution=_tfp_uniform_base(validate_args),
+        bijector=_Arcsin(),
+        name=name,
+    )
+
+
+def tfpSine(name: str = "Sine", validate_args: bool = False):
+    """TFP counterpart of :class:`~pespace.inference.sampler.base.Sine`.
+
+    Same construction as :func:`tfpCosine`, but the unit-cube variable is
+    mapped through ``x = arccos(1 - 2u)``, giving ``p(x) = sin(x) / 2`` on
+    ``[0, pi]`` -- again the inverse CDF
+    :meth:`~pespace.inference.sampler.base.Sine.sample` writes
+    (``jnp.arccos(1.0 - 2.0 * u)``)::
+
+        "inclination": {"distribution": tfpSine},
+
+    Parameters
+    ----------
+    name : str, optional
+        Name of the TFP distribution.  Default is "Sine".
+    validate_args : bool, optional
+        Passed to the TFP distribution.  Default is False.
+
+    Returns
+    -------
+    tfpd.TransformedDistribution
+        The TFP distribution with the ``sin(x) / 2`` density.
+    """
+    return tfpd.TransformedDistribution(
+        distribution=_tfp_uniform_base(validate_args),
+        bijector=_Arccos(),
+        name=name,
+    )
+
+
 def _make_jaxns_prior(name, dist_name, kwargs):
     """Build the prior the jaxns prior model generator yields for a parameter.
 
     ``dist_name`` is normally a name looked up in ``tfp.distributions``, but a
     distribution class (or any factory) may be passed directly.  Numeric
-    arguments go through :func:`_as_jnp_array`, because TFP otherwise infers
+    arguments go through :func:`_as_jnp_float64`, because TFP otherwise infers
     ``float32`` from plain Python scalars.
 
     A continuous parameter yields ``Prior(tfp_distribution)``.  ``Categorical``
@@ -123,7 +283,7 @@ def _make_jaxns_prior(name, dist_name, kwargs):
     ``Prior(...)``.  They build their own TFP distribution internally (available
     as ``prior.dist``), so none is built here.
     """
-    args = {key: _as_jnp_array(value) for key, value in kwargs.items()}
+    args = {key: _as_jnp_float64(value) for key, value in kwargs.items()}
     if dist_name in ("Categorical", "Bernoulli"):
         try:
             if dist_name == "Categorical":
@@ -249,41 +409,89 @@ class JaxnsSampler(SamplerBase):
         Guide the slice directions with likelihood gradients (experimental).
         Default is False.
     init_efficiency_threshold : float, optional
-        Passed through to jaxns; note that this parameter is inert in jaxns
-        2.6.9. Default is 0.1, jaxns' own default.
-    likelihood_batch_size : int, optional
-        Batch size used when evaluating the likelihood of the final samples
-        (0 keeps plain ``jax.vmap``). Default is 0.
+        Passed through to jaxns: if positive, an initial uniform-sampling stage
+        runs down to this acceptance efficiency before slice sampling starts.
+        Default is 0.1, jaxns' own default.
     verbose : bool, optional
         Print the jaxns progress diagnostics during the run. Default is False.
 
     Notes
     -----
-    **Live points: entry value vs. the value actually used.**  jaxns names its
-    live-point parameter ``num_live_points`` but means the *sample budget
-    equivalent* ``c * (k + 1)``; the number of live points is ``c``, and jaxns
-    derives it as ``c = num_live_points // (k + 1)``.  ``c`` is then rounded up
-    so that ``int(c * shell_fraction)`` divides evenly over the devices.  Because
-    the constructor argument and the resulting attribute would otherwise mean
-    different things, this class keeps the entry values under ``*_input``
-    attributes and writes the values jaxns actually used onto the plain
-    attributes while the sampler is built::
+    **Parameter summary.**  ``likelihood`` and ``prior_dict`` are the required
+    inputs; together they build the jaxns ``Model`` that ``NestedSampler``
+    receives as its ``model`` argument, kept as ``sampler.model``.  The
+    remaining arguments are jaxns' own configuration, grouped by whether jaxns
+    may change the value:
 
-        sampler.num_live_points_input  # what was requested (budget equivalent)
-        sampler.num_live_points        # live points actually used (== jaxns' c)
-        sampler.c                      # the same quantity, jaxns' name for it
+    *Optional; the effective value may differ from the entry value* (the
+    effective values are what ``sampler_config`` records):
 
-    The remaining resolved parameters (``num_slices``, ``s``, ``k``,
-    ``max_samples``, ``shell_fraction``, ``init_efficiency_threshold``) are
-    stored exactly as jaxns reports them; in particular ``sampler.s`` is
-    ``None`` whenever ``num_slices`` was given explicitly, because jaxns only
-    defines ``s`` on the path where it derives ``num_slices`` from it.
+    - ``num_live_points`` -- the live-point *budget* ``c * (k + 1)``, **not**
+      the number of live points.  It is only used to derive the chain count
+      ``c = max(1, num_live_points // (k + 1))``, which then overrides ``c``.
+      Default ``None``: jaxns picks the count by itself.  The number of live
+      points actually used is that ``c`` rounded up until the discarded shell
+      divides evenly over the devices, so it is generally **not** the value
+      that was passed in::
 
-    When neither ``num_live_points`` nor ``c`` is given, jaxns chooses the
-    live-point count itself: ``c = 30 * U_ndims``, or ``100 * U_ndims`` with
-    ``difficult_model=True``.  Because ``num_live_points`` is a budget rather
-    than a count, ``k = 2`` and ``num_live_points = 4000`` give
-    ``c = 4000 // 3 = 1333``; pass ``c`` directly to pin the count down.
+          sampler.num_live_points_input  # what was requested (budget)
+          sampler.num_live_points        # live points actually used (rounded-up c)
+          sampler.c                      # jaxns' c, before that round-up
+
+      For example ``num_live_points=4000`` with ``k=2`` gives ``c = 1333``.
+    - ``max_samples`` -- number of samples the pre-allocated buffer holds,
+      phantom samples included; the main memory knob.  Default ``None``:
+      ``c * (k + 1) * 100`` (one hundred shrinkages).  The effective value is
+      rounded up so that a whole number of shells (with their phantom samples)
+      fits the buffer; jaxns does not back-fill it, so it is read back from the
+      running sampler.
+    - ``num_slices`` -- slice proposals per accepted sample (the chain length).
+      Default ``None``: ``U_ndims * s``.
+    - ``s`` -- slice-density multiplier behind ``num_slices``; used only when
+      ``num_slices`` was not given, and then stored as a float.  Default
+      ``None``: 5, or 10 with ``difficult_model=True``.  ``sampler.s`` is
+      ``None`` whenever ``num_slices`` was given explicitly.
+    - ``k`` -- phantom samples saved per chain, sharpening the evidence
+      uncertainty estimate.  Default ``None``: 0, or
+      ``min(U_ndims, num_slices - 1)`` with ``parameter_estimation=True``;
+      jaxns requires ``0 <= k < num_slices``.
+    - ``c`` -- number of parallel Markov chains, which *is* the live point
+      count before the device round-up.  Default ``None``: ``30 * U_ndims``,
+      or ``100 * U_ndims`` with ``difficult_model=True``; ignored whenever
+      ``num_live_points`` is given.  Use it to pin the count down.
+    - ``shell_fraction`` -- fraction of the live points discarded per
+      iteration.  Default ``0.5`` (``None`` means 0.5 too).  The effective
+      value is ``max(shell_fraction, 1 / c)``, so a very small entry value is
+      raised to keep at least one point per shell; it drives the round-ups of
+      both the live points and the buffer.
+    - ``init_efficiency_threshold`` -- if positive, jaxns first runs uniform
+      sampling down to this acceptance efficiency, then switches to slice
+      sampling; 0 turns that stage off.  Default ``0.1``; the value itself is
+      passed through unchanged (only its sign matters).
+
+    *Fixed configuration, passed through as given*:
+
+    - ``devices`` -- devices to shard the run over.  Default ``None``: all
+      available devices, resolved by jaxns while the sampler is built, so
+      configure JAX (``XLA_FLAGS``, ``CUDA_VISIBLE_DEVICES``, ...) first.  The
+      device count enters both round-ups above.
+    - ``difficult_model`` -- jaxns' more robust (slower) defaults for
+      degenerate or multimodal posteriors: ``s`` 5 -> 10, ``c`` ``30`` ->
+      ``100`` times ``U_ndims``, no midpoint slice shrinking.  It only changes
+      defaults, never values given explicitly.  Default ``False``.
+    - ``parameter_estimation`` -- defaults tuned for parameter estimation:
+      phantom samples are enabled (``k``) and the run terminates once the
+      enclosed ``X * L`` has dropped by a fraction of its peak, instead of at
+      the remaining-evidence threshold ``dlogZ``.  Default ``False``, which is
+      better for the evidence itself.
+    - ``gradient_guided`` -- guide the slice directions with likelihood
+      gradients (experimental).  Default ``False``.
+    - ``verbose`` -- print jaxns' progress diagnostics during the run.
+      Default ``False``.
+
+    Entry values are kept under ``*_input`` attributes, effective values on the
+    plain attributes; the latter are also what ``format_output`` records under
+    ``sampler_config``.
 
     Construction happens in ``__init__`` (through :meth:`_build_sampler`), which
     resolves the device list and therefore initialises the JAX backend.
@@ -326,7 +534,6 @@ class JaxnsSampler(SamplerBase):
         label=None,
         outdir=None,
         rkey_seed: int = 0,
-        likelihood_batch_size: int = 0,
         # arguments for jaxns
         max_samples: Optional[int] = None,
         num_live_points: Optional[int] = None,
@@ -361,20 +568,23 @@ class JaxnsSampler(SamplerBase):
         self.difficult_model = bool(difficult_model)
         self.parameter_estimation = bool(parameter_estimation)
         self.gradient_guided = bool(gradient_guided)
-        self.likelihood_batch_size = int(likelihood_batch_size)
         self.verbose = bool(verbose)
 
         # Values jaxns actually used, filled in by _build_sampler().  They are
-        # also what format_output records under "sampler_config".  The
-        # placeholders mirror jaxns' own defaults.
+        # also what format_output records under "sampler_config".  Every
+        # placeholder is None: it only marks the attribute as "not resolved
+        # yet", and _build_sampler() overwrites all of them before __init__
+        # returns -- including the two whose jaxns defaults are concrete
+        # floats (``shell_fraction`` and ``init_efficiency_threshold``), which
+        # would otherwise advertise a value that is not the effective one.
         self.num_live_points = None
         self.max_samples = None
         self.num_slices = None
         self.s = None
         self.k = None
         self.c = None
-        self.shell_fraction = 0.5
-        self.init_efficiency_threshold = 0.1
+        self.shell_fraction = None
+        self.init_efficiency_threshold = None
 
         # Model attributes, filled in by _build_model() (which delegates to
         # _parse_prior_dict).  They are declared here as placeholders so that
@@ -406,9 +616,8 @@ class JaxnsSampler(SamplerBase):
            ones, and then calls the original likelihood.
         """
         sampled, derived, fixed = self._parse_prior_dict()
-        self.fixed_params = fixed
         self.derived_params = derived
-
+        self.fixed_params = fixed
         # The jaxns prior of every sampled parameter, in declaration order;
         # these are also the objects the prior model generator yields.
         self.sampled_params = {
@@ -501,9 +710,11 @@ class JaxnsSampler(SamplerBase):
         returns several parameters at once.  Only the fields the likelihood asks
         for are kept, so a declaration it does not need is dropped.
 
-        The likelihood's own parameter namedtuple is returned; that assembled
-        input is also what :meth:`_finalize` maps over, both to evaluate the
-        likelihood and to report the derived parameters.
+        The likelihood's own parameter namedtuple is returned.  It is what
+        jaxns calls (through ``loglikelihood_fn``) for a single position, and
+        what :meth:`_finalize` calls once on the whole batch of resampled rows
+        to report the derived parameters; the transforms are therefore written
+        as elementwise array arithmetic, which both callers rely on.
         """
         params = dict(zip(self.sampled_params.keys(), sampled_values))
         params.update(self.fixed_params)
@@ -653,12 +864,11 @@ class JaxnsSampler(SamplerBase):
         log_likelihoods = log_likelihoods[idx]
         num_samples = num_ess
 
-        # The fixed and derived parameters follow from the sampled ones without
-        # touching the likelihood, so only this assembly still has to be mapped
-        # over the resampled batch.
-        ll_params = map_fn(
-            self._build_ll_params, self.likelihood_batch_size
-        )(x_batch)
+        # The fixed and derived parameters follow from the sampled ones; the
+        # assembly is plain array arithmetic (the transforms are evaluated
+        # elementwise over the resampled rows), so it is applied to the whole
+        # batch at once -- no mapping, and no likelihood evaluation either.
+        ll_params = self._build_ll_params(x_batch)
 
         sampled = {
             name: np.asarray(value)
