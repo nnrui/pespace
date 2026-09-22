@@ -154,8 +154,7 @@ def _validate_prior_dict(prior_dict: dict, required_params: tuple) -> None:
             overlap = sorted(set(outputs) & declared)
             if overlap:
                 raise ValueError(
-                    f"Derived parameter(s) {overlap} are declared more "
-                    "than once."
+                    f"Derived parameter(s) {overlap} are declared more than once."
                 )
             declared.update(outputs)
         else:

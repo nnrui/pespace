@@ -289,9 +289,7 @@ def _make_jaxns_prior(name, dist_name, kwargs):
             if dist_name == "Categorical":
                 # "cdf" suits discrete parameters whose neighbouring
                 # categories are correlated.
-                return _JaxnsCategorical(
-                    parametrisation="cdf", name=name, **args
-                )
+                return _JaxnsCategorical(parametrisation="cdf", name=name, **args)
             return _JaxnsBernoulli(name=name, **args)
         except TypeError as err:
             raise ValueError(
@@ -589,13 +587,11 @@ class JaxnsSampler(SamplerBase):
         # Model attributes, filled in by _build_model() (which delegates to
         # _parse_prior_dict).  They are declared here as placeholders so that
         # the complete attribute set of the class can be read off __init__.
-        self.sampled_params = {}        # name -> the jaxns prior object
-        self.fixed_params = {}          # name -> np.ndarray; deliberately kept
-                                        #   out of the jaxns model and injected
-                                        #   when the likelihood runs
-        self.derived_params = {}        # output name(s) -> (transform, *inputs)
+        self.sampled_params = {}  # name -> the jaxns prior object
+        self.fixed_params = {}  # name -> np.ndarray; deliberately keptout of the jaxns model and injected when the likelihood runs # fmt: skip
+        self.derived_params = {}  # output name(s) -> (transform, *inputs)
 
-        self.model = self._build_model()      # the jaxns Model
+        self.model = self._build_model()  # the jaxns Model
         self.sampler = self._build_sampler()  # the jaxns NestedSampler
 
         self._results = None  # jaxns NestedSamplerResults of the last run
@@ -725,7 +721,10 @@ class JaxnsSampler(SamplerBase):
             else:
                 params.update(zip(outputs, result))
         return self.likelihood.likelihood_param_type(
-            **{key: params[key] for key in self.likelihood.likelihood_param_type._fields}
+            **{
+                key: params[key]
+                for key in self.likelihood.likelihood_param_type._fields
+            }
         )
 
     # ------------------------------------------------------------------
@@ -857,9 +856,7 @@ class JaxnsSampler(SamplerBase):
         # the resampling (advancing the master key), so that no two purposes
         # can ever draw from the same key.
         self.rng_key, resample_key = jax.random.split(self.rng_key)
-        idx = np.asarray(
-            _jaxns_resample_indicies(resample_key, log_weights, S=num_ess)
-        )
+        idx = np.asarray(_jaxns_resample_indicies(resample_key, log_weights, S=num_ess))
         x_batch = tuple(item[idx] for item in x_batch)
         log_likelihoods = log_likelihoods[idx]
         num_samples = num_ess
@@ -871,8 +868,7 @@ class JaxnsSampler(SamplerBase):
         ll_params = self._build_ll_params(x_batch)
 
         sampled = {
-            name: np.asarray(value)
-            for name, value in zip(self.sampled_params, x_batch)
+            name: np.asarray(value) for name, value in zip(self.sampled_params, x_batch)
         }
         fixed = {
             name: np.full(num_samples, value)
@@ -913,9 +909,7 @@ class JaxnsSampler(SamplerBase):
                 array = np.asarray(value)
                 # Counters, evidence and the termination reason are kept as
                 # Python numbers rather than as 0-d arrays.
-                jaxns_results_output[name] = (
-                    array.item() if array.ndim == 0 else array
-                )
+                jaxns_results_output[name] = array.item() if array.ndim == 0 else array
         output["jaxns_results"] = jaxns_results_output
         return output
 
@@ -997,7 +991,7 @@ class JaxnsSampler(SamplerBase):
             )
         return self._results
 
-    def print_summary(self, f_obj = None):
+    def print_summary(self, f_obj=None):
         """Print the jaxns nested-sampling summary of the last run.
 
         Reports the log-evidence, the per-parameter quantiles, the termination
