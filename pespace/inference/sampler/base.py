@@ -356,7 +356,11 @@ class SamplerBase(ABC):
         """Save the run result to ``outdir/{label}_results.json`` and return its path.
 
         numpy/JAX arrays and numpy scalars are converted to JSON-native types
-        recursively before dumping.
+        recursively before dumping.  Anything else the JSON encoder cannot
+        handle -- e.g. the ``jax.Device`` objects stored under
+        ``sampler_config['devices']`` when the devices were passed
+        explicitly -- falls back to its string representation, so the result
+        of a run is always written.
         """
 
         def to_jsonable(value):
@@ -368,7 +372,11 @@ class SamplerBase(ABC):
                 return to_jsonable(np.asarray(value).tolist())
             if isinstance(value, np.generic):
                 return value.item()
-            return value
+            if value is None or isinstance(value, (str, int, float, bool)):
+                return value
+            # Fallback: keep the output writable for objects the encoder does
+            # not know, without failing the run that produced them.
+            return str(value)
 
         filename = f"{self.label}_results.json" if filename is None else filename
         path = os.path.join(self.outdir, filename)
