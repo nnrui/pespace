@@ -958,7 +958,7 @@ class JaxnsSampler(SamplerBase):
         self.rng_key, run_key = jax.random.split(self.rng_key)
 
         start = time.perf_counter()
-        termination_reason, state = self.sampler(run_key)
+        termination_reason, state = jax.jit(self.sampler)(run_key)
         results = self.sampler.to_results(termination_reason, state, trim=True)
         runing_time = time.perf_counter() - start
 
