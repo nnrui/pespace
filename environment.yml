@@ -23,9 +23,9 @@ dependencies:
   - black
   - mypy
   - sphinx
-  # cuda-toolkit
-  - cuda-version = 12.4
-  - cuda-toolkit
+  # # cuda-toolkit
+  # - cuda-version = 12.4
+  # - cuda-toolkit
   - pip:
     - taichi
     - "jax[cuda12]"
