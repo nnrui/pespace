@@ -442,5 +442,5 @@ class _KaplerianHeliocentricTaichi(OrbitModelBase):
 available_orbit_models = {
     "LISA_analytic": KaplerianHeliocentric(2.5e9, 0.0, -PI / 9),
     "Taiji_analytic": KaplerianHeliocentric(3.0e9, 0.0, PI / 9),
-    "Tianqin_analytic": KeplerianGeocentric(1.0e8, 0.0, 0.0),
+    "Tianqin_analytic": KeplerianGeocentric(1.7e8, 0.0, 0.0),
 }
