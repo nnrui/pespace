@@ -21,7 +21,7 @@ class DetectorData(NamedTuple):
 def noise_weighted_inner_product(observed_data, response_data, psd, df):
     """
     The noise-weighted inner product under the Gaussian stationary noise
-    assumption (Whittle likelihood kernel).
+    assumption (Whittle likelihood kernel ``-2 * df * sum(|data-model|^2 / psd)``).
 
     Parameters
     ----------

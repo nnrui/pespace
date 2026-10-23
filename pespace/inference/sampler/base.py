@@ -1,17 +1,4 @@
-"""Base classes and shared utilities for sampler interfaces.
-
-- :class:`SamplerBase`: framework-agnostic abstract base class.
-- :class:`NumpyroPriorSamplerBase`: base class for samplers where the priors are
-  declared through numpyro distributions. It parses the prior dictionary
-  into numpyro distribution instances, builds per-parameter bijections to an
-  unconstrained space (handling bounded priors natively for gradient-based
-  kernels), and constructs the pure log-prior / log-likelihood functions used
-  by the sampler kernels.
-- :func:`map_fn`: map a function over the sample/particle axis, optionally in
-  sequential batches.
-- :class:`Sine` / :class:`Cosine`: numpyro prior distributions with sine /
-  cosine densities, used for inclination and ecliptic latitude.
-"""
+"""Base classes and shared utilities for sampler interfaces."""
 
 import inspect
 import json
@@ -38,12 +25,10 @@ except ImportError:  # pragma: no cover
 # Shared sampling utilities
 # ---------------------------------------------------------------------------
 def map_fn(fn, batch_size: int = 0):
-    """Map ``fn`` over the sample/particle axis, batched or chunked.
+    """Map over the leading sample axis.
 
-    ``batch_size=0`` keeps the plain ``jax.vmap`` behaviour; a positive
-    ``batch_size`` switches to ``jax.lax.map``, which processes the samples in
-    sequential batches of that size.  This bounds the peak memory of the
-    likelihood intermediates at the cost of cross-batch parallelism.
+    Use ``vmap`` for ``batch_size=0`` and sequential ``lax.map`` batches for
+    positive sizes.
     """
     if batch_size > 0:
         return lambda xs: jax.lax.map(fn, xs, batch_size=batch_size)
@@ -210,11 +195,7 @@ class SamplerBase(ABC):
         self.label = str(label)
         if outdir is None:
             outdir = os.path.join(os.getcwd(), f"outdir_{self.label}")
-        # The directory is created when ``outdir`` is bound, so that every
-        # sampler can rely on it existing -- including the post-processing
-        # helpers, which write plots and raw results before the shared JSON
-        # output is saved.  An already existing path is refused instead of
-        # reused, so that the results of an earlier run are never overwritten.
+        # Create a fresh output directory before any result files are written.
         if os.path.exists(outdir):
             raise FileExistsError(
                 f"Output path {outdir!r} already exists. It is refused rather "
@@ -352,7 +333,7 @@ class SamplerBase(ABC):
         return output
 
     def _save_output(self, output: dict, filename=None) -> str:
-        """Save the run result to ``outdir/{label}_results.json`` and return its path.
+        """Save results to ``outdir/{label}_results.json`` and return the path.
 
         numpy/JAX arrays and numpy scalars are converted to JSON-native types
         recursively before dumping.  Anything else the JSON encoder cannot
@@ -373,8 +354,7 @@ class SamplerBase(ABC):
                 return value.item()
             if value is None or isinstance(value, (str, int, float, bool)):
                 return value
-            # Fallback: keep the output writable for objects the encoder does
-            # not know, without failing the run that produced them.
+            # Represent objects unsupported by JSON as strings.
             return str(value)
 
         filename = f"{self.label}_results.json" if filename is None else filename

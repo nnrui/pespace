@@ -129,26 +129,13 @@ def _softabs_metric(hessian, alpha):
 
 
 class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
-    """Shared machinery for adaptive-tempered SMC with self-tuned kernels.
+    """Tempering, resampling, and mutation shared by the SMC samplers.
 
-    Concrete samplers provide the inner mutation kernel and its tuning rule;
-    this base class implements the tempering loop and the fixed-step mutation
-    schedule.
-
-    Hooks expected from subclasses (set in ``__init__``):
-
-    The generic interfaces (``logprior_fn`` / ``loglikelihood_fn`` /
-    ``logdensity_fn``) are bound on the instance to the space-specific
-    implementations (unbounded or physical) before sampling.
-    ``_mcmc_step_fn`` / ``_mcmc_init_fn``
-        The inner MCMC kernel and its state initialiser.
-    ``_get_particles_physical``
-        Maps one particle (in the sampler's working space) to the physical
-        sampled-parameter space.
+    Subclasses bind the density functions to their sampling coordinates and
+    provide kernel initialization, transitions, tuning, and physical transforms.
     """
 
-    # Type annotations, avoid initialize these hooks with None in __init__ of base class,
-    # as that would cause complains of type checker.
+    # Subclasses bind these hooks during initialization.
     _mcmc_step_fn: Callable
     _mcmc_init_fn: Callable
     _get_particles_physical: Callable
@@ -179,8 +166,7 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         if self.num_mcmc_steps < 1:
             raise ValueError("num_mcmc_steps must be positive.")
 
-        # Ravel/unravel utilities shared by both samplers; the template fixes
-        # the pytree structure and the flattened dimension.
+        # Use one prior draw to define the flattened coordinate structure.
         self.rng_key, test_key = jax.random.split(self.rng_key)
         test_sample = self._sample_priors_unbounded(test_key, ())
         sample_data, self._unflatten_fn = ravel_pytree(test_sample)
@@ -197,11 +183,9 @@ class _TunedAdaptiveTemperedSMC(NumpyroPriorSamplerBase):
         tempering_param,
         num_mcmc_steps: int = 1,
     ):
-        """One mutation round: ``num_mcmc_steps`` kernel steps per particle.
+        """Apply ``num_mcmc_steps`` transitions to each particle.
 
-        Runs ``num_mcmc_steps`` inner-kernel steps for every particle and
-        keeps only the final states (blackjax's ``update_and_take_last``).
-        The tempering loop passes the level's full ``self.num_mcmc_steps``.
+        Return final positions and transition diagnostics.
         """
 
         def tempered_logposterior(position):
@@ -589,7 +573,7 @@ class BlackjaxSMCwithNUTS(_TunedAdaptiveTemperedSMC):
     likelihood : object
         Likelihood instance providing ``log_likelihood`` and the
         ``likelihood_param_type`` namedtuple type of the likelihood parameters.
-    prior : dict
+    prior_dict : dict
         Prior declaration, see
         :class:`pespace.inference.sampler.base.NumpyroPriorSamplerBase`.
     label : str, optional
@@ -880,7 +864,7 @@ class BlackjaxSMCwithIRMH(_TunedAdaptiveTemperedSMC):
     likelihood : object
         Likelihood instance providing ``log_likelihood`` and the
         ``likelihood_param_type`` namedtuple type of the likelihood parameters.
-    prior : dict
+    prior_dict : dict
         Prior declaration, see
         :class:`pespace.inference.sampler.base.NumpyroPriorSamplerBase`.
     label : str, optional
