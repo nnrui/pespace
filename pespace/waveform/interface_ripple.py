@@ -18,8 +18,7 @@ from abc import ABC, abstractmethod
 import jax.numpy as jnp
 
 #: URL of the repository of the non-official ripple (jax-based).
-#: TODO: replace with the real repository URL.
-_RIPPLE_INSTALL_URL = "https://github.com/xxx"
+_RIPPLE_INSTALL_URL = "https://github.com/nnrui/ripple"
 
 
 try:
