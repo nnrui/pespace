@@ -137,4 +137,3 @@ def __getattr__(name):
 
         return LikelihoodBilbyInterfaceJax
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
