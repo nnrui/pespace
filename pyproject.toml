@@ -62,7 +62,7 @@ dev = [
 ]
 
 [project.urls]
-Documentation = "https://github.com/nnrui/pespace"
+Documentation = "https://nnrui.github.io/pespace"
 Repository = "https://github.com/nnrui/pespace"
 
 [tool.setuptools.packages.find]

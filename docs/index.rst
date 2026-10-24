@@ -21,6 +21,7 @@
    _examples/using_f32.ipynb
    _examples/autodiff_forward.ipynb
    _examples/autodiff_backward.ipynb
+   _examples/fisher_jax.ipynb
    pe_scripts.rst
 
 
