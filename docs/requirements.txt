@@ -2,6 +2,17 @@ sphinx
 myst-parser
 myst-nb
 furo
+
+# jax backend and sampler interfaces (imported at module level by autodoc)
+jax
+numpyro
+corner
+blackjax
+flowmc
+jaxns
+rippleGW @ git+https://github.com/nnrui/ripple
+
+# external parameter-estimation and waveform interfaces
 bilby
 pycbc
 lalsuite

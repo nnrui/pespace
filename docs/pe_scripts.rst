@@ -44,7 +44,7 @@ The scripts on this page are full parameter estimation examples for a massive bl
    pip install "rippleGW @ git+https://github.com/nnrui/ripple"
 
 2.1 Adaptive tempering SMC with NUTS and Hessian
-~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. literalinclude:: _examples/pe_scripts/full_pe_jax_smc.py
    :language: python
