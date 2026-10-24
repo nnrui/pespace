@@ -84,3 +84,21 @@ exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
 html_theme = 'furo'
 html_static_path = ['_static']
 html_last_updated_fmt = '%Y-%m-%d %H:%M:%S'
+
+
+# -- Include private members in the API documentation -------------------------
+# ``private-members`` in ``autodoc_default_options`` documents private members
+# in the ``automodule`` body already, but autosummary drops names starting with
+# an underscore from the per-module tables.
+# Returning ``False`` here marks such names as public, so private functions,
+# classes and module attributes are listed and linked in the summary tables too.
+# Dunder members are left to ``special-members`` to keep the pages readable.
+def _include_private_members(app, what, name, obj, skip, options):
+    if name.startswith("_") and not name.startswith("__"):
+        return False
+    return None
+
+
+def setup(app):
+    app.connect("autodoc-skip-member", _include_private_members)
+
