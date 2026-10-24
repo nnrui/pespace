@@ -26,10 +26,33 @@ dependencies = [
     "matplotlib",
     "tiwave",
 ]
-keywords = ["gravitational-wave", "taichi-lang", "parameter estimation"]
+keywords = ["gravitational-wave", "taichi-lang", "jax", "parameter estimation"]
 dynamic = ["version"]
 
 [project.optional-dependencies]
+# JAX back end: differentiable detector response, Whittle likelihood and
+# Fisher matrix (pespace.inference.fisher, likelihood_jax, detector/_jax_impl).
+jax = ["jax"]
+
+# Sampler back ends. All of them build on NumpyroPriorSamplerBase, so numpyro
+# is required; corner is imported at module level by blackjax_smc for its
+# diagnostic plots. jaxns pulls in tfp-nightly (the tensorflow_probability
+# jax substrate) by itself.
+samplers = [
+    "jax",
+    "numpyro",
+    "blackjax",
+    "flowMC",
+    "jaxns",
+    "corner",
+]
+
+# External parameter-estimation interfaces.
+bilby = ["bilby"]
+pycbc = ["pycbc"]
+# Needed by the lalsimulation waveform interface (import lal / lalsimulation).
+lalsimulation = ["lalsuite"]
+
 dev = [
     "pytest",
     "pytest-cov",
@@ -44,10 +67,3 @@ Repository = "https://github.com/nnrui/pespace"
 
 [tool.setuptools.packages.find]
 include = ["pespace*"]
-
-# [tool.setuptools.package-data]
-# "tiwave.waveforms.data" = [
-#     "QNMData_a.txt",
-#     "QNMData_fdamp.txt",
-#     "QNMData_fring.txt",
-# ]
