@@ -1,0 +1,10 @@
+# setuptools-scm adds every git-tracked file to the sdist. Keep only what is
+# needed to build and run the package: pespace/ plus the packaging metadata
+# files at the repository root.
+
+prune docs
+prune examples
+prune .github
+
+exclude environment.yml
+exclude .gitignore

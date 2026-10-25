@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=80", "setuptools-scm[simple]>=8"]
+requires = ["setuptools>=80", "setuptools-scm>=10"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -28,6 +28,14 @@ dependencies = [
 ]
 keywords = ["gravitational-wave", "taichi-lang", "jax", "parameter estimation"]
 dynamic = ["version"]
+
+[tool.setuptools_scm]
+version_scheme = "no-guess-dev"
+local_scheme = "no-local-version"
+fallback_version = "0.0.0"
+
+[tool.setuptools_scm.tag]
+prefix = "v"
 
 [project.optional-dependencies]
 # JAX back end: differentiable detector response, Whittle likelihood and
