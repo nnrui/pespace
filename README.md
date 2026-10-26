@@ -3,7 +3,7 @@
 [![last commit](https://img.shields.io/github/last-commit/nnrui/pespace)](https://github.com/nnrui/pespace/commit/HEAD)
 [![code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 [![docs](https://img.shields.io/github/actions/workflow/status/nnrui/pespace/docs.yml?label=docs)](https://nnrui.github.io/pespace)
-
+[![Publish Python package](https://github.com/nnrui/pespace/actions/workflows/publish.yml/badge.svg)](https://github.com/nnrui/pespace/actions/workflows/publish.yml)
 
 > [!WARNING]
 > This is an experimental project under active development. The design and APIs are not stable and may change frequently.
